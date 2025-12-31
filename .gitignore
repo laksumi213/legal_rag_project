@@ -1,13 +1,23 @@
-# python generated files
+# --- Python & Rye ---
 __pycache__/
-*.py[oc]
-build/
-dist/
-wheels/
-*.egg-info
-
-# venv
-.venv
+*.pyc
 .venv/
-__pycache__/
+.rye/
+
+# --- 環境変数 (パスワード等) ---
+# ※これは絶対にGitにあげてはいけません
 .env
+
+# --- データベース & ログ ---
+# 監査ログやベクターDBはローカルで生成されるため除外
+db/sql/*.db
+db/chroma/
+*.log
+
+# --- 生成されたファイル ---
+# アップロードされたPDFや生成された雛形
+data/templates/*.pdf
+
+# --- OS ---
+.DS_Store
+Thumbs.db

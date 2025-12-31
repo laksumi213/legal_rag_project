@@ -1,0 +1,17 @@
+README.md
+pyproject.toml
+src/legal.egg-info/PKG-INFO
+src/legal.egg-info/SOURCES.txt
+src/legal.egg-info/dependency_links.txt
+src/legal.egg-info/requires.txt
+src/legal.egg-info/top_level.txt
+src/legal_rag_project/__init__.py
+src/legal_rag_system/__init__.py
+src/legal_rag_system/main.py
+src/legal_rag_system/core/__init__.py
+src/legal_rag_system/core/ai_factory.py
+src/legal_rag_system/core/config.py
+src/legal_rag_system/core/database.py
+src/legal_rag_system/core/ocr_engine.py
+src/legal_rag_system/ui/__init__.py
+src/legal_rag_system/ui/app.py

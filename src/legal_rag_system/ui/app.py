@@ -4,7 +4,9 @@
 # 1. ライブラリのインポート
 # ==========================================
 import hashlib
+import json
 import os
+import re
 import sys
 import time
 from datetime import datetime
@@ -126,33 +128,40 @@ def js_focus_chat_input():
 
 
 def calculate_file_hash(file_bytes: bytes) -> str:
-    """ファイルのMD5ハッシュ値を計算して重複チェックに利用"""
+    """ファイルのMD5ハッシュ値を計算"""
     return hashlib.md5(file_bytes).hexdigest()
 
 
-def generate_filename(text_content: str, llm):
-    """ドキュメント冒頭からファイル名を生成"""
+def analyze_document_info(text_content: str, llm):
+    """ドキュメントから「ファイル名」「銀行名」「書類種別」を抽出する"""
     if not text_content:
-        return ""
+        return {"filename": "", "bank_name": "", "doc_type": ""}
+
     prompt = """
-    以下のドキュメント冒頭を読み、ファイル名のみを出力してください。
-    【出力ルール】
-    1. 形式: {金融機関名}_{書類名}
-    2. 挨拶、説明、マークダウン記法は禁止。単語のみ返す。
-    3. 不明な場合は「不明」と回答。
-    【冒頭】{text}
-    """
+    以下のドキュメント冒頭を読み、3つの情報をJSON形式で出力してください。
+    
+    1. filename: {金融機関名}_{書類名}
+    2. bank_name: 金融機関名 (特定できなければ"その他")
+    3. doc_type: 以下のいずれかを選択
+       - "手引き": 手続きガイド、マニュアル、要領
+       - "残高証明": 残高証明書発行依頼書
+       - "相続届": 相続届、解約依頼書、名義変更届
+       - "委任状": 委任状
+       - "その他": 上記以外
+    
+    【ドキュメント冒頭】
+    """ + text_content[:1500]
+
     try:
-        response = llm.invoke(prompt.format(text=text_content[:1500]))
+        response = llm.invoke(prompt)
         content = response.content if hasattr(response, "content") else str(response)
-        cleaned_name = (
-            content.strip().replace("ファイル名:", "").replace("```", "").strip()
-        )
-        if "\n" in cleaned_name:
-            cleaned_name = cleaned_name.split("\n")[-1]
-        return cleaned_name
+
+        match = re.search(r"\{.*\}", content, re.DOTALL)
+        if match:
+            return json.loads(match.group(0))
     except Exception:
-        return ""
+        pass
+    return {"filename": "解析失敗", "bank_name": "その他", "doc_type": "その他"}
 
 
 def extract_text_safe(file_bytes: bytes) -> str:
@@ -171,23 +180,18 @@ def extract_text_safe(file_bytes: bytes) -> str:
     return text
 
 
-def filter_docs_by_bank_name(query: str, docs: list) -> list:
-    """
-    【重要修正】
-    クエリに銀行名が含まれる場合、ファイル名にその銀行名が含まれないドキュメントを除外する。
-    これにより「ゆうちょ」と聞いて「auじぶん」が出るのを防ぐ。
-    """
-    # 簡易的な銀行名キーワード辞書 (必要に応じて拡充可)
-    # キー: クエリに含まれる言葉, 値: ファイル名に必須の言葉
+def filter_docs_by_bank_metadata(query: str, docs: list) -> list:
+    """銀行名キーワードによる検索結果のフィルタリング"""
     bank_keywords = {
         "ゆうちょ": "ゆうちょ",
         "郵貯": "ゆうちょ",
         "じぶん": "じぶん",
+        "au": "じぶん",
         "三菱": "三菱",
-        "UFJ": "UFJ",
+        "UFJ": "三菱",
         "みずほ": "みずほ",
-        "三井住友": "三井住友",
-        "SMBC": "SMBC",
+        "三井": "三井",
+        "SMBC": "三井",
         "りそな": "りそな",
         "横浜": "横浜",
         "千葉": "千葉",
@@ -199,34 +203,25 @@ def filter_docs_by_bank_name(query: str, docs: list) -> list:
             target_key = required_str
             break
 
-    # ターゲット銀行が見つからなければフィルタリングせずそのまま返す
     if not target_key:
         return docs
 
-    # フィルタリング実行
     filtered_docs = []
     for d in docs:
+        bank_meta = d.metadata.get("bank_name", "")
         filename = d.metadata.get("source", "")
-        # ファイル名にターゲット銀行名が含まれているか確認
-        if target_key in filename:
+
+        if target_key in bank_meta or target_key in filename:
             filtered_docs.append(d)
 
-    # もしフィルタリングしすぎて0件になった場合は、
-    # 念のため元のリストを返すが、本来は「該当なし」とすべき
     if not filtered_docs:
-        # ここは運用判断。今回は「間違った銀行を出すくらいなら空リストの方がマシ」として空を返す手もあるが、
-        # いったん元ドキュメントを返して、プロンプトで制御させるアプローチをとる
-        # ただし、今回は「明らかに違う銀行が出る」のを防ぎたいので、空なら空を返す。
         return []
 
     return filtered_docs
 
 
 def run_rag_search(query: str, mode_label: str, llm):
-    """
-    RAG検索実行関数。
-    回答テキストだけでなく、参照したドキュメント情報も返すように拡張。
-    """
+    """RAG検索実行関数"""
     if not llm:
         return "AIモデルの初期化に失敗しました。", []
 
@@ -237,18 +232,13 @@ def run_rag_search(query: str, mode_label: str, llm):
     # 2. 検索
     vector_store = AIFactory.get_vector_store()
     try:
-        # 多めに取得してからフィルタリングする (k=10)
         docs = vector_store.similarity_search(query, k=10)
-
-        # 【修正】銀行名によるフィルタリングを実行
-        docs = filter_docs_by_bank_name(query, docs)
-
-        # コンテキスト用に上位4件に絞る
+        docs = filter_docs_by_bank_metadata(query, docs)
         docs = docs[:4]
 
         if not docs:
             return (
-                "指定された銀行に関連する資料が見つかりませんでした。ファイル名が正しく登録されているか確認してください。",
+                "指定された銀行に関連する資料が見つかりませんでした。メタデータが正しく登録されているか確認してください。",
                 [],
             )
 
@@ -279,7 +269,7 @@ def run_rag_search(query: str, mode_label: str, llm):
 
     try:
         answer = chain.invoke({"context": context, "question": query})
-        return answer, docs  # ドキュメントオブジェクトも返す
+        return answer, docs
     except Exception as e:
         return f"生成エラー: {str(e)}", []
 
@@ -296,13 +286,10 @@ def main():
         if current_user["phone"]:
             st.caption(f"TEL: {current_user['phone']}")
 
-        # ユーザー登録・更新フォーム (電話番号追加)
         with st.expander("ユーザー情報更新"):
             new_name = st.text_input("表示名", value=current_user["name"])
             new_dept = st.text_input("所属", value=current_user["dept"])
-            new_phone = st.text_input(
-                "電話番号", value=current_user["phone"], placeholder="03-xxxx-xxxx"
-            )
+            new_phone = st.text_input("電話番号", value=current_user["phone"])
 
             if st.button("更新"):
                 db_manager.register_user(
@@ -326,13 +313,11 @@ def main():
             st.warning("🛡️ **機密保護**\nオフライン処理。機密書類用。")
 
     # --- メインエリア ---
-    tab1, tab2 = st.tabs(["💬 実務Q&A", "📥 資料学習 (OCR)"])
+    tab1, tab2, tab3 = st.tabs(["💬 実務Q&A", "📥 資料学習 (OCR)", "🗑️ データ管理"])
 
     # --- Tab 1: チャット ---
     with tab1:
         st.subheader(f"金融機関手続検索 ({mode_label})")
-
-        # タブクリック時もフォーカスを当てる
         js_focus_chat_input()
 
         if mode_label == "LOCAL":
@@ -343,30 +328,36 @@ def main():
         if "messages" not in st.session_state:
             st.session_state.messages = []
 
-        # 履歴表示ループ
         for m in st.session_state.messages:
             with st.chat_message(m["role"]):
                 st.write(m["content"])
-                # 参照ファイルがあればダウンロードボタンを表示
                 if m.get("source_docs"):
                     with st.expander("📚 参照した雛形・資料をダウンロード"):
                         seen_paths = set()
                         for doc in m["source_docs"]:
                             path = doc.metadata.get("path")
                             name = doc.metadata.get("source", "不明なファイル")
+                            bank = doc.metadata.get("bank_name", "")
+                            dtype = doc.metadata.get("doc_type", "")
+
+                            label_parts = [f"📥 {name}"]
+                            if bank:
+                                label_parts.append(f"({bank})")
+                            if dtype:
+                                label_parts.append(f"[{dtype}]")
+                            label = " ".join(label_parts)
 
                             if path and os.path.exists(path) and path not in seen_paths:
                                 seen_paths.add(path)
                                 with open(path, "rb") as f:
                                     st.download_button(
-                                        label=f"📥 {name}",
+                                        label=label,
                                         data=f,
                                         file_name=os.path.basename(path),
                                         mime="application/pdf",
                                         key=f"dl_{os.path.basename(path)}_{time.time()}",
                                     )
 
-        # 質問入力
         if prompt := st.chat_input("質問を入力..."):
             st.session_state.messages.append({"role": "user", "content": prompt})
             with st.chat_message("user"):
@@ -377,7 +368,6 @@ def main():
                     response, source_docs = run_rag_search(prompt, mode_label, llm)
                     st.write(response)
 
-                    # 参照ファイルの表示
                     if source_docs:
                         with st.expander(
                             "📚 参照した雛形・資料をダウンロード", expanded=True
@@ -386,6 +376,15 @@ def main():
                             for doc in source_docs:
                                 path = doc.metadata.get("path")
                                 name = doc.metadata.get("source", "不明なファイル")
+                                bank = doc.metadata.get("bank_name", "")
+                                dtype = doc.metadata.get("doc_type", "")
+
+                                label_parts = [f"📥 {name}"]
+                                if bank:
+                                    label_parts.append(f"({bank})")
+                                if dtype:
+                                    label_parts.append(f"[{dtype}]")
+                                label = " ".join(label_parts)
 
                                 if (
                                     path
@@ -395,13 +394,12 @@ def main():
                                     seen_paths.add(path)
                                     with open(path, "rb") as f:
                                         st.download_button(
-                                            label=f"📥 {name}",
+                                            label=label,
                                             data=f,
                                             file_name=os.path.basename(path),
                                             mime="application/pdf",
                                         )
 
-                    # 履歴に保存 (ソース情報含む)
                     st.session_state.messages.append(
                         {
                             "role": "assistant",
@@ -413,7 +411,7 @@ def main():
     # --- Tab 2: アップロード ---
     with tab2:
         st.subheader("📂 雛形・記入例の登録")
-        st.caption("重複チェック機能付き。PDFを解析し登録します。")
+        st.caption("重複チェック・タグ付け機能付き。PDFを解析し登録します。")
 
         s_norm, s_sec = st.tabs(["🟦 一般雛形", "🟥 記入例 (機密)"])
 
@@ -430,24 +428,28 @@ def main():
 
                 for f in files_n:
                     fb = f.read()
-
-                    # === 重複チェック ===
                     f_hash = calculate_file_hash(fb)
                     if db_manager.is_file_registered(f_hash):
-                        st.warning(
-                            f"⚠️ {f.name} は既に登録されています。スキップします。"
-                        )
+                        st.warning(f"⚠️ {f.name} は既に登録されています。")
                         continue
 
                     text = extract_text_safe(fb)
-                    sn = generate_filename(text, llm_cloud) if text else f.name
-                    if not sn or "不明" in sn:
-                        sn = f.name
+                    meta = (
+                        analyze_document_info(text, llm_cloud)
+                        if text
+                        else {
+                            "filename": f.name,
+                            "bank_name": "その他",
+                            "doc_type": "その他",
+                        }
+                    )
 
                     st.session_state.upload_stage.append(
                         {
                             "old": f.name,
-                            "new": sn,
+                            "new": meta.get("filename", f.name),
+                            "bank_name": meta.get("bank_name", "その他"),
+                            "doc_type": meta.get("doc_type", "その他"),
                             "data": fb,
                             "text": text,
                             "type": "general",
@@ -458,7 +460,7 @@ def main():
                 if st.session_state.upload_stage:
                     st.rerun()
                 else:
-                    st.info("新規登録対象のファイルはありませんでした。")
+                    st.info("新規登録対象はありません。")
 
         # 2-B. 機密
         with s_sec:
@@ -469,12 +471,9 @@ def main():
 
             if file_s:
                 fb_s = file_s.read()
-
-                # === 重複チェック ===
                 f_hash = calculate_file_hash(fb_s)
-                is_duplicate = db_manager.is_file_registered(f_hash)
 
-                if is_duplicate:
+                if db_manager.is_file_registered(f_hash):
                     st.error(f"⛔ {file_s.name} は既に登録済みです。")
                 else:
                     if convert_from_bytes:
@@ -498,20 +497,24 @@ def main():
 
                         with st.spinner("解析中..."):
                             text_s = extract_text_safe(fb_s)
-                            sn_s = (
-                                generate_filename(text_s, llm_local)
+                            meta = (
+                                analyze_document_info(text_s, llm_local)
                                 if text_s
-                                else file_s.name
+                                else {
+                                    "filename": file_s.name,
+                                    "bank_name": "その他",
+                                    "doc_type": "その他",
+                                }
                             )
-                            if sn_s and "不明" not in sn_s:
-                                sn_s += "_記入例"
-                            else:
-                                sn_s = file_s.name
+                            if "記入例" not in meta["filename"]:
+                                meta["filename"] += "_記入例"
 
                             st.session_state.upload_stage.append(
                                 {
                                     "old": file_s.name,
-                                    "new": sn_s,
+                                    "new": meta.get("filename", file_s.name),
+                                    "bank_name": meta.get("bank_name", "その他"),
+                                    "doc_type": meta.get("doc_type", "その他"),
                                     "data": fb_s,
                                     "text": text_s,
                                     "type": "secure",
@@ -526,11 +529,35 @@ def main():
             st.subheader("💾 登録確認")
             with st.form("save_form"):
                 configs = []
+                st.caption("登録名、銀行名タグ、書類種別を確認してください。")
+
                 for i, item in enumerate(st.session_state.upload_stage):
-                    c1, c2 = st.columns([1, 2])
-                    c1.text(f"元: {item['old']}")
+                    c1, c2, c3, c4 = st.columns([1, 2, 1, 1])
+                    c1.text(item["old"])
                     new_name = c2.text_input("登録名", value=item["new"], key=f"fn_{i}")
-                    configs.append({**item, "name": new_name})
+                    new_bank = c3.text_input(
+                        "銀行タグ", value=item["bank_name"], key=f"bk_{i}"
+                    )
+
+                    current_type = item.get("doc_type", "その他")
+                    type_options = ["手引き", "残高証明", "相続届", "委任状", "その他"]
+                    idx = (
+                        type_options.index(current_type)
+                        if current_type in type_options
+                        else 4
+                    )
+                    new_type = c4.selectbox(
+                        "種別", type_options, index=idx, key=f"dt_{i}"
+                    )
+
+                    configs.append(
+                        {
+                            **item,
+                            "name": new_name,
+                            "bank_name": new_bank,
+                            "doc_type": new_type,
+                        }
+                    )
 
                 if st.form_submit_button("✅ 登録実行"):
                     vector_store = AIFactory.get_vector_store()
@@ -542,7 +569,6 @@ def main():
 
                     for c in configs:
                         fname = f"{c['name']}_{today}.pdf"
-                        # パス解決
                         save_path = os.path.join(
                             os.path.dirname(
                                 os.path.dirname(
@@ -558,15 +584,19 @@ def main():
                         with open(save_path, "wb") as f:
                             f.write(c["data"])
 
-                        # ハッシュ登録
-                        db_manager.register_file_hash(c["hash"], fname)
+                        db_manager.register_file_hash(c["hash"], fname, c["doc_type"])
 
-                        chunks = splitter.split_text(c["text"])
+                        # 【ここが重要】: メタデータ(ファイル名やタグ)をテキストに埋め込んでからチャンク化
+                        enriched_text = f"【ファイル名】{fname}\n【銀行名】{c['bank_name']}\n【書類種別】{c['doc_type']}\n\n{c['text']}"
+                        chunks = splitter.split_text(enriched_text)
+
                         metadatas = [
                             {
                                 "source": fname,
                                 "path": save_path,
                                 "security_level": c["type"],
+                                "bank_name": c["bank_name"],
+                                "doc_type": c["doc_type"],
                             }
                             for _ in chunks
                         ]
@@ -576,6 +606,44 @@ def main():
 
                     st.success(f"{cnt}件登録しました！")
                     st.session_state.upload_stage = []
+
+    # --- Tab 3: データ管理 ---
+    with tab3:
+        st.subheader("🗑️ 登録済みファイルの管理")
+        files = db_manager.get_all_files()
+
+        if not files:
+            st.info("登録されているファイルはありません。")
+        else:
+            df_files = pd.DataFrame(files)
+            df_files.columns = ["ファイル名", "登録日時", "ハッシュ値", "書類種別"]
+            st.dataframe(
+                df_files[["登録日時", "書類種別", "ファイル名"]],
+                use_container_width=True,
+            )
+
+            st.divider()
+            st.warning("【削除エリア】")
+            selected_file = st.selectbox(
+                "削除するファイルを選択", [f["filename"] for f in files]
+            )
+
+            if st.button("選択したファイルを完全に削除する"):
+                target_path = os.path.join(
+                    os.path.dirname(
+                        os.path.dirname(os.path.dirname(os.path.dirname(__file__)))
+                    ),
+                    "data",
+                    "templates",
+                    selected_file,
+                )
+                if os.path.exists(target_path):
+                    os.remove(target_path)
+
+                db_manager.delete_file_registry(selected_file)
+                st.success(f"{selected_file} を削除しました。再登録してください。")
+                time.sleep(1)
+                st.rerun()
 
 
 if __name__ == "__main__":

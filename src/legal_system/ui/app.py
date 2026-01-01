@@ -1,4 +1,4 @@
-# src/legal_rag_system/ui/app.py
+# src/legal_system/ui/app.py
 
 # ==========================================
 # 1. ライブラリのインポート
@@ -17,7 +17,8 @@ import streamlit as st
 import streamlit.components.v1 as components
 from dotenv import load_dotenv
 
-# プロジェクトルートへのパス解決
+# プロジェクトルート(srcフォルダ)へのパス解決
+# このファイルは src/legal_system/ui/app.py なので、3階層上が src
 sys.path.append(
     os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 )
@@ -34,10 +35,12 @@ try:
 except ImportError:
     convert_from_bytes = None
 
-# 自作モジュール
-from legal_rag_system.core.ai_factory import AIFactory
-from legal_rag_system.core.database import DatabaseManager
-from legal_rag_system.core.ocr_engine import extract_text_from_scanned_pdf
+# 自作モジュール 【ここを修正しました】
+from legal_system.core.ai_factory import AIFactory
+from legal_system.core.database_manager import (
+    DatabaseManager,  # ファイル名を変更している前提
+)
+from legal_system.core.ocr_engine import extract_text_from_scanned_pdf
 
 load_dotenv()
 
@@ -46,6 +49,7 @@ load_dotenv()
 # ==========================================
 st.set_page_config(page_title="行政書士DX System", layout="wide", page_icon="⚖️")
 
+# DBマネージャーの初期化
 db_manager = DatabaseManager()
 current_user = db_manager.get_current_user_info()
 
@@ -55,16 +59,23 @@ current_user = db_manager.get_current_user_info()
 # ==========================================
 def load_company_rules():
     """全社共通の業務ルールを読み込む"""
-    rule_path = os.path.join(
-        os.path.dirname(os.path.dirname(os.path.dirname(os.path.dirname(__file__)))),
-        "data",
-        "rules",
-        "company_rules.txt",
+    # パス修正: data/rules/company_rules.txt
+    # src/legal_system/ui/app.py -> src -> root -> data
+    base_dir = os.path.dirname(
+        os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
     )
+    rule_path = os.path.join(base_dir, "data", "rules", "company_rules.txt")
+
     if os.path.exists(rule_path):
         try:
             with open(rule_path, "r", encoding="utf-8") as f:
                 return f.read()
+        except UnicodeDecodeError:
+            try:
+                with open(rule_path, "r", encoding="cp932") as f:
+                    return f.read()
+            except Exception:
+                return "（読込失敗：文字コード不明）"
         except Exception:
             return "（読込失敗）"
     return "（ファイルなし）"
@@ -72,16 +83,29 @@ def load_company_rules():
 
 def get_bank_specific_info(query: str):
     """銀行固有ルールをCSVから取得"""
-    csv_path = os.path.join(
-        os.path.dirname(os.path.dirname(os.path.dirname(os.path.dirname(__file__)))),
-        "data",
-        "rules",
-        "bank_master.csv",
+    base_dir = os.path.dirname(
+        os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
     )
+    csv_path = os.path.join(base_dir, "data", "rules", "bank_master.csv")
+
     if not os.path.exists(csv_path):
         return ""
+
+    df = None
     try:
-        df = pd.read_csv(csv_path)
+        df = pd.read_csv(csv_path, encoding="utf-8")
+    except UnicodeDecodeError:
+        try:
+            df = pd.read_csv(csv_path, encoding="cp932")
+        except Exception:
+            return ""
+    except Exception:
+        return ""
+
+    if df is None:
+        return ""
+
+    try:
         info_text = ""
         for index, row in df.iterrows():
             bank_name = str(row.get("銀行名", ""))
@@ -317,7 +341,7 @@ def main():
 
     # --- Tab 1: チャット ---
     with tab1:
-        st.subheader(f"金融機関手続検索 ({mode_label})")
+        st.subheader(f"金融機関手続のAI検索 ({mode_label})")
         js_focus_chat_input()
 
         if mode_label == "LOCAL":
@@ -540,7 +564,14 @@ def main():
                     )
 
                     current_type = item.get("doc_type", "その他")
-                    type_options = ["手引き", "残高証明", "相続届", "委任状", "その他"]
+                    type_options = [
+                        "手引き",
+                        "残高証明",
+                        "取引明細",
+                        "顧客勘定元帳",
+                        "相続届",
+                        "その他",
+                    ]
                     idx = (
                         type_options.index(current_type)
                         if current_type in type_options
@@ -567,26 +598,25 @@ def main():
                     cnt = 0
                     today = datetime.now().strftime("%Y%m%d")
 
+                    # テンプレート保存先のディレクトリ (root/data/templates)
+                    base_dir = os.path.dirname(
+                        os.path.dirname(
+                            os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+                        )
+                    )
+                    templates_dir = os.path.join(base_dir, "data", "templates")
+                    os.makedirs(templates_dir, exist_ok=True)
+
                     for c in configs:
                         fname = f"{c['name']}_{today}.pdf"
-                        save_path = os.path.join(
-                            os.path.dirname(
-                                os.path.dirname(
-                                    os.path.dirname(os.path.dirname(__file__))
-                                )
-                            ),
-                            "data",
-                            "templates",
-                            fname,
-                        )
-                        os.makedirs(os.path.dirname(save_path), exist_ok=True)
+                        save_path = os.path.join(templates_dir, fname)
 
                         with open(save_path, "wb") as f:
                             f.write(c["data"])
 
                         db_manager.register_file_hash(c["hash"], fname, c["doc_type"])
 
-                        # 【ここが重要】: メタデータ(ファイル名やタグ)をテキストに埋め込んでからチャンク化
+                        # メタデータ埋め込み
                         enriched_text = f"【ファイル名】{fname}\n【銀行名】{c['bank_name']}\n【書類種別】{c['doc_type']}\n\n{c['text']}"
                         chunks = splitter.split_text(enriched_text)
 
@@ -629,14 +659,14 @@ def main():
             )
 
             if st.button("選択したファイルを完全に削除する"):
-                target_path = os.path.join(
+                # root/data/templates/filename
+                base_dir = os.path.dirname(
                     os.path.dirname(
-                        os.path.dirname(os.path.dirname(os.path.dirname(__file__)))
-                    ),
-                    "data",
-                    "templates",
-                    selected_file,
+                        os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+                    )
                 )
+                target_path = os.path.join(base_dir, "data", "templates", selected_file)
+
                 if os.path.exists(target_path):
                     os.remove(target_path)
 

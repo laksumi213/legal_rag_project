@@ -19,6 +19,7 @@ db/chroma/
 data/templates/*.pdf
 data/uploads/
 data/generated/
+data/zengin
 
 # ※フォントファイル(ipaexg.ttf)などはアプリの動作に必要なので
 #   除外せず、Gitに含めるのが一般的です
@@ -41,3 +42,5 @@ htmlcov/
 # --- OS ---
 .DS_Store
 Thumbs.db
+
+bootstrap.py

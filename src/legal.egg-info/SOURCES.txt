@@ -11,12 +11,14 @@ src/legal_system/main.py
 src/legal_system/core/__init__.py
 src/legal_system/core/ai_factory.py
 src/legal_system/core/config.py
+src/legal_system/core/data_sync.py
 src/legal_system/core/database_manager.py
 src/legal_system/core/ocr_engine.py
 src/legal_system/models/__init__.py
 src/legal_system/models/base.py
 src/legal_system/models/tables.py
 src/legal_system/tools/__init__.py
+src/legal_system/tools/bank_input.py
 src/legal_system/tools/coord_tool.py
 src/legal_system/ui/__init__.py
 src/legal_system/ui/app.py

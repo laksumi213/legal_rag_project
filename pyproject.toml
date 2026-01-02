@@ -24,6 +24,7 @@ dependencies = [
     "numpy<2.0",
     "streamlit-image-coordinates>=0.4.0",
     "reportlab>=4.4.7",
+    "watchdog>=6.0.0",
 ]
 readme = "README.md"
 requires-python = ">= 3.12"
@@ -33,5 +34,5 @@ managed = true
 dev-dependencies = []
 
 [tool.rye.scripts]
-start = "streamlit run src/legal_system/ui/app.py"
+start = "python src/legal_system/main.py"
 pdf = "rye run streamlit run src/legal_system/tools/coord_tool.py"

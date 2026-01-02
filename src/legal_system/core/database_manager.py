@@ -158,7 +158,11 @@ class DatabaseManager:
             session.close()
 
     def register_file_hash(
-        self, file_hash: str, filename: str, doc_type: str = "その他"
+        self,
+        file_hash: str,
+        filename: str,
+        doc_type: str = "その他",
+        case_id: int = None,
     ):
         """ファイルの登録情報を保存・更新"""
         session = self._get_session()
@@ -169,12 +173,15 @@ class DatabaseManager:
             if file_reg:
                 file_reg.filename = filename
                 file_reg.doc_type = doc_type
+                if case_id is not None:
+                    file_reg.case_id = case_id
                 file_reg.registered_at = datetime.now()
             else:
                 file_reg = FileRegistry(
                     file_hash=file_hash,
                     filename=filename,
                     doc_type=doc_type,
+                    case_id=case_id,
                     registered_at=datetime.now(),
                 )
                 session.add(file_reg)
@@ -186,25 +193,34 @@ class DatabaseManager:
             session.close()
 
     def get_all_files(self) -> List[Dict[str, str]]:
-        """登録済みファイル一覧を取得"""
+        """登録済みファイル一覧を取得 (案件情報も含める)"""
         session = self._get_session()
         try:
-            files = (
-                session.query(FileRegistry)
+            # 循環参照回避のためメソッド内でインポート
+            from legal_system.models.tables import Case, FileRegistry
+
+            results = (
+                session.query(FileRegistry, Case)
+                .outerjoin(Case, FileRegistry.case_id == Case.case_id)
                 .order_by(desc(FileRegistry.registered_at))
                 .all()
             )
-            return [
-                {
-                    "filename": f.filename,
-                    "date": f.registered_at.strftime("%Y-%m-%d %H:%M:%S")
-                    if f.registered_at
-                    else "",
-                    "hash": f.file_hash,
-                    "type": f.doc_type if f.doc_type else "その他",
-                }
-                for f in files
-            ]
+
+            output = []
+            for f, c in results:
+                case_label = f"{c.case_number}" if c else "（共通雛形）"
+                output.append(
+                    {
+                        "filename": f.filename,
+                        "date": f.registered_at.strftime("%Y-%m-%d %H:%M:%S")
+                        if f.registered_at
+                        else "",
+                        "hash": f.file_hash,
+                        "type": f.doc_type if f.doc_type else "その他",
+                        "case": case_label,  # 表示用に案件番号を追加
+                    }
+                )
+            return output
         finally:
             session.close()
 
@@ -221,7 +237,7 @@ class DatabaseManager:
             session.close()
 
     # ==========================================
-    # 座標管理機能 (Coordinate) 【修正済み】
+    # 座標管理機能 (Coordinate)
     # ==========================================
     def register_coordinate(
         self,

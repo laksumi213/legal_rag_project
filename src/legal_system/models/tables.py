@@ -1,4 +1,4 @@
-# ファイル名: src/models/tables.py
+# ファイル名: src/legal_system/models/tables.py
 
 from datetime import datetime
 
@@ -19,7 +19,6 @@ from sqlalchemy.orm import declarative_base, relationship
 # ==========================================
 # 0. データベース基盤設定 (Base Definition)
 # ==========================================
-# 外部ファイル(src/models/database.py)がない場合でも動作するようにここで定義します
 Base = declarative_base()
 
 # ==========================================
@@ -197,6 +196,9 @@ class FileRegistry(Base):
     # 銀行マスタと紐付けることで、銀行ごとの書類検索を高速化
     bank_id = Column(Integer, ForeignKey("bank_master.id"), nullable=True)
 
+    # 【追加】案件(Case)との紐付け (NULL許容 = 共通テンプレート)
+    case_id = Column(Integer, ForeignKey("cases.case_id"), nullable=True)
+
     doc_type = Column(String, default="その他")  # 手引き, 委任状, 残高証明...
     registered_at = Column(DateTime, default=datetime.now)
     security_level = Column(String, default="general")  # general / secure
@@ -208,6 +210,9 @@ class FileRegistry(Base):
     registered_by = Column(Integer, ForeignKey("users.id"), nullable=True)
 
     bank_ref = relationship("BankMaster", back_populates="rag_files")
+
+    # 【追加】案件リレーション
+    case_ref = relationship("Case")
     registrar = relationship("User")
 
 

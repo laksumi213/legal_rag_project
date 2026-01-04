@@ -1,4 +1,4 @@
-# ファイルパス: src/legal_system/ui/Home.py
+# src/legal_system/ui/Home.py
 
 import hashlib
 import json
@@ -53,7 +53,9 @@ load_dotenv()
 # ==========================================
 # 2. アプリケーションの初期設定
 # ==========================================
-st.set_page_config(page_title="書士業務システム | ホーム", layout="wide", page_icon="⚖️")
+st.set_page_config(
+    page_title="遺言・遺産整理業務システム | ホーム", layout="wide", page_icon="⚖️"
+)
 
 # DBマネージャーの初期化
 db_manager = DatabaseManager()
@@ -63,7 +65,7 @@ current_user = db_manager.get_current_user_info()
 # ==========================================
 # 更新チェック機能 (キャッシュ化)
 # ==========================================
-@st.cache_resource(ttl=3600)  # 1時間は再チェックしない
+@st.cache_resource(ttl=60)
 def check_update_status():
     """
     更新があるかチェックする関数
@@ -72,6 +74,11 @@ def check_update_status():
     """
     if not get_remote_last_commit_date:
         return 2, "更新スクリプトなし"
+
+    # データファイルが物理的に存在するかチェック
+    banks_path = os.path.join(ROOT_DIR, "data", "zengin", "banks.json")
+    if not os.path.exists(banks_path):
+        return 1, "データ未取得 (ファイルなし)"
 
     # 1. リモート確認 (タイムアウト付きで安全に)
     remote_date = get_remote_last_commit_date()
@@ -347,20 +354,20 @@ def main():
         # ▼▼▼ 自動更新チェック機能 (UIプログレス対応版) ▼▼▼
         st.subheader("🔄 マスタデータ管理")
 
-        # 起動時に一瞬だけチェック
+        # 起動時にチェック
         status, info = check_update_status()
 
         if status == 1:
-            st.warning(f"⚠️ 新しい銀行データがあります\n({info[:10]})")
+            st.warning(f"⚠️ {info}")  # メッセージを表示
 
             if st.button("今すぐ更新して取り込む"):
                 # --- Streamlitのプログレスバーを定義 ---
                 progress_text = "データをダウンロード中..."
                 my_bar = st.progress(0, text=progress_text)
 
-                # --- コールバック関数: ダウンロード処理から呼び出される ---
+                # --- コールバック関数 ---
                 def update_progress(current, total, message):
-                    percent = current / total
+                    percent = current / total if total > 0 else 0
                     if percent > 1.0:
                         percent = 1.0
                     my_bar.progress(percent, text=f"{message} ({current}/{total})")
@@ -370,7 +377,12 @@ def main():
 
                 if success:
                     my_bar.progress(1.0, text="完了しました！")
-                    save_local_state(info)
+                    # 現在の日付を保存
+                    if get_remote_last_commit_date:
+                        remote_date = (
+                            get_remote_last_commit_date() or datetime.now().isoformat()
+                        )
+                        save_local_state(remote_date)
                     st.success("更新完了！アプリをリロードします。")
                     time.sleep(2)
                     st.rerun()
@@ -378,6 +390,29 @@ def main():
                     st.error("更新に失敗しました。ネット接続を確認してください。")
         elif status == 0:
             st.caption(f"✅ {info}")
+            # 強制更新ボタン（念のため）
+            if st.button("強制再取得"):
+                # --- Streamlitのプログレスバーを定義 ---
+                progress_text = "データを強制ダウンロード中..."
+                my_bar = st.progress(0, text=progress_text)
+
+                def update_progress(current, total, message):
+                    percent = current / total if total > 0 else 0
+                    if percent > 1.0:
+                        percent = 1.0
+                    my_bar.progress(percent, text=f"{message} ({current}/{total})")
+
+                success, _ = download_data(progress_callback=update_progress)
+                if success:
+                    my_bar.progress(1.0, text="完了")
+                    if get_remote_last_commit_date:
+                        remote_date = (
+                            get_remote_last_commit_date() or datetime.now().isoformat()
+                        )
+                        save_local_state(remote_date)
+                    st.success("完了。リロードします。")
+                    time.sleep(1)
+                    st.rerun()
         else:
             st.caption("⚠️ 更新機能無効")
         # ▲▲▲ ここまで ▲▲▲
@@ -734,10 +769,64 @@ def main():
                             for _ in chunks
                         ]
 
-                        vector_store.add_texts(chunks, metadatas=metadatas)
+                        # ★修正: バッチ処理とリトライロジックを追加
+                        # 無料枠(API Rate Limit)の制限対策
+                        batch_size = 5
+                        total_chunks = len(chunks)
+
+                        progress_text = f"AI学習中: {fname} ({total_chunks} chunks)"
+                        my_bar = st.progress(0, text=progress_text)
+
+                        for i in range(0, total_chunks, batch_size):
+                            batch_chunks = chunks[i : i + batch_size]
+                            batch_metas = metadatas[i : i + batch_size]
+
+                            retry_count = 0
+                            max_retries = 3
+
+                            while retry_count <= max_retries:
+                                try:
+                                    vector_store.add_texts(
+                                        batch_chunks, metadatas=batch_metas
+                                    )
+                                    break  # 成功したらループを抜ける
+                                except Exception as e:
+                                    # 429 エラー (Resource Exhausted) の場合のみリトライ
+                                    error_str = str(e)
+                                    if (
+                                        "429" in error_str
+                                        or "RESOURCE_EXHAUSTED" in error_str
+                                    ):
+                                        retry_count += 1
+                                        if retry_count > max_retries:
+                                            st.error(
+                                                f"API制限により中断しました: {fname}"
+                                            )
+                                            raise e
+
+                                        # API制限待ち (15秒待機)
+                                        wait_time = 15 * retry_count
+                                        my_bar.progress(
+                                            min(i / total_chunks, 1.0),
+                                            text=f"API制限待ち... {wait_time}秒待機中 ({retry_count}/{max_retries})",
+                                        )
+                                        time.sleep(wait_time)
+                                    else:
+                                        # その他のエラーは即座に停止
+                                        raise e
+
+                            # 正常終了後の休憩 (連打防止)
+                            time.sleep(1.5)
+                            current_progress = min((i + batch_size) / total_chunks, 1.0)
+                            my_bar.progress(
+                                current_progress,
+                                text=f"学習進行中... {int(current_progress * 100)}%",
+                            )
+
+                        my_bar.empty()
                         cnt += 1
 
-                    st.success(f"{cnt}件登録しました！")
+                    st.success(f"{cnt}件の学習・登録が完了しました！")
                     st.session_state.upload_stage = []
 
     # --- Tab 3: データ管理 ---
@@ -756,6 +845,8 @@ def main():
                 "ハッシュ値",
                 "書類種別",
                 "案件",
+                "doc_type_raw",  # 隠しカラム (キー用)
+                "uploaded_at_raw",  # 隠しカラム (ソート用)
             ]
             st.dataframe(
                 df_files[["登録日時", "案件", "書類種別", "ファイル名"]],

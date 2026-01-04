@@ -5,10 +5,14 @@ import sys
 import streamlit as st
 
 # --- パス解決 ---
+# このファイルの場所: src/legal_system/ui/pages/99_預貯金口座入力フォーム.py
+# ROOT_DIR: プロジェクトルート
 CURRENT_DIR = os.path.dirname(os.path.abspath(__file__))
-SRC_DIR = os.path.dirname(os.path.dirname(os.path.dirname(CURRENT_DIR)))
-ROOT_DIR = os.path.dirname(SRC_DIR)
-sys.path.append(SRC_DIR)
+# pages -> ui -> legal_system -> src -> ROOT
+ROOT_DIR = os.path.dirname(
+    os.path.dirname(os.path.dirname(os.path.dirname(CURRENT_DIR)))
+)
+sys.path.append(ROOT_DIR)
 
 from legal_system.core.database_manager import DatabaseManager
 from legal_system.models.tables import (
@@ -23,20 +27,26 @@ from legal_system.models.tables import (
 DATA_DIR = os.path.join(ROOT_DIR, "data", "zengin")
 
 
-@st.cache_data
+# ★修正: キャッシュ(st.cache_data)を削除しました。
+# JSONの読み込みは十分に高速であり、ファイル更新を即座に反映させるためです。
 def get_bank_master():
     """ローカルのJSONファイルから銀行マスタ(Zengin)を読み込む"""
     json_path = os.path.join(DATA_DIR, "banks.json")
+
+    # デバッグ用: パスが合っているか確認したい場合は以下のコメントを外す
+    # print(f"Looking for banks at: {json_path}")
+
     if not os.path.exists(json_path):
         return {}
     try:
         with open(json_path, "r", encoding="utf-8") as f:
             return json.load(f)
-    except:
+    except Exception as e:
+        print(f"Error loading banks.json: {e}")
         return {}
 
 
-@st.cache_data
+# ★修正: こちらもキャッシュを削除、またはTTLを設定
 def get_branch_master(bank_code):
     """ローカルのJSONファイルから支店マスタを読み込む"""
     json_path = os.path.join(DATA_DIR, "branches", f"{bank_code}.json")
@@ -94,13 +104,22 @@ def main():
 
     # 1. 銀行選択
     banks = get_bank_master()
+
     if not banks:
         st.error(
             "⚠️ 銀行データ(Zengin)が見つかりません。Home画面の「更新」ボタンを押してください。"
         )
+        # デバッグ用にパスを表示
+        st.caption(f"参照パス: {os.path.join(DATA_DIR, 'banks.json')}")
         return
 
-    bank_list = [f"{v['name']} ({k})" for k, v in banks.items()]
+    # 銀行リスト作成 (辞書型かリスト型かで処理を分ける)
+    if isinstance(banks, dict):
+        bank_list = [f"{v['name']} ({k})" for k, v in banks.items()]
+    else:
+        # 想定外のフォーマットの場合のガード
+        bank_list = []
+
     selected_bank_str = st.selectbox(
         "銀行名", options=[""] + bank_list, placeholder="銀行名を入力または選択..."
     )
@@ -111,16 +130,22 @@ def main():
     bank_name = ""
 
     if selected_bank_str:
-        bank_code = selected_bank_str.split("(")[1].replace(")", "")
-        bank_name = selected_bank_str.split(" (")[0]
+        # 文字列 "三菱UFJ銀行 (0005)" からコードと名前を抽出
+        try:
+            # 右側の括弧内のコードを取得
+            bank_code = selected_bank_str.split("(")[-1].replace(")", "")
+            # コード部分を除いた名前を取得
+            bank_name = selected_bank_str.replace(f"({bank_code})", "").strip()
 
-        branches = get_branch_master(bank_code)
-        if branches:
-            branch_list = [f"{v['name']} ({k})" for k, v in branches.items()]
-            selected_branch_str = st.selectbox("支店名", options=[""] + branch_list)
-        else:
-            st.warning("支店データがありません（手入力してください）")
-            selected_branch_str = st.text_input("支店名 (手入力)")
+            branches = get_branch_master(bank_code)
+            if branches:
+                branch_list = [f"{v['name']} ({k})" for k, v in branches.items()]
+                selected_branch_str = st.selectbox("支店名", options=[""] + branch_list)
+            else:
+                st.warning("支店データがありません（手入力してください）")
+                selected_branch_str = st.text_input("支店名 (手入力)")
+        except Exception:
+            st.error("銀行名のパースに失敗しました")
 
     # 3. 口座詳細入力
     c1, c2 = st.columns(2)
@@ -129,8 +154,7 @@ def main():
 
     holder_name = st.text_input("口座名義人 (カタカナ)", placeholder="ヤマダ タロウ")
 
-    # G番号（どの案件か）
-    # 本来はDBから案件リストを取得して選択させるべきですが、簡易的にテキスト入力または固定
+    # 案件番号入力
     case_number = st.text_input(
         "案件番号 (G番号)", value="G0001", help="既存の案件番号を入力してください"
     )
@@ -145,10 +169,16 @@ def main():
         # 支店情報のパース
         branch_name = ""
         branch_code = "000"
+
         if selected_branch_str:
             if "(" in selected_branch_str and ")" in selected_branch_str:
-                branch_name = selected_branch_str.split(" (")[0]
-                branch_code = selected_branch_str.split("(")[1].replace(")", "")
+                try:
+                    branch_code = selected_branch_str.split("(")[-1].replace(")", "")
+                    branch_name = selected_branch_str.replace(
+                        f"({branch_code})", ""
+                    ).strip()
+                except:
+                    branch_name = selected_branch_str
             else:
                 branch_name = selected_branch_str
 
@@ -159,7 +189,7 @@ def main():
             # 1. 案件の確保
             case = session.query(Case).filter_by(case_number=case_number).first()
             if not case:
-                # 案件がない場合は簡易作成（本来はエラーにすべき）
+                # 案件がない場合は簡易作成
                 case = Case(case_number=case_number, client_name=f"案件{case_number}")
                 session.add(case)
                 session.flush()
@@ -182,6 +212,7 @@ def main():
             session.commit()
 
             st.success(f"✅ {bank_name} {branch_name} の口座情報を登録しました！")
+            # 完了後、セッションを閉じる
             session.close()
 
         except Exception as e:

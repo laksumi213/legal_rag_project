@@ -34,5 +34,6 @@ managed = true
 dev-dependencies = []
 
 [tool.rye.scripts]
-start = "python src/legal_system/main.py"
+start = "rye run python src/legal_system/main.py"
 pdf = "rye run streamlit run src/legal_system/tools/coord_tool.py"
+exp = "rye run python export_code.py"

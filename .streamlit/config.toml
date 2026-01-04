@@ -1,0 +1,18 @@
+[theme]
+# ベースとなるテーマ（"light" または "dark"）
+base = "light"
+
+# メインのアクセントカラー（ボタンなど）
+primaryColor = "#d33682"
+
+# 背景色
+backgroundColor = "#ffffff"
+
+# サイドバーなどの背景色
+secondaryBackgroundColor = "#f0f2f6"
+
+# 文字色
+textColor = "#262730"
+
+# フォント
+font = "sans serif"

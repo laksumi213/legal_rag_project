@@ -4,9 +4,9 @@ __pycache__/
 .venv/
 .rye/
 
-# --- 環境変数 (パスワード等) ---
-# ※これは絶対にGitにあげてはいけません
+# --- 環境変数 & 機密情報 (絶対にGitにあげない) ---
 .env
+.streamlit/secrets.toml
 
 # --- データベース & ログ ---
 # 監査ログやベクターDBはローカルで生成されるため除外
@@ -14,10 +14,33 @@ db/sql/*.db
 db/chroma/
 *.log
 
-# --- 生成されたファイル ---
-# アップロードされたPDFや生成された雛形
+# --- 生成されたファイル・アップロードデータ ---
+# テンプレートPDFやアップロードされた一時ファイル
 data/templates/*.pdf
+data/uploads/
+data/generated/
+data/zengin
+
+# ※フォントファイル(ipaexg.ttf)などはアプリの動作に必要なので
+#   除外せず、Gitに含めるのが一般的です
+
+# --- AI Context / Repomix ---
+# ソースコードをまとめたファイルは除外
+repomix-output.*
+all_code_context.txt
+
+# --- IDE / エディタ ---
+.vscode/
+.idea/
+
+# --- Python Testing / Caching ---
+.pytest_cache/
+.mypy_cache/
+htmlcov/
+.coverage
 
 # --- OS ---
 .DS_Store
 Thumbs.db
+
+bootstrap.py

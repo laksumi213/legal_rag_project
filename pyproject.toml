@@ -22,6 +22,9 @@ dependencies = [
     "openpyxl>=3.1.2",
     "sentence-transformers>=5.2.0",
     "numpy<2.0",
+    "streamlit-image-coordinates>=0.4.0",
+    "reportlab>=4.4.7",
+    "watchdog>=6.0.0",
 ]
 readme = "README.md"
 requires-python = ">= 3.12"
@@ -31,4 +34,6 @@ managed = true
 dev-dependencies = []
 
 [tool.rye.scripts]
-start = { cmd = "python src/legal_rag_system/main.py" }
+start = "rye run python src/legal_system/main.py"
+pdf = "rye run streamlit run src/legal_system/tools/coord_tool.py"
+exp = "rye run python export_code.py"

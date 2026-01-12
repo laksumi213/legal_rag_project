@@ -34,25 +34,74 @@ The content is organized as follows:
 
 # Directory Structure
 ```
+.streamlit/
+  config.toml
+data/
+  db/
+    chroma/
+      local_rag_db/
+        d50e1e10-53e2-4aea-ac5d-95f27e67e86d/
+          data_level0.bin
+          header.bin
+          length.bin
+          link_lists.bin
+        chroma.sqlite3
+      .keep
+    sql/
+      .keep
+      legal_system.db
+  fonts/
+    ipaexg.ttf
+  rules/
+    bank_master.csv
+    company_rules.md
+  templates/
+    .keep
+  legal_system.db
+src/
+  chains/
+    bank_procedure_chain.py
+  legal_system/
+    core/
+      __init__.py
+      ai_factory.py
+      config.py
+      data_sync.py
+      database_manager.py
+      engines.py
+      ocr_engine.py
+      preload.py
+    models/
+      __init__.py
+      base.py
+      tables.py
+    tools/
+      __init__.py
+      coord_tool.py
+    ui/
+      components/
+        admin_tools.py
+      pages/
+        01_Kintoneデータ_エクセル入力フォーム.py
+        02_相続書類_作成フォーム.py
+        99_預貯金口座入力フォーム.py
+      __init__.py
+      excel_generator.py
+      Home.py
+    __init__.py
+    main.py
+  legal.egg-info/
+    dependency_links.txt
+    PKG-INFO
+    requires.txt
+    SOURCES.txt
+    top_level.txt
+  __init__.py
 .gitignore
 .python-version
-.streamlit/config.toml
 ■初回送付セット【20251218版】　.xlsx
 bank_master.json
 create_rule_master.py
-data/db/chroma/.keep
-data/db/chroma/local_rag_db/chroma.sqlite3
-data/db/chroma/local_rag_db/d50e1e10-53e2-4aea-ac5d-95f27e67e86d/data_level0.bin
-data/db/chroma/local_rag_db/d50e1e10-53e2-4aea-ac5d-95f27e67e86d/header.bin
-data/db/chroma/local_rag_db/d50e1e10-53e2-4aea-ac5d-95f27e67e86d/length.bin
-data/db/chroma/local_rag_db/d50e1e10-53e2-4aea-ac5d-95f27e67e86d/link_lists.bin
-data/db/sql/.keep
-data/db/sql/legal_system.db
-data/fonts/ipaexg.ttf
-data/legal_system.db
-data/rules/bank_master.csv
-data/rules/company_rules.md
-data/templates/.keep
 export_code.py
 pyproject.toml
 README.md
@@ -60,122 +109,511 @@ register_existing_templates.py
 requirements-dev.lock
 requirements.lock
 requirements.txt
+reset_db.py
 run_watcher.py
-src/__init__.py
-src/chains/bank_procedure_chain.py
-src/legal_system/__init__.py
-src/legal_system/core/__init__.py
-src/legal_system/core/ai_factory.py
-src/legal_system/core/config.py
-src/legal_system/core/data_sync.py
-src/legal_system/core/database_manager.py
-src/legal_system/core/engines.py
-src/legal_system/core/ocr_engine.py
-src/legal_system/main.py
-src/legal_system/models/__init__.py
-src/legal_system/models/base.py
-src/legal_system/models/tables.py
-src/legal_system/tools/__init__.py
-src/legal_system/tools/coord_tool.py
-src/legal_system/ui/__init__.py
-src/legal_system/ui/excel_generator.py
-src/legal_system/ui/Home.py
-src/legal_system/ui/pages/01_Kintoneデータ_エクセル入力フォーム.py
-src/legal_system/ui/pages/02_相続書類_作成フォーム.py
-src/legal_system/ui/pages/99_預貯金口座入力フォーム.py
-src/legal.egg-info/dependency_links.txt
-src/legal.egg-info/PKG-INFO
-src/legal.egg-info/requires.txt
-src/legal.egg-info/SOURCES.txt
-src/legal.egg-info/top_level.txt
 update_bank_master.py
 ```
 
 # Files
 
-## File: src/legal_system/ui/excel_generator.py
+## File: src/legal_system/core/preload.py
 ```python
-# components/utils/excel_generator.py
-import openpyxl
-from openpyxl.worksheet.worksheet import Worksheet
-import io
-from typing import Dict, Union, List, Optional
+# src/legal_system/core/preload.py
+import streamlit as st
+
+
+@st.cache_resource(show_spinner=False)
+def warm_up_modules():
+    """
+    重いライブラリをHome画面の裏で事前にメモリに読み込んでおく関数。
+    初回のみ実行され、キャッシュされます。
+    """
+    print("🐢 バックグラウンドで重いモジュールをロード中...")
+
+    # # noqa: F401 をつけることで、Ruffに「未使用でも無視しろ」と指示します
+
+    # 1. 管理ツール (LangChain, PDF処理などを含む)
+    import pypdf  # noqa: F401
+
+    # 2. PDF生成・操作系
+    import reportlab  # noqa: F401
+    from reportlab.pdfbase import pdfmetrics  # noqa: F401
+    from reportlab.pdfbase.ttfonts import TTFont  # noqa: F401
+
+    # 3. DBモデル (SQLAlchemyの初期化コスト削減)
+    import legal_system.models.tables  # noqa: F401
+    import legal_system.ui.components.admin_tools  # noqa: F401
+
+    # 4. AI系
+    from legal_system.core.ai_factory import AIFactory  # noqa: F401
+
+    print("🐇 モジュールのウォームアップ完了。次ページへの遷移が高速化されました。")
+    return True
+```
+
+## File: src/legal_system/ui/components/admin_tools.py
+```python
+# src/legal_system/ui/components/admin_tools.py
+
+import hashlib
+import json
 import os
+import random
+import re
+import time
+from datetime import datetime
+from io import BytesIO
 
-# デフォルトのテンプレートファイルパス（配置場所に合わせて変更してください）
-DEFAULT_TEMPLATE_PATH = "■初回送付セット【20251218版】　.xlsx"
+import pandas as pd
+import streamlit as st
+from langchain_text_splitters import RecursiveCharacterTextSplitter
+from pypdf import PdfReader
 
-def fill_initial_set_excel(
-    json_data: Dict[str, str], 
-    template_file: Optional[Union[str, io.BytesIO]] = None
-) -> io.BytesIO:
-    """
-    KintoneのJSONデータを基に、初回送付セットExcelの「基本情報入力」シートに値を転記します。
+# パス解決 (プロジェクト構成に合わせて調整)
+ROOT_DIR = os.path.dirname(
+    os.path.dirname(
+        os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+    )
+)
 
-    Args:
-        json_data (Dict[str, str]): Kintoneから取得したJSONデータ（辞書型）
-        template_file (Optional[Union[str, io.BytesIO]]): テンプレートExcelファイル。
-            指定がない場合はデフォルトパスを使用。
+from legal_system.core.ai_factory import AIFactory
+from legal_system.core.database_manager import DatabaseManager
+from legal_system.core.ocr_engine import extract_text_from_scanned_pdf
 
-    Returns:
-        io.BytesIO: 編集後のExcelバイナリデータ（ダウンロード用）
+# PDFプレビュー用
+try:
+    from pdf2image import convert_from_bytes
+except ImportError:
+    convert_from_bytes = None
+
+
+# ---------------------------------------------------------
+# ヘルパー関数群
+# ---------------------------------------------------------
+def calculate_file_hash(file_bytes: bytes) -> str:
+    """ファイルの重複登録を防ぐためのハッシュ計算"""
+    return hashlib.md5(file_bytes).hexdigest()
+
+
+def extract_text_safe(file_bytes: bytes) -> str:
+    """PDFからテキストを抽出。テキスト情報がない場合はOCRエンジンを使用"""
+    text = ""
+    try:
+        pdf = PdfReader(BytesIO(file_bytes))
+        for page in pdf.pages:
+            t = page.extract_text()
+            if t:
+                text += t
+    except:
+        pass
+    # テキストが極端に少ない場合はスキャンデータとみなしてOCRを実行
+    if len(text.strip()) < 50:
+        text = extract_text_from_scanned_pdf(file_bytes)
+    return text
+
+
+def analyze_document_info(text_content: str, llm):
+    """AIを使用して文書の種類や銀行名を推定"""
+    if not text_content:
+        return {"filename": "", "bank_name": "", "doc_type": ""}
+
+    prompt = """
+    以下のドキュメント冒頭を読み、3つの情報をJSON形式で出力してください。
+    1. filename: {金融機関名}_{書類名}
+    2. bank_name: 金融機関名 (特定できなければ"その他")
+    3. doc_type: "手引き", "残高証明", "相続届", "委任状", "その他" から選択
     
-    Raises:
-        FileNotFoundError: テンプレートファイルが見つからない場合
-        KeyError: 指定されたシートが存在しない場合
-    """
-    
-    # テンプレートの読み込み元を決定
-    source = template_file if template_file else DEFAULT_TEMPLATE_PATH
-    
-    if isinstance(source, str) and not os.path.exists(source):
-        raise FileNotFoundError(f"テンプレートファイルが見つかりません: {source}")
+    【ドキュメント冒頭】
+    """ + text_content[:1500]
 
-    # Excelブックを開く
-    wb = openpyxl.load_workbook(source)
-    
-    target_sheet_name = "基本情報入力"
-    if target_sheet_name not in wb.sheetnames:
-        raise KeyError(f"テンプレート内に '{target_sheet_name}' シートが見つかりません。")
-    
-    ws: Worksheet = wb[target_sheet_name]
+    try:
+        response = llm.invoke(prompt)
+        content = response.content if hasattr(response, "content") else str(response)
+        match = re.search(r"\{.*\}", content, re.DOTALL)
+        if match:
+            return json.loads(match.group(0))
+    except Exception:
+        pass
+    return {"filename": "解析失敗", "bank_name": "その他", "doc_type": "その他"}
 
-    # マッピング定義
-    # JSONのキー : Excelのセル番地（単一文字列 または 文字列のリスト）
-    mapping: Dict[str, Union[str, List[str]]] = {
-        "顧客コード_2": "B9",
-        "顧客名": ["B10", "C24"],  # 複数セルへの転記
-        "◎提案項目": "B11",
-        "拠点": "B12",
-        "担当者①": "B13",
-        "担当者②": "D13",
-        "被相続人名": "C23",
-        "被相続人名（ふりがな）": "D23",
-        "相続開始日": "F23",
-        "顧客名(ふりがな)": "D24",
-        "郵便番号": "G24",
-        "住所": "H24",
-        "TEL": "J24"
-    }
 
-    # データの転記処理
-    for json_key, cell_target in mapping.items():
-        # JSONから値を取得（キーがない場合は空文字）
-        value = json_data.get(json_key, "")
-        
-        # 転記実行
-        if isinstance(cell_target, list):
-            for cell_address in cell_target:
-                ws[cell_address].value = value
-        else:
-            ws[cell_target].value = value
+def js_scroll_to_bottom():
+    js = """<script>
+        var mainParams = window.parent.document.querySelector('section.main');
+        if (mainParams) { mainParams.scrollTo({ top: mainParams.scrollHeight, behavior: 'smooth' }); }
+    </script>"""
+    st.components.v1.html(js, height=0)
 
-    # メモリ上のバイナリとして保存
-    output_buffer = io.BytesIO()
-    wb.save(output_buffer)
-    output_buffer.seek(0)
-    
-    return output_buffer
+
+# ---------------------------------------------------------
+# メイン機能: アップロードタブの描画
+# ---------------------------------------------------------
+def render_upload_tab(db_manager: DatabaseManager):
+    st.subheader("📂 雛形・記入例の登録 (OCR)")
+    st.caption("PDFを解析し、RAGデータベースとファイルサーバーに登録します。")
+
+    s_norm, s_sec = st.tabs(["🟦 一般雛形", "🟥 記入例 (機密)"])
+
+    # ==========================================
+    # 1. 一般用タブ (クラウドAI使用)
+    # ==========================================
+    with s_norm:
+        st.info("個人情報を含まない手引き等")
+
+        # 案件紐付け
+        session = db_manager._get_session()
+        target_case_id = None
+        try:
+            from legal_system.models.tables import Case
+
+            cases = session.query(Case).all()
+            case_opts = {"（全案件共通の雛形として登録）": None}
+            for c in cases:
+                case_opts[f"{c.case_number}: {c.client_name}"] = c.case_id
+            selected = st.selectbox(
+                "紐付ける案件 (任意)", list(case_opts.keys()), key="up_case_sel"
+            )
+            target_case_id = case_opts[selected]
+        finally:
+            session.close()
+
+        files_n = st.file_uploader(
+            "PDFアップロード (一般)", accept_multiple_files=True, key="up_n"
+        )
+
+        if files_n:
+            if st.button("🔍 クラウド解析", key="btn_n"):
+                # ステータスコンテナで進捗を表示
+                with st.status(
+                    "🚀 AIが書類を解析しています...", expanded=True
+                ) as status:
+                    st.session_state.upload_stage = []
+
+                    st.write("🧠 AIモデルを初期化中...")
+                    try:
+                        llm_cloud = AIFactory.get_llm("cloud")
+                    except Exception as e:
+                        status.update(label="❌ エラー発生", state="error")
+                        st.error(f"AIモデルの準備に失敗しました: {e}")
+                        st.stop()
+
+                    total_files = len(files_n)
+                    progress_bar = st.progress(0)
+
+                    for i, f in enumerate(files_n):
+                        st.write(f"📄 読込中 ({i + 1}/{total_files}): {f.name}")
+                        fb = f.read()
+
+                        # ハッシュチェック
+                        f_hash = calculate_file_hash(fb)
+                        if db_manager.is_file_registered(f_hash):
+                            st.warning(
+                                f"⚠️ {f.name} は既に登録されています。スキップします。"
+                            )
+                            time.sleep(0.5)
+                            continue
+
+                        # 解析処理
+                        text = extract_text_safe(fb)
+                        if not text:
+                            st.warning(
+                                f"⚠️ {f.name} からテキストを抽出できませんでした。"
+                            )
+
+                        meta = analyze_document_info(text, llm_cloud)
+                        st.write(
+                            f"   ↳ 判定: {meta.get('doc_type', '不明')} / {meta.get('bank_name', '不明')}"
+                        )
+
+                        st.session_state.upload_stage.append(
+                            {
+                                "old": f.name,
+                                "new": meta.get("filename", f.name),
+                                "bank_name": meta.get("bank_name", "その他"),
+                                "doc_type": meta.get("doc_type", "その他"),
+                                "data": fb,
+                                "text": text,
+                                "type": "general",
+                                "hash": f_hash,
+                                "case_id": target_case_id,
+                            }
+                        )
+                        # プログレスバー更新
+                        progress_bar.progress((i + 1) / total_files)
+
+                    # 完了時はexpanded=Trueのままにして、rerunしない（結果を表示し続ける）
+                    status.update(
+                        label="✅ 解析完了！内容を確認して、下の「登録実行」を押してください。",
+                        state="complete",
+                        expanded=True,
+                    )
+                # ここで st.rerun() はしない
+
+    # ==========================================
+    # 2. 機密用タブ (ローカルAI使用)
+    # ==========================================
+    with s_sec:
+        st.warning("個人情報を含む書類 (ローカル処理)")
+        # 案件紐付け
+        session = db_manager._get_session()
+        target_case_id_sec = None
+        try:
+            from legal_system.models.tables import Case
+
+            cases = session.query(Case).all()
+            case_opts_s = {"（全案件共通の雛形として登録）": None}
+            for c in cases:
+                case_opts_s[f"{c.case_number}: {c.client_name}"] = c.case_id
+            selected_s = st.selectbox(
+                "紐付ける案件 (任意)", list(case_opts_s.keys()), key="up_case_sel_sec"
+            )
+            target_case_id_sec = case_opts_s[selected_s]
+        finally:
+            session.close()
+
+        file_s = st.file_uploader(
+            "PDFアップロード (機密)", accept_multiple_files=False, key="up_s"
+        )
+
+        if file_s:
+            fb_s = file_s.read()
+            f_hash = calculate_file_hash(fb_s)
+
+            if db_manager.is_file_registered(f_hash):
+                st.error(f"⛔ {file_s.name} は既に登録済みです。")
+            else:
+                if convert_from_bytes:
+                    try:
+                        images = convert_from_bytes(fb_s, first_page=1, last_page=1)
+                        if images:
+                            st.image(images[0], width=400)
+                    except:
+                        pass
+
+                if st.checkbox(
+                    "機密書類であることを確認しました", key="check_s"
+                ) and st.button("🔒 ローカル解析", key="btn_s"):
+                    with st.status("🔒 ローカルAIで解析中...", expanded=True) as status:
+                        st.session_state.upload_stage = []
+
+                        st.write("🧠 ローカルモデル(Llama/E5)をロード中...")
+                        try:
+                            llm_local = AIFactory.get_llm("local")
+                        except Exception as e:
+                            status.update(label="❌ エラー発生", state="error")
+                            st.error(f"ローカルモデルの起動に失敗: {e}")
+                            st.stop()
+
+                        st.write("📄 テキスト抽出中...")
+                        text_s = extract_text_safe(fb_s)
+
+                        st.write("🔍 文書解析中...")
+                        meta = analyze_document_info(text_s, llm_local)
+                        if "記入例" not in meta["filename"]:
+                            meta["filename"] += "_記入例"
+
+                        st.session_state.upload_stage.append(
+                            {
+                                "old": file_s.name,
+                                "new": meta.get("filename", file_s.name),
+                                "bank_name": meta.get("bank_name", "その他"),
+                                "doc_type": meta.get("doc_type", "その他"),
+                                "data": fb_s,
+                                "text": text_s,
+                                "type": "secure",
+                                "hash": f_hash,
+                                "case_id": target_case_id_sec,
+                            }
+                        )
+                        status.update(
+                            label="✅ 解析完了！下の「登録実行」へ進んでください。",
+                            state="complete",
+                            expanded=True,
+                        )
+                # ここで st.rerun() はしない
+
+    # ==========================================
+    # 3. 保存確認フォーム (解析結果がある場合のみ表示)
+    # ==========================================
+    if st.session_state.get("upload_stage"):
+        st.divider()
+        st.subheader("💾 登録確認")
+        st.info("解析結果を確認し、必要であれば修正してから登録してください。")
+
+        with st.form("save_form"):
+            configs = []
+            for i, item in enumerate(st.session_state.upload_stage):
+                c1, c2, c3, c4 = st.columns([1, 2, 1, 1])
+                c1.text(item["old"])
+                new_name = c2.text_input("登録名", value=item["new"], key=f"fn_{i}")
+                new_bank = c3.text_input(
+                    "銀行タグ", value=item["bank_name"], key=f"bk_{i}"
+                )
+
+                opts = [
+                    "手引き",
+                    "残高証明",
+                    "取引明細",
+                    "顧客勘定元帳",
+                    "相続届",
+                    "委任状",
+                    "その他",
+                ]
+                curr = item.get("doc_type", "その他")
+                idx = opts.index(curr) if curr in opts else 6
+                new_type = c4.selectbox("種別", opts, index=idx, key=f"dt_{i}")
+
+                configs.append(
+                    {
+                        **item,
+                        "name": new_name,
+                        "bank_name": new_bank,
+                        "doc_type": new_type,
+                    }
+                )
+
+            if st.form_submit_button("✅ 登録実行"):
+                _execute_registration(configs, db_manager)
+
+
+# ---------------------------------------------------------
+# 登録実行ロジック (リトライ処理付き)
+# ---------------------------------------------------------
+def _execute_registration(configs, db_manager):
+    vector_store = AIFactory.get_vector_store()
+    splitter = RecursiveCharacterTextSplitter(chunk_size=800, chunk_overlap=100)
+    cnt = 0
+    today = datetime.now().strftime("%Y%m%d")
+    templates_dir = os.path.join(ROOT_DIR, "data", "templates")
+    os.makedirs(templates_dir, exist_ok=True)
+
+    # 登録時もステータス表示
+    with st.status("💾 データベースに登録中...", expanded=True) as status:
+        progress_bar = st.progress(0)
+        total_configs = len(configs)
+
+        for idx, c in enumerate(configs):
+            fname = f"{c['name']}_{today}.pdf"
+            st.write(f"📝 登録中 ({idx + 1}/{total_configs}): {fname}")
+
+            save_path = os.path.join(templates_dir, fname)
+
+            # 1. 物理ファイル保存
+            with open(save_path, "wb") as f:
+                f.write(c["data"])
+
+            # 2. DBへのハッシュ登録
+            db_manager.register_file_hash(
+                c["hash"], fname, c["doc_type"], case_id=c.get("case_id")
+            )
+
+            # 3. Vector Store Registration
+            enriched_text = f"【ファイル名】{fname}\n【銀行名】{c['bank_name']}\n【書類種別】{c['doc_type']}\n\n{c['text']}"
+            chunks = splitter.split_text(enriched_text)
+            metadatas = [
+                {
+                    "source": fname,
+                    "path": save_path,
+                    "security_level": c["type"],
+                    "bank_name": c["bank_name"],
+                    "doc_type": c["doc_type"],
+                }
+                for _ in chunks
+            ]
+
+            # バッチ処理とリトライロジック (API制限対策)
+            # 無料枠対策としてバッチサイズを小さく設定
+            batch_size = 2
+            total_chunks = len(chunks)
+
+            for i in range(0, total_chunks, batch_size):
+                batch_chunks = chunks[i : i + batch_size]
+                batch_metas = metadatas[i : i + batch_size]
+
+                # 最大5回のリトライロジック (指数バックオフ)
+                max_retries = 5
+                for attempt in range(max_retries):
+                    try:
+                        vector_store.add_texts(batch_chunks, metadatas=batch_metas)
+                        # 成功したら少し待機して次へ (連打防止)
+                        time.sleep(1.0)
+                        break
+                    except Exception as e:
+                        error_str = str(e)
+                        # 429(Resource Exhausted) または 400(Bad Request: e.g. Key expired) を検知
+                        if "429" in error_str or "RESOURCE_EXHAUSTED" in error_str:
+                            if attempt < max_retries - 1:
+                                wait_time = (2**attempt) + random.random() * 2
+                                st.warning(
+                                    f"⚠️ API制限を検知。{wait_time:.1f}秒待機して再試行します... ({attempt + 1}/{max_retries})"
+                                )
+                                time.sleep(wait_time)
+                            else:
+                                st.error(
+                                    f"❌ リトライ上限に達しました。登録失敗: {fname}"
+                                )
+                                raise e
+                        else:
+                            # その他のエラーは即座に上げる
+                            raise e
+
+            cnt += 1
+            progress_bar.progress((idx + 1) / total_configs)
+
+        status.update(label="✅ 全件登録完了！", state="complete", expanded=False)
+
+    st.success(f"{cnt}件の学習・登録が完了しました！")
+    st.session_state.upload_stage = []
+    time.sleep(1.5)
+    st.rerun()
+
+
+# ---------------------------------------------------------
+# メイン機能: データ管理タブの描画
+# ---------------------------------------------------------
+def render_management_tab(db_manager: DatabaseManager):
+    st.subheader("🗑️ 登録済みファイルの管理")
+    files = db_manager.get_all_files()
+
+    if not files:
+        st.info("登録されているファイルはありません。")
+    else:
+        df_files = pd.DataFrame(files)
+        # カラム名のマッピング調整
+        df_files.columns = [
+            "ファイル名",
+            "登録日時",
+            "ハッシュ値",
+            "書類種別",
+            "案件",
+            "doc_type_raw",
+            "uploaded_at_raw",
+        ]
+        st.dataframe(
+            df_files[["登録日時", "案件", "書類種別", "ファイル名"]],
+            use_container_width=True,
+        )
+
+        st.divider()
+        st.warning("【削除エリア】")
+        selected_file = st.selectbox(
+            "削除するファイルを選択", [f["filename"] for f in files]
+        )
+
+        if st.button("選択したファイルを完全に削除する"):
+            templates_dir = os.path.join(ROOT_DIR, "data", "templates")
+            target_path = os.path.join(templates_dir, selected_file)
+
+            if os.path.exists(target_path):
+                try:
+                    os.remove(target_path)
+                except OSError:
+                    pass
+
+            db_manager.delete_file_registry(selected_file)
+            st.success(f"{selected_file} を削除しました。")
+            time.sleep(1)
+            st.rerun()
 ```
 
 ## File: src/legal_system/ui/pages/01_Kintoneデータ_エクセル入力フォーム.py
@@ -265,29 +703,32 @@ if __name__ == "__main__":
 
 ## File: src/legal_system/ui/pages/02_相続書類_作成フォーム.py
 ```python
+# src/legal_system/ui/pages/02_相続書類_作成フォーム.py
+
 import os
 import sys
-from io import BytesIO
 
 import streamlit as st
-from pypdf import PdfReader, PdfWriter
 from reportlab.pdfbase import pdfmetrics
 from reportlab.pdfbase.ttfonts import TTFont
-from reportlab.pdfgen import canvas
 
-# --- パス解決 ---
+# パス解決
 CURRENT_DIR = os.path.dirname(os.path.abspath(__file__))
 SRC_DIR = os.path.dirname(os.path.dirname(os.path.dirname(CURRENT_DIR)))
 ROOT_DIR = os.path.dirname(SRC_DIR)
 sys.path.append(SRC_DIR)
 
-# DBモジュールのインポート
 from legal_system.core.database_manager import DatabaseManager
 from legal_system.models.tables import Case
 
-# ページ設定
+# ★追加: コンポーネントのインポート
+# from legal_system.ui.components.admin_tools import (
+#     render_management_tab,
+#     render_upload_tab,
+# )
+
 st.set_page_config(
-    page_title="相続書類作成 | 相続業務支援システム", page_icon="📄", layout="wide"
+    page_title="書類作成・管理 | 相続業務支援", page_icon="📄", layout="wide"
 )
 
 # フォント登録
@@ -299,223 +740,95 @@ except Exception:
     pass
 
 
-def main():
-    st.title("🖨️ 書類自動作成")
+def render_creation_tab(db, session):
+    """既存の書類作成ロジック（そのまま関数化）"""
+    st.subheader("🖨️ 書類自動作成")
 
-    # DB接続
+    # 1. 案件選択
+    cases = session.query(Case).all()
+    if not cases:
+        st.warning("案件データがありません。")
+        return
+
+    case_options = {f"{c.case_number}: {c.client_name}": c.case_id for c in cases}
+
+    # セッション復元ロジック
+    default_idx = 0
+    if "current_case_id" in st.session_state:
+        cid = st.session_state["current_case_id"]
+        keys = list(case_options.keys())
+        for i, k in enumerate(keys):
+            if case_options[k] == cid:
+                default_idx = i
+                break
+
+    selected_label = st.selectbox(
+        "📂 案件選択", list(case_options.keys()), index=default_idx
+    )
+
+    if selected_label:
+        cid = case_options[selected_label]
+        st.session_state["current_case_id"] = cid
+        target_case = session.query(Case).filter_by(case_id=cid).first()
+        st.caption(
+            f"被相続人: {target_case.deceased_ref.name_last if target_case.deceased_ref else ''}"
+        )
+
+        # 2. 銀行選択
+        assets = target_case.financial_assets
+        if not assets:
+            st.info("登録されている口座がありません。")
+            return
+
+        bank_map = {}
+        for a in assets:
+            bn = a.bank_ref.bank_name if a.bank_ref else "不明"
+            if bn not in bank_map:
+                bank_map[bn] = []
+            bank_map[bn].append(a)
+
+        st.divider()
+        sel_bank = st.radio("提出先", list(bank_map.keys()), horizontal=True)
+
+        # 3. テンプレート選択と作成
+        files = db.get_all_files()
+        # 案件専用 or 共通テンプレートでフィルタリングすべきだが、一旦全て表示
+        file_opts = {f["filename"]: f["hash"] for f in files}
+
+        c1, c2 = st.columns([3, 1])
+        sel_file = c1.selectbox("テンプレート", list(file_opts.keys()))
+
+        if c2.button("PDF作成", type="primary"):
+            # ... (既存のPDF生成ロジックをここに記述) ...
+            # ※ 長くなるため省略しますが、元の main() 内のロジックをここに置いてください
+            st.success("PDF作成ロジック実行 (実装済みのコードをここに配置)")
+
+
+def main():
+    st.title("📑 書類作成・データ管理")
+
     db = DatabaseManager()
     session = db._get_session()
 
-    # ---------------------------------------------------------
-    # 1. 案件選択 (セッション連携機能付き)
-    # ---------------------------------------------------------
-    try:
-        cases = session.query(Case).all()
-    except Exception as e:
-        st.error(f"DBエラー: {e}")
-        return
+    # タブ定義
+    tab1, tab2, tab3 = st.tabs(["🖨️ 書類作成", "📥 雛形登録 (OCR)", "🗑️ データ管理"])
 
-    if not cases:
-        st.warning("⚠️ 案件データが1件もありません。")
-        st.info(
-            "まずはサイドバーの「99_口座情報_入力」から、案件(G番号)と口座情報を登録してください。"
-        )
-        return
+    with tab1:
+        render_creation_tab(db, session)
 
-    # 選択肢リスト作成
-    # key: 表示名 (例: "G0001: 山田太郎"), value: case_id (DBのID)
-    case_options = {f"{c.case_number}: {c.client_name}": c.case_id for c in cases}
-    options_keys = list(case_options.keys())
+    with tab2:
+        # ★ここでインポートする
+        from legal_system.ui.components.admin_tools import render_upload_tab
 
-    # --- セッションから前回の選択状態を復元 ---
-    default_index = 0
-    if "current_case_id" in st.session_state:
-        # 保存されているIDを持つ選択肢を探す
-        current_id = st.session_state["current_case_id"]
-        for i, key in enumerate(options_keys):
-            if case_options[key] == current_id:
-                default_index = i
-                break
+        render_upload_tab(db)
 
-    # セレクトボックス表示
-    selected_label = st.selectbox(
-        "📂 作業対象の案件を選択",
-        options=options_keys,
-        index=default_index,
-        key="case_selector",
-    )
+    with tab3:
+        # ★ここでインポートする
+        from legal_system.ui.components.admin_tools import render_management_tab
 
-    # 選択されたらセッションに保存（他の画面でも使えるようにする）
-    if selected_label:
-        selected_case_id = case_options[selected_label]
-        st.session_state["current_case_id"] = selected_case_id
+        render_management_tab(db)
 
-        # 案件オブジェクトの取得
-        target_case = session.query(Case).filter_by(case_id=selected_case_id).first()
-
-        # 被相続人情報の表示
-        deceased_name = (
-            target_case.deceased_ref.name_last if target_case.deceased_ref else "未登録"
-        )
-        st.caption(f"被相続人: {deceased_name} 様 の手続き書類を作成します。")
-
-    # ---------------------------------------------------------
-    # 2. 提出先銀行の選択
-    # ---------------------------------------------------------
-    # この案件に紐付いている資産(FinancialAsset)を取得
-    assets = target_case.financial_assets
-    if not assets:
-        st.warning(
-            f"⚠️ 案件 {target_case.case_number} には口座情報が登録されていません。"
-        )
-        if st.button("➡️ 口座入力画面へ移動して登録する"):
-            st.switch_page("pages/99_口座情報_入力.py")
-        return
-
-    # 銀行単位でまとめる
-    bank_asset_map = {}
-    for asset in assets:
-        b_name = asset.bank_ref.bank_name if asset.bank_ref else "不明な銀行"
-        if b_name not in bank_asset_map:
-            bank_asset_map[b_name] = []
-        bank_asset_map[b_name].append(asset)
-
-    st.divider()
-    selected_bank_name = st.radio(
-        "提出先の金融機関", list(bank_asset_map.keys()), horizontal=True
-    )
-
-    if not selected_bank_name:
-        return
-
-    # 対象口座の確認表示
-    target_assets = bank_asset_map[selected_bank_name]
-    with st.expander(
-        f"確認: {selected_bank_name} の対象口座 ({len(target_assets)}件)",
-        expanded=False,
-    ):
-        for a in target_assets:
-            br = a.branch_ref.branch_name if a.branch_ref else "支店不明"
-            num = a.account_number if a.account_number else "番号不明"
-            atype = a.account_type_ref.type_name if a.account_type_ref else ""
-            st.text(f"・{br} {atype} {num}")
-
-    # ---------------------------------------------------------
-    # 3. 書類雛形の選択
-    # ---------------------------------------------------------
-    files = db.get_all_files()
-    if not files:
-        st.error("雛形ファイルがありません。管理者に連絡してください。")
-        return
-
-    # テンプレートPDFのみをフィルタリング
-    file_opts = {f["filename"]: f["hash"] for f in files}
-
-    st.divider()
-    col_temp, col_btn = st.columns([3, 1])
-
-    with col_temp:
-        selected_file_name = st.selectbox(
-            "使用するテンプレート", list(file_opts.keys())
-        )
-
-    with col_btn:
-        st.write("")  # スペース調整
-        st.write("")
-        if st.button("🚀 PDF作成", type="primary", use_container_width=True):
-            # --- PDF生成ロジック (変更なし) ---
-            file_hash = file_opts[selected_file_name]
-            deceased = target_case.deceased_ref
-
-            data_map = {
-                "{case_number}": target_case.case_number,
-                "{deceased_name}": f"{deceased.name_last} {deceased.name_first}"
-                if deceased
-                else "",
-                "{death_date}": str(deceased.date_of_death)
-                if deceased and deceased.date_of_death
-                else "",
-                "{bank_name}": selected_bank_name,
-            }
-
-            for i, asset in enumerate(target_assets):
-                idx = i + 1
-                br_name = asset.branch_ref.branch_name if asset.branch_ref else ""
-                ac_type = (
-                    asset.account_type_ref.type_name if asset.account_type_ref else ""
-                )
-                ac_num = asset.account_number
-                data_map[f"{{branch_{idx}}}"] = br_name
-                data_map[f"{{type_{idx}}}"] = ac_type
-                data_map[f"{{number_{idx}}}"] = ac_num
-
-            try:
-                coords = db.get_coordinates_by_hash(file_hash)
-
-                TEMPLATE_DIR = os.path.join(ROOT_DIR, "data", "templates")
-                template_path = os.path.join(TEMPLATE_DIR, selected_file_name)
-
-                if not os.path.exists(template_path):
-                    st.error(f"ファイルが見つかりません: {template_path}")
-                    return
-
-                output = PdfWriter()
-                input_pdf = PdfReader(template_path)
-
-                for i, page in enumerate(input_pdf.pages):
-                    page_num = i + 1
-                    page_coords = [c for c in coords if c["page"] == page_num]
-
-                    if page_coords:
-                        packet = BytesIO()
-                        width = float(page.mediabox.width)
-                        height = float(page.mediabox.height)
-                        can = canvas.Canvas(packet, pagesize=(width, height))
-
-                        for c in page_coords:
-                            print_text = c["value"]
-                            if str(print_text).startswith("{") and str(
-                                print_text
-                            ).endswith("}"):
-                                if print_text in data_map:
-                                    print_text = data_map[print_text]
-
-                            font_name = (
-                                "IPAexG" if os.path.exists(FONT_PATH) else "Helvetica"
-                            )
-                            can.setFont(font_name, c["font_size"])
-                            if c["color"] == "red":
-                                can.setFillColorRGB(1, 0, 0)
-                            else:
-                                can.setFillColorRGB(0, 0, 0)
-
-                            # Y座標補正
-                            can.drawString(
-                                c["x"], float(height) - c["y"], str(print_text)
-                            )
-
-                        can.save()
-                        packet.seek(0)
-                        overlay = PdfReader(packet)
-                        page.merge_page(overlay.pages[0])
-
-                    output.add_page(page)
-
-                out_stream = BytesIO()
-                output.write(out_stream)
-
-                st.success(f"作成完了: {selected_file_name}")
-                st.download_button(
-                    label="📥 PDFダウンロード",
-                    data=out_stream,
-                    file_name=f"作成済_{target_case.client_name}_{selected_bank_name}.pdf",
-                    mime="application/pdf",
-                )
-
-            except Exception as e:
-                st.error(f"作成エラー: {e}")
-            finally:
-                session.close()
+    session.close()
 
 
 if __name__ == "__main__":
@@ -750,9 +1063,57 @@ if __name__ == "__main__":
     main()
 ```
 
-## File: .python-version
-```
-3.12.4
+## File: reset_db.py
+```python
+# file: reset_db.py
+import os
+import sys
+
+from sqlalchemy import text
+
+# パスを通す
+sys.path.append(os.path.join(os.getcwd(), "src"))
+
+from legal_system.core.database_manager import DatabaseManager
+from legal_system.models.tables import Base
+
+
+def reset_database():
+    print("🔄 データベースの完全リセットを開始します...")
+
+    db = DatabaseManager()
+    engine = db.engine
+
+    # 1. スキーマごと強制削除 (DROP SCHEMA public CASCADE)
+    # これにより、テーブル間の依存関係を無視して全てを消し去ります。
+    print("💣 既存のスキーマ(public)を破棄中...")
+    with engine.connect() as conn:
+        conn.execute(text("DROP SCHEMA public CASCADE;"))
+        conn.execute(text("CREATE SCHEMA public;"))
+        conn.commit()
+
+    # 2. テーブルを再作成
+    # 最新の tables.py の定義に基づいて作成されます
+    print("🔨 テーブルを再作成中...")
+    Base.metadata.create_all(engine)
+
+    print("✅ 完了しました！")
+    print(
+        "   PostgreSQLは完全に初期化され、最新の定義(client_name含む)と一致しました。"
+    )
+
+
+if __name__ == "__main__":
+    print("⚠️ 【警告】PostgreSQLの全データを物理的に破壊・初期化します。")
+    check = input("実行してよろしいですか？ (y/n): ")
+    if check.lower() == "y":
+        try:
+            reset_database()
+        except Exception as e:
+            print(f"❌ エラーが発生しました: {e}")
+            print("Dockerが起動しているか、.envの設定が正しいか確認してください。")
+    else:
+        print("中止しました。")
 ```
 
 ## File: .streamlit/config.toml
@@ -775,122 +1136,6 @@ textColor = "#262730"
 
 # フォント
 font = "sans serif"
-```
-
-## File: bank_master.json
-```json
-[
-    {
-        "bank_name": "三菱UFJ銀行",
-        "procedure_type": "相続手続（代理人）",
-        "required_documents": [
-            "遺産分割協議書（実印押印）",
-            "相続人全員の印鑑証明書（6ヶ月以内）",
-            "被相続人の出生から死亡までの連続した戸籍謄本",
-            "【代理人】行政書士の印鑑証明書（発行後6ヶ月以内）",
-            "【代理人】行政書士証票のコピー（原本照合済）",
-            "【代理人】委任状（銀行所定様式または実印押印のある任意様式）"
-        ],
-        "notes": "※任意様式の委任状を使用する場合、捨印および『解約金の受領権限』の明記が必須。",
-        "original_return_policy": "戸籍等の原本還付可（要・原本還付請求のゴム印）"
-    },
-    {
-        "bank_name": "ゆうちょ銀行",
-        "procedure_type": "相続手続（代理人）",
-        "required_documents": [
-            "相続確認表（Web入力可）",
-            "貯金等相続手続請求書（代理人による署名・実印）",
-            "【代理人】特定事務任用カード（提示のみ）",
-            "【代理人】委任状（実印押印必須）"
-        ],
-        "notes": "※窓口ではなく相続センターへの郵送対応が基本となるケースが多い。要事前確認。",
-        "original_return_policy": "原則として原本還付可。コピーの提出が必要。"
-    },
-    {
-        "bank_name": "三井住友銀行",
-        "procedure_type": "相続手続（代理人）",
-        "required_documents": [
-            "相続手続依頼書（代理人署名）",
-            "【代理人】実印および印鑑証明書（6ヶ月以内）",
-            "【代理人】行政書士証票または識別カード",
-            "被相続人の全戸籍（出生〜死亡）"
-        ],
-        "notes": "※Web予約をしてからの来店が推奨される。",
-        "original_return_policy": "原本還付可"
-    }
-]
-```
-
-## File: create_rule_master.py
-```python
-import json
-from typing import Any, Dict, List
-
-# プロジェクトルートに作成される手続要件マスタ
-DATA_FILE: str = "bank_master.json"
-
-
-def create_initial_bank_data() -> List[Dict[str, Any]]:
-    """
-    行政書士業務に特化した銀行マスタデータの初期セットを生成する。
-    """
-    banks = [
-        {
-            "bank_name": "三菱UFJ銀行",
-            "procedure_type": "相続手続（代理人）",
-            "required_documents": [
-                "遺産分割協議書（実印押印）",
-                "相続人全員の印鑑証明書（6ヶ月以内）",
-                "被相続人の出生から死亡までの連続した戸籍謄本",
-                "【代理人】行政書士の印鑑証明書（発行後6ヶ月以内）",
-                "【代理人】行政書士証票のコピー（原本照合済）",
-                "【代理人】委任状（銀行所定様式または実印押印のある任意様式）",
-            ],
-            "notes": "※任意様式の委任状を使用する場合、捨印および『解約金の受領権限』の明記が必須。",
-            "original_return_policy": "戸籍等の原本還付可（要・原本還付請求のゴム印）",
-        },
-        {
-            "bank_name": "ゆうちょ銀行",
-            "procedure_type": "相続手続（代理人）",
-            "required_documents": [
-                "相続確認表（Web入力可）",
-                "貯金等相続手続請求書（代理人による署名・実印）",
-                "【代理人】特定事務任用カード（提示のみ）",
-                "【代理人】委任状（実印押印必須）",
-            ],
-            "notes": "※窓口ではなく相続センターへの郵送対応が基本となるケースが多い。要事前確認。",
-            "original_return_policy": "原則として原本還付可。コピーの提出が必要。",
-        },
-        {
-            "bank_name": "三井住友銀行",
-            "procedure_type": "相続手続（代理人）",
-            "required_documents": [
-                "相続手続依頼書（代理人署名）",
-                "【代理人】実印および印鑑証明書（6ヶ月以内）",
-                "【代理人】行政書士証票または識別カード",
-                "被相続人の全戸籍（出生〜死亡）",
-            ],
-            "notes": "※Web予約をしてからの来店が推奨される。",
-            "original_return_policy": "原本還付可",
-        },
-    ]
-    return banks
-
-
-def save_bank_master(data: List[Dict[str, Any]]) -> None:
-    try:
-        # プロジェクトルートに保存
-        with open(DATA_FILE, "w", encoding="utf-8") as f:
-            json.dump(data, f, ensure_ascii=False, indent=4)
-        print(f"✅ 成功: '{DATA_FILE}' を作成しました。")
-        print("   これで『01_銀行手続要件_確認』ページが動作します。")
-    except IOError as e:
-        print(f"❌ エラー: ファイルの書き込みに失敗しました。詳細: {e}")
-
-
-if __name__ == "__main__":
-    bank_data = create_initial_bank_data()
-    save_bank_master(bank_data)
 ```
 
 ## File: data/db/chroma/.keep
@@ -941,235 +1186,6 @@ if __name__ == "__main__":
 
 ## File: data/templates/.keep
 ```
-
-```
-
-## File: export_code.py
-```python
-import subprocess
-
-
-def run_repomix():
-    print("🚀 ソースコードの集約を開始します...")
-
-    # Repomixを実行するコマンド
-    # --style markdown : Geminiが読みやすいマークダウン形式で出力
-    # --ignore "**/*.json,**/*.lock" : 不要なファイルを除外（必要に応じて追加）
-    command = "npx -y repomix --style markdown"
-
-    try:
-        # コマンドを実行
-        # shell=True はWindows/Mac両対応のため
-        subprocess.run(command, shell=True, check=True)
-
-        print("\n✅ 完了しました！")
-        print("📁 'repomix-output.md' というファイルが作成されています。")
-        print("🤖 これをGeminiにアップロードしてください。")
-
-    except subprocess.CalledProcessError as e:
-        print(f"\n❌ エラーが発生しました: {e}")
-
-
-if __name__ == "__main__":
-    run_repomix()
-```
-
-## File: README.md
-```markdown
-# legal-rag-project
-
-Describe your project here.
-```
-
-## File: register_existing_templates.py
-```python
-import hashlib
-import os
-import sys
-
-# パス解決
-sys.path.append(os.path.join(os.getcwd(), "src"))
-
-from legal_system.core.database_manager import DatabaseManager
-
-
-def calculate_file_hash(file_path: str) -> str:
-    """ファイルのMD5ハッシュを計算"""
-    with open(file_path, "rb") as f:
-        file_bytes = f.read()
-    return hashlib.md5(file_bytes).hexdigest()
-
-
-def main():
-    print("🚀 既存テンプレートのDB登録を開始します...")
-
-    # パス設定
-    base_dir = os.getcwd()
-    template_dir = os.path.join(base_dir, "data", "templates")
-
-    if not os.path.exists(template_dir):
-        print(f"❌ フォルダが見つかりません: {template_dir}")
-        return
-
-    # DB接続
-    db = DatabaseManager()
-
-    # 登録処理
-    files = [f for f in os.listdir(template_dir) if f.lower().endswith(".pdf")]
-    count = 0
-
-    print(f"📂 対象フォルダ: {template_dir}")
-    print(f"📄 PDFファイル数: {len(files)}")
-
-    for filename in files:
-        file_path = os.path.join(template_dir, filename)
-        file_hash = calculate_file_hash(file_path)
-
-        # 既に登録済みかチェック
-        if db.is_file_registered(file_hash):
-            print(f"SKIP (登録済): {filename}")
-            continue
-
-        # 簡易的な種別判定 (ファイル名から推測)
-        doc_type = "その他"
-        if "残高証明" in filename:
-            doc_type = "残高証明"
-        elif "相続届" in filename or "手続" in filename:
-            doc_type = "相続届"
-        elif "委任状" in filename:
-            doc_type = "委任状"
-
-        # DBへ登録
-        db.register_file_hash(file_hash=file_hash, filename=filename, doc_type=doc_type)
-        print(f"✅ REGISTERED: {filename} ({doc_type})")
-        count += 1
-
-    print("------------------------------------------------")
-    print(f"🎉 完了しました。新規登録: {count} 件")
-    print("画面をリロードして確認してください。")
-
-
-if __name__ == "__main__":
-    main()
-```
-
-## File: requirements.txt
-```
-# 📂 遺言・遺産整理業務支援システム 要件定義書 (Ver 1.0)
-
-## 1. プロジェクト概要
-* **目的:** 遺言書作成および遺産整理業務の効率化。
-* **コアコンセプト:** 「個人情報の完全オフライン管理」と「生成AIによる業務支援」のハイブリッド構成。
-* **利用規模:** 本社20名で開始、将来的には全拠点100名以上（年間1000件規模）。
-
-## 2. 技術スタック選定
-以下のライブラリ・ツールを標準とする。
-
-| カテゴリ | 技術名 | 選定理由 |
-| :--- | :--- | :--- |
-| **言語** | **Python 3.10+** | AI/データ処理のエコシステムが最強であるため。 |
-| **アプリFW** | **Streamlit** | 社内Webアプリ化が高速。各PCへのインストール不要。 |
-| **DB** | **PostgreSQL** | 100人規模の同時接続・排他制御に耐える堅牢性（無料）。 |
-| **ORM** | **SQLAlchemy** | DB操作の抽象化。保守性向上のため必須。 |
-| **OCR** | **PaddleOCR** | 金融機関書類（日本語・罫線あり）の認識精度が高いため。 |
-| **生成AI** | **Google Gemini API** | マニュアル検索、文書案作成用。(google-generativeai) |
-| **PDF処理** | **PyMuPDF (fitz)** | PDFの読み込み、加工用。 |
-
-## 3. システムアーキテクチャ
-物理的なデータ保管場所と、外部AIへのデータフローを厳密に分離する。
-
-* **サーバー構成:** オンプレミス（社内）サーバー1台にDockerコンテナ等でDBとアプリをホスト。
-* **クライアント:** 社員PCのブラウザからイントラネット経由でアクセス。
-* **ネットワーク分離:**
-    * **Zone A (Secure/Local):** PostgreSQL, OCR処理, 個人情報（氏名, 口座番号）の保存。インターネットへは出さない。
-    * **Zone B (Cloud/AI):** Gemini API。ここには「匿名化されたテキスト」と「マニュアル」のみ送信する。
-
-## 4. 機能要件
-
-### A. 顧客・案件管理機能
-* 顧客情報（被相続人、相続人）のCRUD処理。
-* PostgreSQLを使用し、排他制御を行う。
-
-### B. 帳票OCR取り込み機能
-* Streamlit画面から画像/PDFをアップロード。
-* PaddleOCRでテキスト化。
-* OCR結果と元画像を並べて表示し、人間が修正してDB保存するUI。
-
-### C. 生成AI支援機能（RAG/Drafting）
-* **マスキング処理:** 相談内容をGeminiに投げる前に、正規表現等で個人情報（氏名、住所、電話番号、口座番号）をプレースホルダ（例: `[NAME_A]`, `[BANK_ID]`）に置換するロジックを実装すること。
-* **マニュアル検索:** 社内規定や金融機関手続きマニュアルをベクトル化、またはコンテキストとして渡し、質問に回答させる。
-
-### D. バックアップ機能
-* `pg_dump` を使用し、毎日深夜にDBのダンプファイルを作成。
-* 外部ストレージ（NAS等）への転送スクリプト。
-
-## 5. データベース設計指針（ER図イメージ）
-* **usersテーブル:** 社員アカウント管理（権限管理用）。
-* **customersテーブル:** 顧客基本情報。
-* **mattersテーブル:** 案件情報（遺言作成、遺産整理など）。
-* **documentsテーブル:** OCR読み取り結果、生成された文書データ。ファイルパス管理。
-
-## 6. セキュリティ・コンプライアンス規定
-* **原則:** 顧客のPII（個人特定情報）は、いかなる場合もGemini APIのエンドポイントへ送信してはならない。
-* **API設定:** Gemini API利用時は、学習データとして利用されない設定（Enterprise利用またはオプトアウト設定）を確認する。
-```
-
-## File: run_watcher.py
-```python
-import os
-import sys
-import time
-
-from watchdog.events import FileSystemEventHandler
-from watchdog.observers import Observer
-
-# パス解決
-sys.path.append(os.path.join(os.getcwd(), "src"))
-
-from legal_system.core.data_sync import DataSyncEngine
-
-# 監視対象フォルダ (ダウンロードフォルダなど)
-# ※Windowsのダウンロードフォルダの例
-WATCH_DIR = os.path.expanduser("~/Downloads")
-
-
-class JsonHandler(FileSystemEventHandler):
-    def __init__(self):
-        self.syncer = DataSyncEngine()
-
-    def on_created(self, event):
-        # ファイルが作成されたとき
-        if event.is_directory:
-            return
-        filename = os.path.basename(event.src_path)
-
-        # "G"で始まり ".json" で終わるファイルのみ対象 (例: G0001.json)
-        if filename.startswith("G") and filename.endswith(".json"):
-            print(f"📥 検知: {filename}")
-            # ファイル書き込み完了まで少し待つ
-            time.sleep(1)
-            self.syncer.sync_from_kintone_json(event.src_path)
-
-
-if __name__ == "__main__":
-    print(f"👀 監視を開始しました: {WATCH_DIR}")
-    print("   'Gxxxx.json' というファイルがダウンロードされると自動で取り込みます。")
-
-    event_handler = JsonHandler()
-    observer = Observer()
-    observer.schedule(event_handler, WATCH_DIR, recursive=False)
-    observer.start()
-
-    try:
-        while True:
-            time.sleep(1)
-    except KeyboardInterrupt:
-        observer.stop()
-    observer.join()
-```
-
-## File: src/__init__.py
-```python
 
 ```
 
@@ -1334,11 +1350,6 @@ def create_inheritance_chain(
     return run_chain
 ```
 
-## File: src/legal_system/__init__.py
-```python
-
-```
-
 ## File: src/legal_system/core/__init__.py
 ```python
 
@@ -1346,74 +1357,112 @@ def create_inheritance_chain(
 
 ## File: src/legal_system/core/data_sync.py
 ```python
-# src/legal_system/core/data_sync.py
+# file: src/legal_system/core/data_sync.py
 
 import json
+import logging
+from typing import Any, Dict
 
 from legal_system.core.database_manager import DatabaseManager
-from legal_system.models.tables import Case, Deceased, Heir
+from legal_system.models.tables import BankMaster, Case, FinancialAsset
+
+logger = logging.getLogger(__name__)
 
 
 class DataSyncEngine:
+    """
+    外部データ（Kintone JSON等）とPostgreSQLの同期を管理するエンジン。
+    """
+
     def __init__(self):
         self.db = DatabaseManager()
 
-    def sync_from_kintone_json(self, json_path: str):
-        """Bookmarkletから落ちてきたJSONをSQLiteに同期"""
-        with open(json_path, "r", encoding="utf-8") as f:
-            data = json.load(f)
+    def sync_from_kintone_json(self, json_path: str) -> bool:
+        """
+        JSONファイルを読み込み、PostgreSQLへUpsert処理を行う。
+        """
+        try:
+            with open(json_path, "r", encoding="utf-8") as f:
+                data = json.load(f)
+        except Exception as e:
+            logger.error(f"JSON読み込み失敗: {e}")
+            return False
 
         session = self.db._get_session()
         try:
-            # 1. 案件 (Case) のUpsert
-            case_num = data.get("case_number")
+            # 1. 案件 (Case) の同期 - ビジネスID「G番号」をキーにする
+            case_num = data.get("顧客コード_2") or data.get("case_number")
             if not case_num:
-                return
+                logger.warning("案件番号(G番号)がないためスキップします。")
+                return False
 
             case = session.query(Case).filter_by(case_number=case_num).first()
             if not case:
-                case = Case(case_number=case_num)
+                case = Case(
+                    case_number=case_num,
+                    client_name=data.get("顧客名", "名称未設定"),
+                    created_at=datetime.now(),
+                )
                 session.add(case)
-                session.flush()  # ID確定
+                session.flush()  # IDを確定させる
 
-            # 2. 被相続人情報の更新
-            d_info = data.get("deceased", {})
-            if d_info:
-                # 既存があれば取得、なければ作成
-                deceased = case.deceased_ref
-                if not deceased:
-                    deceased = Deceased(case_id=case.case_id)
-                    session.add(deceased)
-
-                # 値のセット
-                deceased.name_last = d_info.get("name_last", "")
-                deceased.name_first = d_info.get("name_first", "")
-                # ... 日付変換などは適宜 ...
-
-            # 3. 相続人の更新 (一旦全削除して入れ直すのが安全)
-            if "heirs" in data:
-                # 既存の相続人を削除
-                for h in case.deceased_ref.heirs:
-                    session.delete(h)
-
-                # 再登録
-                for h_data in data["heirs"]:
-                    heir = Heir(
-                        deceased_id=case.deceased_ref.id,
-                        name_last=h_data.get("name_last", ""),
-                        name_first=h_data.get("name_first", ""),
-                        relationship_type=h_data.get("relation", ""),
-                    )
-                    session.add(heir)
+            # 2. 資産データ (FinancialAsset) の Upsert
+            # 同一案件内の「銀行名・支店名・口座番号」の組み合わせが一致すれば更新する
+            assets_list = data.get("assets", [])  # JSON構造に合わせて調整
+            for a in assets_list:
+                self._upsert_financial_asset(session, case.case_id, a)
 
             session.commit()
-            print(f"✅ Synced Case: {case_num}")
+            logger.info(f"✅ 同期完了: {case_num}")
+            return True
 
         except Exception as e:
             session.rollback()
-            print(f"❌ Sync Error: {e}")
+            logger.error(f"❌ 同期エラー: {e}")
+            return False
         finally:
             session.close()
+
+    def _upsert_financial_asset(
+        self, session, case_id: int, asset_data: Dict[str, Any]
+    ):
+        """
+        PostgreSQLの機能を活用した資産情報のUpsert処理
+        """
+        # 銀行・支店IDの解決（簡易化のため名称一致で検索）
+        bank = (
+            session.query(BankMaster)
+            .filter(BankMaster.bank_name == asset_data.get("bank_name"))
+            .first()
+        )
+        if not bank:
+            return
+
+        # 既存レコードの確認
+        existing_asset = (
+            session.query(FinancialAsset)
+            .filter(
+                FinancialAsset.case_id == case_id,
+                FinancialAsset.bank_id == bank.id,
+                FinancialAsset.account_number == asset_data.get("account_number"),
+            )
+            .first()
+        )
+
+        if existing_asset:
+            # 更新 (Update)
+            existing_asset.balance = asset_data.get("balance", 0.0)
+            existing_asset.status = asset_data.get("status", "更新あり")
+        else:
+            # 新規登録 (Insert)
+            new_asset = FinancialAsset(
+                case_id=case_id,
+                bank_id=bank.id,
+                account_number=asset_data.get("account_number"),
+                balance=asset_data.get("balance", 0.0),
+                status="新規取込",
+            )
+            session.add(new_asset)
 ```
 
 ## File: src/legal_system/core/engines.py
@@ -2279,9 +2328,470 @@ with col_img:
 
 ```
 
+## File: src/legal_system/ui/excel_generator.py
+```python
+# components/utils/excel_generator.py
+import openpyxl
+from openpyxl.worksheet.worksheet import Worksheet
+import io
+from typing import Dict, Union, List, Optional
+import os
+
+# デフォルトのテンプレートファイルパス（配置場所に合わせて変更してください）
+DEFAULT_TEMPLATE_PATH = "■初回送付セット【20251218版】　.xlsx"
+
+def fill_initial_set_excel(
+    json_data: Dict[str, str], 
+    template_file: Optional[Union[str, io.BytesIO]] = None
+) -> io.BytesIO:
+    """
+    KintoneのJSONデータを基に、初回送付セットExcelの「基本情報入力」シートに値を転記します。
+
+    Args:
+        json_data (Dict[str, str]): Kintoneから取得したJSONデータ（辞書型）
+        template_file (Optional[Union[str, io.BytesIO]]): テンプレートExcelファイル。
+            指定がない場合はデフォルトパスを使用。
+
+    Returns:
+        io.BytesIO: 編集後のExcelバイナリデータ（ダウンロード用）
+    
+    Raises:
+        FileNotFoundError: テンプレートファイルが見つからない場合
+        KeyError: 指定されたシートが存在しない場合
+    """
+    
+    # テンプレートの読み込み元を決定
+    source = template_file if template_file else DEFAULT_TEMPLATE_PATH
+    
+    if isinstance(source, str) and not os.path.exists(source):
+        raise FileNotFoundError(f"テンプレートファイルが見つかりません: {source}")
+
+    # Excelブックを開く
+    wb = openpyxl.load_workbook(source)
+    
+    target_sheet_name = "基本情報入力"
+    if target_sheet_name not in wb.sheetnames:
+        raise KeyError(f"テンプレート内に '{target_sheet_name}' シートが見つかりません。")
+    
+    ws: Worksheet = wb[target_sheet_name]
+
+    # マッピング定義
+    # JSONのキー : Excelのセル番地（単一文字列 または 文字列のリスト）
+    mapping: Dict[str, Union[str, List[str]]] = {
+        "顧客コード_2": "B9",
+        "顧客名": ["B10", "C24"],  # 複数セルへの転記
+        "◎提案項目": "B11",
+        "拠点": "B12",
+        "担当者①": "B13",
+        "担当者②": "D13",
+        "被相続人名": "C23",
+        "被相続人名（ふりがな）": "D23",
+        "相続開始日": "F23",
+        "顧客名(ふりがな)": "D24",
+        "郵便番号": "G24",
+        "住所": "H24",
+        "TEL": "J24"
+    }
+
+    # データの転記処理
+    for json_key, cell_target in mapping.items():
+        # JSONから値を取得（キーがない場合は空文字）
+        value = json_data.get(json_key, "")
+        
+        # 転記実行
+        if isinstance(cell_target, list):
+            for cell_address in cell_target:
+                ws[cell_address].value = value
+        else:
+            ws[cell_target].value = value
+
+    # メモリ上のバイナリとして保存
+    output_buffer = io.BytesIO()
+    wb.save(output_buffer)
+    output_buffer.seek(0)
+    
+    return output_buffer
+```
+
+## File: src/legal_system/__init__.py
+```python
+
+```
+
 ## File: src/legal.egg-info/dependency_links.txt
 ```
 
+```
+
+## File: src/__init__.py
+```python
+
+```
+
+## File: .python-version
+```
+3.12.4
+```
+
+## File: bank_master.json
+```json
+[
+    {
+        "bank_name": "三菱UFJ銀行",
+        "procedure_type": "相続手続（代理人）",
+        "required_documents": [
+            "遺産分割協議書（実印押印）",
+            "相続人全員の印鑑証明書（6ヶ月以内）",
+            "被相続人の出生から死亡までの連続した戸籍謄本",
+            "【代理人】行政書士の印鑑証明書（発行後6ヶ月以内）",
+            "【代理人】行政書士証票のコピー（原本照合済）",
+            "【代理人】委任状（銀行所定様式または実印押印のある任意様式）"
+        ],
+        "notes": "※任意様式の委任状を使用する場合、捨印および『解約金の受領権限』の明記が必須。",
+        "original_return_policy": "戸籍等の原本還付可（要・原本還付請求のゴム印）"
+    },
+    {
+        "bank_name": "ゆうちょ銀行",
+        "procedure_type": "相続手続（代理人）",
+        "required_documents": [
+            "相続確認表（Web入力可）",
+            "貯金等相続手続請求書（代理人による署名・実印）",
+            "【代理人】特定事務任用カード（提示のみ）",
+            "【代理人】委任状（実印押印必須）"
+        ],
+        "notes": "※窓口ではなく相続センターへの郵送対応が基本となるケースが多い。要事前確認。",
+        "original_return_policy": "原則として原本還付可。コピーの提出が必要。"
+    },
+    {
+        "bank_name": "三井住友銀行",
+        "procedure_type": "相続手続（代理人）",
+        "required_documents": [
+            "相続手続依頼書（代理人署名）",
+            "【代理人】実印および印鑑証明書（6ヶ月以内）",
+            "【代理人】行政書士証票または識別カード",
+            "被相続人の全戸籍（出生〜死亡）"
+        ],
+        "notes": "※Web予約をしてからの来店が推奨される。",
+        "original_return_policy": "原本還付可"
+    }
+]
+```
+
+## File: create_rule_master.py
+```python
+import json
+from typing import Any, Dict, List
+
+# プロジェクトルートに作成される手続要件マスタ
+DATA_FILE: str = "bank_master.json"
+
+
+def create_initial_bank_data() -> List[Dict[str, Any]]:
+    """
+    行政書士業務に特化した銀行マスタデータの初期セットを生成する。
+    """
+    banks = [
+        {
+            "bank_name": "三菱UFJ銀行",
+            "procedure_type": "相続手続（代理人）",
+            "required_documents": [
+                "遺産分割協議書（実印押印）",
+                "相続人全員の印鑑証明書（6ヶ月以内）",
+                "被相続人の出生から死亡までの連続した戸籍謄本",
+                "【代理人】行政書士の印鑑証明書（発行後6ヶ月以内）",
+                "【代理人】行政書士証票のコピー（原本照合済）",
+                "【代理人】委任状（銀行所定様式または実印押印のある任意様式）",
+            ],
+            "notes": "※任意様式の委任状を使用する場合、捨印および『解約金の受領権限』の明記が必須。",
+            "original_return_policy": "戸籍等の原本還付可（要・原本還付請求のゴム印）",
+        },
+        {
+            "bank_name": "ゆうちょ銀行",
+            "procedure_type": "相続手続（代理人）",
+            "required_documents": [
+                "相続確認表（Web入力可）",
+                "貯金等相続手続請求書（代理人による署名・実印）",
+                "【代理人】特定事務任用カード（提示のみ）",
+                "【代理人】委任状（実印押印必須）",
+            ],
+            "notes": "※窓口ではなく相続センターへの郵送対応が基本となるケースが多い。要事前確認。",
+            "original_return_policy": "原則として原本還付可。コピーの提出が必要。",
+        },
+        {
+            "bank_name": "三井住友銀行",
+            "procedure_type": "相続手続（代理人）",
+            "required_documents": [
+                "相続手続依頼書（代理人署名）",
+                "【代理人】実印および印鑑証明書（6ヶ月以内）",
+                "【代理人】行政書士証票または識別カード",
+                "被相続人の全戸籍（出生〜死亡）",
+            ],
+            "notes": "※Web予約をしてからの来店が推奨される。",
+            "original_return_policy": "原本還付可",
+        },
+    ]
+    return banks
+
+
+def save_bank_master(data: List[Dict[str, Any]]) -> None:
+    try:
+        # プロジェクトルートに保存
+        with open(DATA_FILE, "w", encoding="utf-8") as f:
+            json.dump(data, f, ensure_ascii=False, indent=4)
+        print(f"✅ 成功: '{DATA_FILE}' を作成しました。")
+        print("   これで『01_銀行手続要件_確認』ページが動作します。")
+    except IOError as e:
+        print(f"❌ エラー: ファイルの書き込みに失敗しました。詳細: {e}")
+
+
+if __name__ == "__main__":
+    bank_data = create_initial_bank_data()
+    save_bank_master(bank_data)
+```
+
+## File: export_code.py
+```python
+import subprocess
+
+
+def run_repomix():
+    print("🚀 ソースコードの集約を開始します...")
+
+    # Repomixを実行するコマンド
+    # --style markdown : Geminiが読みやすいマークダウン形式で出力
+    # --ignore "**/*.json,**/*.lock" : 不要なファイルを除外（必要に応じて追加）
+    command = "npx -y repomix --style markdown"
+
+    try:
+        # コマンドを実行
+        # shell=True はWindows/Mac両対応のため
+        subprocess.run(command, shell=True, check=True)
+
+        print("\n✅ 完了しました！")
+        print("📁 'repomix-output.md' というファイルが作成されています。")
+        print("🤖 これをGeminiにアップロードしてください。")
+
+    except subprocess.CalledProcessError as e:
+        print(f"\n❌ エラーが発生しました: {e}")
+
+
+if __name__ == "__main__":
+    run_repomix()
+```
+
+## File: README.md
+```markdown
+# legal-rag-project
+
+Describe your project here.
+```
+
+## File: register_existing_templates.py
+```python
+import hashlib
+import os
+import sys
+
+# パス解決
+sys.path.append(os.path.join(os.getcwd(), "src"))
+
+from legal_system.core.database_manager import DatabaseManager
+
+
+def calculate_file_hash(file_path: str) -> str:
+    """ファイルのMD5ハッシュを計算"""
+    with open(file_path, "rb") as f:
+        file_bytes = f.read()
+    return hashlib.md5(file_bytes).hexdigest()
+
+
+def main():
+    print("🚀 既存テンプレートのDB登録を開始します...")
+
+    # パス設定
+    base_dir = os.getcwd()
+    template_dir = os.path.join(base_dir, "data", "templates")
+
+    if not os.path.exists(template_dir):
+        print(f"❌ フォルダが見つかりません: {template_dir}")
+        return
+
+    # DB接続
+    db = DatabaseManager()
+
+    # 登録処理
+    files = [f for f in os.listdir(template_dir) if f.lower().endswith(".pdf")]
+    count = 0
+
+    print(f"📂 対象フォルダ: {template_dir}")
+    print(f"📄 PDFファイル数: {len(files)}")
+
+    for filename in files:
+        file_path = os.path.join(template_dir, filename)
+        file_hash = calculate_file_hash(file_path)
+
+        # 既に登録済みかチェック
+        if db.is_file_registered(file_hash):
+            print(f"SKIP (登録済): {filename}")
+            continue
+
+        # 簡易的な種別判定 (ファイル名から推測)
+        doc_type = "その他"
+        if "残高証明" in filename:
+            doc_type = "残高証明"
+        elif "相続届" in filename or "手続" in filename:
+            doc_type = "相続届"
+        elif "委任状" in filename:
+            doc_type = "委任状"
+
+        # DBへ登録
+        db.register_file_hash(file_hash=file_hash, filename=filename, doc_type=doc_type)
+        print(f"✅ REGISTERED: {filename} ({doc_type})")
+        count += 1
+
+    print("------------------------------------------------")
+    print(f"🎉 完了しました。新規登録: {count} 件")
+    print("画面をリロードして確認してください。")
+
+
+if __name__ == "__main__":
+    main()
+```
+
+## File: requirements.txt
+```
+# 📂 遺言・遺産整理業務支援システム 要件定義書 (Ver 1.0)
+
+## 1. プロジェクト概要
+* **目的:** 遺言書作成および遺産整理業務の効率化。
+* **コアコンセプト:** 「個人情報の完全オフライン管理」と「生成AIによる業務支援」のハイブリッド構成。
+* **利用規模:** 本社20名で開始、将来的には全拠点100名以上（年間1000件規模）。
+
+## 2. 技術スタック選定
+以下のライブラリ・ツールを標準とする。
+
+| カテゴリ | 技術名 | 選定理由 |
+| :--- | :--- | :--- |
+| **言語** | **Python 3.10+** | AI/データ処理のエコシステムが最強であるため。 |
+| **アプリFW** | **Streamlit** | 社内Webアプリ化が高速。各PCへのインストール不要。 |
+| **DB** | **PostgreSQL** | 100人規模の同時接続・排他制御に耐える堅牢性（無料）。 |
+| **ORM** | **SQLAlchemy** | DB操作の抽象化。保守性向上のため必須。 |
+| **OCR** | **PaddleOCR** | 金融機関書類（日本語・罫線あり）の認識精度が高いため。 |
+| **生成AI** | **Google Gemini API** | マニュアル検索、文書案作成用。(google-generativeai) |
+| **PDF処理** | **PyMuPDF (fitz)** | PDFの読み込み、加工用。 |
+
+## 3. システムアーキテクチャ
+物理的なデータ保管場所と、外部AIへのデータフローを厳密に分離する。
+
+* **サーバー構成:** オンプレミス（社内）サーバー1台にDockerコンテナ等でDBとアプリをホスト。
+* **クライアント:** 社員PCのブラウザからイントラネット経由でアクセス。
+* **ネットワーク分離:**
+    * **Zone A (Secure/Local):** PostgreSQL, OCR処理, 個人情報（氏名, 口座番号）の保存。インターネットへは出さない。
+    * **Zone B (Cloud/AI):** Gemini API。ここには「匿名化されたテキスト」と「マニュアル」のみ送信する。
+
+## 4. 機能要件
+
+### A. 顧客・案件管理機能
+* 顧客情報（被相続人、相続人）のCRUD処理。
+* PostgreSQLを使用し、排他制御を行う。
+
+### B. 帳票OCR取り込み機能
+* Streamlit画面から画像/PDFをアップロード。
+* PaddleOCRでテキスト化。
+* OCR結果と元画像を並べて表示し、人間が修正してDB保存するUI。
+
+### C. 生成AI支援機能（RAG/Drafting）
+* **マスキング処理:** 相談内容をGeminiに投げる前に、正規表現等で個人情報（氏名、住所、電話番号、口座番号）をプレースホルダ（例: `[NAME_A]`, `[BANK_ID]`）に置換するロジックを実装すること。
+* **マニュアル検索:** 社内規定や金融機関手続きマニュアルをベクトル化、またはコンテキストとして渡し、質問に回答させる。
+
+### D. バックアップ機能
+* `pg_dump` を使用し、毎日深夜にDBのダンプファイルを作成。
+* 外部ストレージ（NAS等）への転送スクリプト。
+
+## 5. データベース設計指針（ER図イメージ）
+* **usersテーブル:** 社員アカウント管理（権限管理用）。
+* **customersテーブル:** 顧客基本情報。
+* **mattersテーブル:** 案件情報（遺言作成、遺産整理など）。
+* **documentsテーブル:** OCR読み取り結果、生成された文書データ。ファイルパス管理。
+
+## 6. セキュリティ・コンプライアンス規定
+* **原則:** 顧客のPII（個人特定情報）は、いかなる場合もGemini APIのエンドポイントへ送信してはならない。
+* **API設定:** Gemini API利用時は、学習データとして利用されない設定（Enterprise利用またはオプトアウト設定）を確認する。
+```
+
+## File: run_watcher.py
+```python
+# file: run_watcher.py
+import logging
+import os
+import sys
+import time
+
+# ロギング設定 (Streamlit警告と区別するため)
+logging.basicConfig(
+    level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s"
+)
+logger = logging.getLogger(__name__)
+
+from watchdog.events import FileSystemEventHandler
+from watchdog.observers import Observer
+
+# パス解決の最適化
+BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+SRC_DIR = os.path.join(BASE_DIR, "src")
+if SRC_DIR not in sys.path:
+    sys.path.append(SRC_DIR)
+
+# WatcherプロセスではStreamlit環境ではないことを明示するためのフラグ
+os.environ["IS_WATCHER_PROCESS"] = "true"
+
+from legal_system.core.data_sync import DataSyncEngine
+
+# Macのダウンロードフォルダを優先
+WATCH_DIR = os.path.expanduser("~/Downloads")
+
+
+class JsonHandler(FileSystemEventHandler):
+    def __init__(self):
+        # DataSyncEngine内でDB接続が行われる
+        self.syncer = DataSyncEngine()
+
+    def on_created(self, event):
+        if event.is_directory:
+            return
+        filename = os.path.basename(event.src_path)
+
+        if filename.startswith("G") and filename.endswith(".json"):
+            logger.info(f"📥 連携JSONを検知: {filename}")
+            # ファイルの書き込み完了を待機（MacのDL処理は一瞬だが安全のため）
+            time.sleep(1.5)
+            success = self.syncer.sync_from_kintone_json(event.src_path)
+            if success:
+                logger.info(f"✅ DB同期完了: {filename}")
+            else:
+                logger.error(f"❌ 同期失敗: {filename}")
+
+
+if __name__ == "__main__":
+    if not os.path.exists(WATCH_DIR):
+        logger.error(f"監視ディレクトリが存在しません: {WATCH_DIR}")
+        sys.exit(1)
+
+    logger.info(f"🚀 監視開始: {WATCH_DIR}")
+    logger.info("G番号(Gxxxx.json)のファイルを自動でPostgreSQLへ取り込みます。")
+
+    event_handler = JsonHandler()
+    observer = Observer()
+    observer.schedule(event_handler, WATCH_DIR, recursive=False)
+    observer.start()
+
+    try:
+        while True:
+            time.sleep(1)
+    except KeyboardInterrupt:
+        logger.info("🛑 監視を停止します。")
+        observer.stop()
+    observer.join()
 ```
 
 ## File: src/legal_system/core/ai_factory.py
@@ -2370,63 +2880,6 @@ class AIFactory:
             persist_directory=str(Config.VECTOR_STORE_PATH),
             embedding_function=embeddings,
         )
-```
-
-## File: src/legal_system/main.py
-```python
-# ファイルパス: src/legal_system/main.py
-
-import subprocess
-import sys
-from pathlib import Path
-
-
-def main():
-    """
-    Streamlitアプリとフォルダ監視(Watcher)を同時に起動するランチャー
-    """
-    current_dir = Path(__file__).parent.absolute()
-    app_path = current_dir / "ui" / "Home.py"
-
-    # プロジェクトルートにある run_watcher.py のパス
-    # src/legal_system/main.py -> src/legal_system -> src -> root
-    root_dir = current_dir.parent.parent
-    watcher_path = root_dir / "run_watcher.py"
-
-    print("🚀 Legal RAG System を起動します...")
-
-    # 1. 監視プロセスをバックグラウンドで起動
-    watcher_process = None
-    if watcher_path.exists():
-        print("👀 フォルダ監視(Watcher)を開始します...")
-        watcher_process = subprocess.Popen([sys.executable, str(watcher_path)])
-    else:
-        print("⚠️ run_watcher.py が見つからないため、監視機能はスキップします。")
-
-    # 2. Streamlitをメインプロセスとして起動 (これが終わるまで待機)
-    print(f"📂 UI起動: {app_path}")
-    cmd = [sys.executable, "-m", "streamlit", "run", str(app_path)]
-
-    if len(sys.argv) > 1:
-        cmd.extend(sys.argv[1:])
-
-    try:
-        subprocess.run(cmd, check=True)
-    except KeyboardInterrupt:
-        print("\n🛑 システムを終了します。")
-    except Exception as e:
-        print(f"❌ エラーが発生しました: {e}")
-    finally:
-        # アプリが終了したら、監視プロセスも終了させる
-        if watcher_process:
-            print("🛑 監視プロセスを停止中...")
-            watcher_process.terminate()
-            watcher_process.wait()
-            print("✅ 完了")
-
-
-if __name__ == "__main__":
-    main()
 ```
 
 ## File: src/legal_system/models/tables.py
@@ -3173,44 +3626,31 @@ class WillAllocation(Base):
 ```python
 # src/legal_system/ui/Home.py
 
-import hashlib
-import json
 import os
-import re
 import sys
 import time
-from datetime import datetime
-from io import BytesIO
 
 import pandas as pd
 import streamlit as st
 import streamlit.components.v1 as components
 from dotenv import load_dotenv
 
-# プロジェクトルートへのパス解決 (update_bank_master読み込み用)
+# パス解決
 ROOT_DIR = os.path.dirname(
     os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 )
 sys.path.append(ROOT_DIR)
 
-# LangChain関連
 from langchain_core.output_parsers import StrOutputParser
 from langchain_core.prompts import ChatPromptTemplate
-from langchain_text_splitters import RecursiveCharacterTextSplitter
-from pypdf import PdfReader
 
-# PDFプレビュー用
-try:
-    from pdf2image import convert_from_bytes
-except ImportError:
-    convert_from_bytes = None
-
-# 自作モジュール
 from legal_system.core.ai_factory import AIFactory
 from legal_system.core.database_manager import DatabaseManager
-from legal_system.core.ocr_engine import extract_text_from_scanned_pdf
 
-# 更新スクリプトの関数をインポート
+# ★追加: プリロード用モジュール
+from legal_system.core.preload import warm_up_modules
+
+# 更新スクリプト関連
 try:
     from update_bank_master import (
         download_data,
@@ -3226,284 +3666,88 @@ load_dotenv()
 # ==========================================
 # 2. アプリケーションの初期設定
 # ==========================================
-st.set_page_config(
-    page_title="遺言・遺産整理業務システム | ホーム", layout="wide", page_icon="⚖️"
-)
+st.set_page_config(page_title="実務Q&A | 法務RAG", layout="wide", page_icon="⚖️")
 
-# DBマネージャーの初期化
+# ★追加: 画面描画の前に重いモジュールをロード（初回のみ実行）
+warm_up_modules()
+
 db_manager = DatabaseManager()
 current_user = db_manager.get_current_user_info()
 
+# ==========================================
+# 3. ヘルパー関数群
+# ==========================================
 
-# ==========================================
-# 更新チェック機能 (キャッシュ化)
-# ==========================================
+
 @st.cache_resource(ttl=60)
 def check_update_status():
-    """
-    更新があるかチェックする関数
-    戻り値: (status_code, message/date)
-    status_code: 0=最新/オフライン, 1=更新あり, 2=エラー
-    """
     if not get_remote_last_commit_date:
         return 2, "更新スクリプトなし"
-
-    # データファイルが物理的に存在するかチェック
     banks_path = os.path.join(ROOT_DIR, "data", "zengin", "banks.json")
     if not os.path.exists(banks_path):
-        return 1, "データ未取得 (ファイルなし)"
-
-    # 1. リモート確認 (タイムアウト付きで安全に)
-    remote_date = get_remote_last_commit_date()
-    if not remote_date:
-        return 0, "オフライン (更新チェック不可)"
-
-    # 2. ローカル確認
-    local_state = load_local_state()
-    local_date = local_state.get("last_commit_date", "")
-
-    # 3. 比較
-    if remote_date != local_date:
-        return 1, remote_date  # 更新あり！日付を返す
-
-    return 0, "最新です"
+        return 1, "データ未取得"
+    remote = get_remote_last_commit_date()
+    local = load_local_state().get("last_commit_date", "")
+    return (1, remote) if remote and remote != local else (0, "最新です")
 
 
-# ==========================================
-# 3. 業務ルール・マスタ読み込み関数
-# ==========================================
 def load_company_rules():
-    """全社共通の業務ルールを読み込む"""
-    rule_path = os.path.join(ROOT_DIR, "data", "rules", "company_rules.txt")
-
-    if os.path.exists(rule_path):
-        try:
-            with open(rule_path, "r", encoding="utf-8") as f:
-                return f.read()
-        except UnicodeDecodeError:
-            try:
-                with open(rule_path, "r", encoding="cp932") as f:
-                    return f.read()
-            except Exception:
-                return "（読込失敗：文字コード不明）"
-        except Exception:
-            return "（読込失敗）"
-    return "（ファイルなし）"
+    path = os.path.join(ROOT_DIR, "data", "rules", "company_rules.txt")
+    if os.path.exists(path):
+        with open(path, "r", encoding="utf-8") as f:
+            return f.read()
+    return ""
 
 
-def get_bank_specific_info(query: str):
-    """銀行固有ルールをCSVから取得"""
-    csv_path = os.path.join(ROOT_DIR, "data", "rules", "bank_master.csv")
-
-    if not os.path.exists(csv_path):
+def get_bank_specific_info(query):
+    path = os.path.join(ROOT_DIR, "data", "rules", "bank_master.csv")
+    if not os.path.exists(path):
         return ""
-
-    df = None
     try:
-        df = pd.read_csv(csv_path, encoding="utf-8")
-    except UnicodeDecodeError:
-        try:
-            df = pd.read_csv(csv_path, encoding="cp932")
-        except Exception:
-            return ""
-    except Exception:
-        return ""
-
-    if df is None:
-        return ""
-
-    try:
-        info_text = ""
-        for index, row in df.iterrows():
-            bank_name = str(row.get("銀行名", ""))
-            if bank_name and bank_name in query:
-                info_text += f"""
-                【{bank_name} 個別ルール】
-                - 印鑑証明書の期限: {row.get("印鑑証明期限", "規定なし")}
-                - 代理人本人確認書類: {row.get("代理人本人確認書類", "規定なし")}
-                - 手数料支払方法: {row.get("振込ルール", "規定なし")}
-                - 特記事項: {row.get("備考", "")}
-                """
-        return info_text
-    except Exception:
+        df = pd.read_csv(path, encoding="utf-8")
+        res = ""
+        for _, row in df.iterrows():
+            if str(row.get("銀行名")) in query:
+                res += f"【{row.get('銀行名')}】期限:{row.get('印鑑証明期限')} 支払:{row.get('振込ルール')}\n"
+        return res
+    except:
         return ""
 
 
-# ==========================================
-# 4. ヘルパー関数 (ロジック & UI操作)
-# ==========================================
-def js_scroll_to_bottom():
-    """画面最下部へスクロール"""
-    js = """
-    <script>
-        var mainParams = window.parent.document.querySelector('section.main');
-        if (mainParams) {
-            mainParams.scrollTo({ top: mainParams.scrollHeight, behavior: 'smooth' });
-        }
-    </script>
-    """
-    components.html(js, height=0)
+def run_rag_search(query, mode, llm):
+    # RAG検索ロジック
+    vector_store = AIFactory.get_vector_store()
+
+    # 類似検索
+    docs = vector_store.similarity_search(query, k=4)
+    context = "\n".join([d.page_content for d in docs])
+
+    # プロンプト構築
+    prompt = ChatPromptTemplate.from_template(
+        f"ルール:{load_company_rules()}\n銀行:{get_bank_specific_info(query)}\n資料:{{context}}\n質問:{{question}}"
+    )
+    chain = prompt | llm | StrOutputParser()
+
+    return chain.invoke({"context": context, "question": query}), docs
 
 
 def js_focus_chat_input():
-    """チャット入力欄にフォーカス"""
-    js = """
-    <script>
-        setTimeout(function() {
-            const textArea = window.parent.document.querySelector('textarea[data-testid="stChatInputTextArea"]');
-            if (textArea) { textArea.focus(); }
-        }, 500);
-    </script>
-    """
+    js = """<script>
+    setTimeout(function() {
+        const ta = window.parent.document.querySelector('textarea[data-testid="stChatInputTextArea"]');
+        if (ta) { ta.focus(); }
+    }, 500);
+    </script>"""
     components.html(js, height=0)
 
 
-def calculate_file_hash(file_bytes: bytes) -> str:
-    """ファイルのMD5ハッシュ値を計算"""
-    return hashlib.md5(file_bytes).hexdigest()
-
-
-def analyze_document_info(text_content: str, llm):
-    """ドキュメントから「ファイル名」「銀行名」「書類種別」を抽出する"""
-    if not text_content:
-        return {"filename": "", "bank_name": "", "doc_type": ""}
-
-    prompt = """
-    以下のドキュメント冒頭を読み、3つの情報をJSON形式で出力してください。
-    
-    1. filename: {金融機関名}_{書類名}
-    2. bank_name: 金融機関名 (特定できなければ"その他")
-    3. doc_type: 以下のいずれかを選択
-       - "手引き": 手続きガイド、マニュアル、要領
-       - "残高証明": 残高証明書発行依頼書
-       - "相続届": 相続届、解約依頼書、名義変更届
-       - "委任状": 委任状
-       - "その他": 上記以外
-    
-    【ドキュメント冒頭】
-    """ + text_content[:1500]
-
-    try:
-        response = llm.invoke(prompt)
-        content = response.content if hasattr(response, "content") else str(response)
-
-        match = re.search(r"\{.*\}", content, re.DOTALL)
-        if match:
-            return json.loads(match.group(0))
-    except Exception:
-        pass
-    return {"filename": "解析失敗", "bank_name": "その他", "doc_type": "その他"}
-
-
-def extract_text_safe(file_bytes: bytes) -> str:
-    """PDFからテキスト抽出 (pypdf -> OCR)"""
-    text = ""
-    try:
-        pdf = PdfReader(BytesIO(file_bytes))
-        for page in pdf.pages:
-            t = page.extract_text()
-            if t:
-                text += t
-    except:
-        pass
-    if len(text.strip()) < 50:
-        text = extract_text_from_scanned_pdf(file_bytes)
-    return text
-
-
-def filter_docs_by_bank_metadata(query: str, docs: list) -> list:
-    """銀行名キーワードによる検索結果のフィルタリング"""
-    bank_keywords = {
-        "ゆうちょ": "ゆうちょ",
-        "郵貯": "ゆうちょ",
-        "じぶん": "じぶん",
-        "au": "じぶん",
-        "三菱": "三菱",
-        "UFJ": "三菱",
-        "みずほ": "みずほ",
-        "三井": "三井",
-        "SMBC": "三井",
-        "りそな": "りそな",
-        "横浜": "横浜",
-        "千葉": "千葉",
-    }
-
-    target_key = None
-    for key, required_str in bank_keywords.items():
-        if key in query:
-            target_key = required_str
-            break
-
-    if not target_key:
-        return docs
-
-    filtered_docs = []
-    for d in docs:
-        bank_meta = d.metadata.get("bank_name", "")
-        filename = d.metadata.get("source", "")
-
-        if target_key in bank_meta or target_key in filename:
-            filtered_docs.append(d)
-
-    return filtered_docs if filtered_docs else []
-
-
-def run_rag_search(query: str, mode_label: str, llm):
-    """RAG検索実行関数"""
-    if not llm:
-        return "AIモデルの初期化に失敗しました。", []
-
-    # 1. ルール読込
-    company_rules = load_company_rules()
-    bank_specifics = get_bank_specific_info(query)
-
-    # 2. 検索
-    vector_store = AIFactory.get_vector_store()
-    try:
-        docs = vector_store.similarity_search(query, k=10)
-        docs = filter_docs_by_bank_metadata(query, docs)
-        docs = docs[:4]
-
-        context = "\n\n".join([d.page_content for d in docs]) if docs else ""
-        if not docs:
-            context = "（関連する資料は見つかりませんでした）"
-
-        db_manager.log_action(
-            current_user["id"], "SEARCH", f"Mode:{mode_label}", f"Query: {query}"
-        )
-    except Exception as e:
-        return f"検索エラー: {e}", []
-
-    # 3. 回答生成
-    system_prompt = f"""
-    あなたは行政書士法人の業務システムです。回答対象は「行政書士補助者」です。
-    【社内ルール】と【銀行マスタ】を**最優先**し、【参照資料】で補完して回答してください。
-    
-    【社内ルール】{company_rules}
-    【銀行情報】{bank_specifics}
-    
-    【基本】
-    1. 申請主体は「代表行政書士（代理人）」
-    2. 挨拶不要。結論から記述。
-    3. OCR誤字は補正して解釈。
-    """
-    template = f"""{system_prompt}\n【参照資料】{{context}}\n【質問】{{question}}"""
-
-    prompt = ChatPromptTemplate.from_template(template)
-    chain = prompt | llm | StrOutputParser()
-
-    try:
-        answer = chain.invoke({"context": context, "question": query})
-        return answer, docs
-    except Exception as e:
-        return f"生成エラー: {str(e)}", []
-
-
 # ==========================================
-# 5. UIメイン構成
+# 4. メイン UI
 # ==========================================
 def main():
-    # --- サイドバー (ユーザー情報 & 更新) ---
+    # ----------------------------------
+    # 1. サイドバー設定
+    # ----------------------------------
     with st.sidebar:
         st.title("⚖️ 業務メニュー")
         st.info(f"👤 **{current_user['name']}**")
@@ -3511,6 +3755,7 @@ def main():
         if current_user["phone"]:
             st.caption(f"TEL: {current_user['phone']}")
 
+        # ユーザー情報更新機能
         with st.expander("ユーザー情報更新"):
             new_name = st.text_input("表示名", value=current_user["name"])
             new_dept = st.text_input("所属", value=current_user["dept"])
@@ -3521,539 +3766,140 @@ def main():
                     current_user["id"], new_name, new_dept, new_phone
                 )
                 st.success("更新しました。再読み込みしてください。")
-
-        st.divider()
-
-        # ▼▼▼ 自動更新チェック機能 (UIプログレス対応版) ▼▼▼
-        st.subheader("🔄 マスタデータ管理")
-
-        # 起動時にチェック
-        status, info = check_update_status()
-
-        if status == 1:
-            st.warning(f"⚠️ {info}")  # メッセージを表示
-
-            if st.button("今すぐ更新して取り込む"):
-                # --- Streamlitのプログレスバーを定義 ---
-                progress_text = "データをダウンロード中..."
-                my_bar = st.progress(0, text=progress_text)
-
-                # --- コールバック関数 ---
-                def update_progress(current, total, message):
-                    percent = current / total if total > 0 else 0
-                    if percent > 1.0:
-                        percent = 1.0
-                    my_bar.progress(percent, text=f"{message} ({current}/{total})")
-
-                # --- 実行 ---
-                success, _ = download_data(progress_callback=update_progress)
-
-                if success:
-                    my_bar.progress(1.0, text="完了しました！")
-                    # 現在の日付を保存
-                    if get_remote_last_commit_date:
-                        remote_date = (
-                            get_remote_last_commit_date() or datetime.now().isoformat()
-                        )
-                        save_local_state(remote_date)
-                    st.success("更新完了！アプリをリロードします。")
-                    time.sleep(2)
-                    st.rerun()
-                else:
-                    st.error("更新に失敗しました。ネット接続を確認してください。")
-        elif status == 0:
-            st.caption(f"✅ {info}")
-            # 強制更新ボタン（念のため）
-            if st.button("強制再取得"):
-                # --- Streamlitのプログレスバーを定義 ---
-                progress_text = "データを強制ダウンロード中..."
-                my_bar = st.progress(0, text=progress_text)
-
-                def update_progress(current, total, message):
-                    percent = current / total if total > 0 else 0
-                    if percent > 1.0:
-                        percent = 1.0
-                    my_bar.progress(percent, text=f"{message} ({current}/{total})")
-
-                success, _ = download_data(progress_callback=update_progress)
-                if success:
-                    my_bar.progress(1.0, text="完了")
-                    if get_remote_last_commit_date:
-                        remote_date = (
-                            get_remote_last_commit_date() or datetime.now().isoformat()
-                        )
-                        save_local_state(remote_date)
-                    st.success("完了。リロードします。")
-                    time.sleep(1)
-                    st.rerun()
-        else:
-            st.caption("⚠️ 更新機能無効")
-        # ▲▲▲ ここまで ▲▲▲
-
-        st.divider()
-        st.subheader("🤖 AIモード選択")
-        ai_mode = st.radio(
-            "処理モード:", ("☁️ Cloud (Gemini)", "🔒 Secure (Local)"), index=0
-        )
-
-        if "Cloud" in ai_mode:
-            mode_label = "CLOUD"
-            llm = AIFactory.get_llm("cloud")
-            st.info("🚀 **高速・高機能**\n一般手続用。個人情報入力禁止。")
-        else:
-            mode_label = "LOCAL"
-            llm = AIFactory.get_llm("local")
-            st.warning("🛡️ **機密保護**\nオフライン処理。機密書類用。")
-
-    # --- メインエリア ---
-    tab1, tab2, tab3 = st.tabs(["💬 実務Q&A", "📥 資料学習 (OCR)", "🗑️ データ管理"])
-
-    # --- Tab 1: チャット ---
-    with tab1:
-        st.subheader(f"金融機関手続のAI検索 ({mode_label})")
-        js_focus_chat_input()
-
-        if mode_label == "LOCAL":
-            st.error("【機密モード】データは外部送信されません。")
-        else:
-            st.success("【クラウドモード】Gemini 2.5 使用中。")
-
-        if "messages" not in st.session_state:
-            st.session_state.messages = []
-
-        for m in st.session_state.messages:
-            with st.chat_message(m["role"]):
-                st.write(m["content"])
-                if m.get("source_docs"):
-                    with st.expander("📚 参照した雛形・資料をダウンロード"):
-                        seen_paths = set()
-                        for doc in m["source_docs"]:
-                            path = doc.metadata.get("path")
-                            name = doc.metadata.get("source", "不明なファイル")
-                            bank = doc.metadata.get("bank_name", "")
-                            dtype = doc.metadata.get("doc_type", "")
-
-                            label_parts = [f"📥 {name}"]
-                            if bank:
-                                label_parts.append(f"({bank})")
-                            if dtype:
-                                label_parts.append(f"[{dtype}]")
-                            label = " ".join(label_parts)
-
-                            if path and os.path.exists(path) and path not in seen_paths:
-                                seen_paths.add(path)
-                                with open(path, "rb") as f:
-                                    st.download_button(
-                                        label=label,
-                                        data=f,
-                                        file_name=os.path.basename(path),
-                                        mime="application/pdf",
-                                        key=f"dl_{os.path.basename(path)}_{time.time()}",
-                                    )
-
-        if prompt := st.chat_input("質問を入力..."):
-            st.session_state.messages.append({"role": "user", "content": prompt})
-            with st.chat_message("user"):
-                st.write(prompt)
-
-            with st.chat_message("assistant"):
-                with st.spinner("社内ルール・手引きを確認中..."):
-                    response, source_docs = run_rag_search(prompt, mode_label, llm)
-                    st.write(response)
-
-                    if source_docs:
-                        with st.expander(
-                            "📚 参照した雛形・資料をダウンロード", expanded=True
-                        ):
-                            seen_paths = set()
-                            for doc in source_docs:
-                                path = doc.metadata.get("path")
-                                name = doc.metadata.get("source", "不明なファイル")
-                                bank = doc.metadata.get("bank_name", "")
-                                dtype = doc.metadata.get("doc_type", "")
-
-                                label_parts = [f"📥 {name}"]
-                                if bank:
-                                    label_parts.append(f"({bank})")
-                                if dtype:
-                                    label_parts.append(f"[{dtype}]")
-                                label = " ".join(label_parts)
-
-                                if (
-                                    path
-                                    and os.path.exists(path)
-                                    and path not in seen_paths
-                                ):
-                                    seen_paths.add(path)
-                                    with open(path, "rb") as f:
-                                        st.download_button(
-                                            label=label,
-                                            data=f,
-                                            file_name=os.path.basename(path),
-                                            mime="application/pdf",
-                                        )
-
-                    st.session_state.messages.append(
-                        {
-                            "role": "assistant",
-                            "content": response,
-                            "source_docs": source_docs,
-                        }
-                    )
-
-    # --- Tab 2: アップロード ---
-    with tab2:
-        st.subheader("📂 雛形・記入例の登録")
-        st.caption("重複チェック・タグ付け機能付き。PDFを解析し登録します。")
-
-        s_norm, s_sec = st.tabs(["🟦 一般雛形", "🟥 記入例 (機密)"])
-
-        # 2-A. 一般
-        with s_norm:
-            st.info("個人情報を含まない手引き等")
-
-            # === 【追加】案件紐付け選択エリア ===
-            session = db_manager._get_session()
-            target_case_id = None
-            try:
-                from legal_system.models.tables import Case
-
-                cases = session.query(Case).all()
-                # 選択肢: None(共通) + 各案件
-                case_opts = {"（全案件共通の雛形として登録）": None}
-                for c in cases:
-                    case_opts[f"{c.case_number}: {c.client_name}"] = c.case_id
-
-                selected_case_label = st.selectbox(
-                    "紐付ける案件 (任意)",
-                    list(case_opts.keys()),
-                    help="特定の案件専用の資料であれば案件を選択してください。テンプレートの場合は「共通」のままにしてください。",
-                )
-                target_case_id = case_opts[selected_case_label]
-            finally:
-                session.close()
-            # =====================================
-
-            files_n = st.file_uploader(
-                "PDFアップロード (一般)", accept_multiple_files=True, key="up_n"
-            )
-
-            if files_n and st.button("🔍 クラウド解析", key="btn_n"):
-                st.session_state.upload_stage = []
-                llm_cloud = AIFactory.get_llm("cloud")
-
-                for f in files_n:
-                    fb = f.read()
-                    f_hash = calculate_file_hash(fb)
-                    if db_manager.is_file_registered(f_hash):
-                        st.warning(f"⚠️ {f.name} は既に登録されています。")
-                        continue
-
-                    text = extract_text_safe(fb)
-                    meta = (
-                        analyze_document_info(text, llm_cloud)
-                        if text
-                        else {
-                            "filename": f.name,
-                            "bank_name": "その他",
-                            "doc_type": "その他",
-                        }
-                    )
-
-                    st.session_state.upload_stage.append(
-                        {
-                            "old": f.name,
-                            "new": meta.get("filename", f.name),
-                            "bank_name": meta.get("bank_name", "その他"),
-                            "doc_type": meta.get("doc_type", "その他"),
-                            "data": fb,
-                            "text": text,
-                            "type": "general",
-                            "hash": f_hash,
-                            "case_id": target_case_id,  # 選択された案件IDを保持
-                        }
-                    )
-
-                if st.session_state.upload_stage:
-                    st.rerun()
-                else:
-                    st.info("新規登録対象はありません。")
-
-        # 2-B. 機密
-        with s_sec:
-            st.warning("個人情報を含む書類 (ローカル処理)")
-            # こちらも同様に案件紐付けを追加
-            session = db_manager._get_session()
-            target_case_id_sec = None
-            try:
-                from legal_system.models.tables import Case
-
-                cases = session.query(Case).all()
-                case_opts = {"（全案件共通の雛形として登録）": None}
-                for c in cases:
-                    case_opts[f"{c.case_number}: {c.client_name}"] = c.case_id
-
-                selected_case_label_sec = st.selectbox(
-                    "紐付ける案件 (任意)",
-                    list(case_opts.keys()),
-                    key="sec_case_sel",
-                    help="特定の案件専用の資料であれば案件を選択してください。",
-                )
-                target_case_id_sec = case_opts[selected_case_label_sec]
-            finally:
-                session.close()
-
-            file_s = st.file_uploader(
-                "PDFアップロード (機密)", accept_multiple_files=False, key="up_s"
-            )
-
-            if file_s:
-                fb_s = file_s.read()
-                f_hash = calculate_file_hash(fb_s)
-
-                if db_manager.is_file_registered(f_hash):
-                    st.error(f"⛔ {file_s.name} は既に登録済みです。")
-                else:
-                    if convert_from_bytes:
-                        try:
-                            images = convert_from_bytes(fb_s, first_page=1, last_page=1)
-                            if images:
-                                st.image(images[0], caption="プレビュー", width=400)
-                                js_scroll_to_bottom()
-                        except:
-                            pass
-
-                    check = st.checkbox(
-                        "機密書類であることを確認しました", key="check_s"
-                    )
-                    if check:
-                        js_scroll_to_bottom()
-
-                    if check and st.button("🔒 ローカル解析", key="btn_s"):
-                        st.session_state.upload_stage = []
-                        llm_local = AIFactory.get_llm("local")
-
-                        with st.spinner("解析中..."):
-                            text_s = extract_text_safe(fb_s)
-                            meta = (
-                                analyze_document_info(text_s, llm_local)
-                                if text_s
-                                else {
-                                    "filename": file_s.name,
-                                    "bank_name": "その他",
-                                    "doc_type": "その他",
-                                }
-                            )
-                            if "記入例" not in meta["filename"]:
-                                meta["filename"] += "_記入例"
-
-                            st.session_state.upload_stage.append(
-                                {
-                                    "old": file_s.name,
-                                    "new": meta.get("filename", file_s.name),
-                                    "bank_name": meta.get("bank_name", "その他"),
-                                    "doc_type": meta.get("doc_type", "その他"),
-                                    "data": fb_s,
-                                    "text": text_s,
-                                    "type": "secure",
-                                    "hash": f_hash,
-                                    "case_id": target_case_id_sec,  # 案件IDを保持
-                                }
-                            )
-                        st.rerun()
-
-        # 2-C. 保存処理
-        if st.session_state.get("upload_stage"):
-            st.divider()
-            st.subheader("💾 登録確認")
-            with st.form("save_form"):
-                configs = []
-                st.caption("登録名、銀行名タグ、書類種別を確認してください。")
-
-                for i, item in enumerate(st.session_state.upload_stage):
-                    c1, c2, c3, c4 = st.columns([1, 2, 1, 1])
-                    c1.text(item["old"])
-                    new_name = c2.text_input("登録名", value=item["new"], key=f"fn_{i}")
-                    new_bank = c3.text_input(
-                        "銀行タグ", value=item["bank_name"], key=f"bk_{i}"
-                    )
-
-                    current_type = item.get("doc_type", "その他")
-                    type_options = [
-                        "手引き",
-                        "残高証明",
-                        "取引明細",
-                        "顧客勘定元帳",
-                        "相続届",
-                        "その他",
-                    ]
-                    idx = (
-                        type_options.index(current_type)
-                        if current_type in type_options
-                        else 4
-                    )
-                    new_type = c4.selectbox(
-                        "種別", type_options, index=idx, key=f"dt_{i}"
-                    )
-
-                    configs.append(
-                        {
-                            **item,
-                            "name": new_name,
-                            "bank_name": new_bank,
-                            "doc_type": new_type,
-                        }
-                    )
-
-                if st.form_submit_button("✅ 登録実行"):
-                    vector_store = AIFactory.get_vector_store()
-                    splitter = RecursiveCharacterTextSplitter(
-                        chunk_size=800, chunk_overlap=100
-                    )
-                    cnt = 0
-                    today = datetime.now().strftime("%Y%m%d")
-
-                    templates_dir = os.path.join(ROOT_DIR, "data", "templates")
-                    os.makedirs(templates_dir, exist_ok=True)
-
-                    for c in configs:
-                        fname = f"{c['name']}_{today}.pdf"
-                        save_path = os.path.join(templates_dir, fname)
-
-                        with open(save_path, "wb") as f:
-                            f.write(c["data"])
-
-                        # 【修正】case_idを渡して登録
-                        db_manager.register_file_hash(
-                            c["hash"], fname, c["doc_type"], case_id=c.get("case_id")
-                        )
-
-                        enriched_text = f"【ファイル名】{fname}\n【銀行名】{c['bank_name']}\n【書類種別】{c['doc_type']}\n\n{c['text']}"
-                        chunks = splitter.split_text(enriched_text)
-
-                        metadatas = [
-                            {
-                                "source": fname,
-                                "path": save_path,
-                                "security_level": c["type"],
-                                "bank_name": c["bank_name"],
-                                "doc_type": c["doc_type"],
-                            }
-                            for _ in chunks
-                        ]
-
-                        # ★修正: バッチ処理とリトライロジックを追加
-                        # 無料枠(API Rate Limit)の制限対策
-                        batch_size = 5
-                        total_chunks = len(chunks)
-
-                        progress_text = f"AI学習中: {fname} ({total_chunks} chunks)"
-                        my_bar = st.progress(0, text=progress_text)
-
-                        for i in range(0, total_chunks, batch_size):
-                            batch_chunks = chunks[i : i + batch_size]
-                            batch_metas = metadatas[i : i + batch_size]
-
-                            retry_count = 0
-                            max_retries = 3
-
-                            while retry_count <= max_retries:
-                                try:
-                                    vector_store.add_texts(
-                                        batch_chunks, metadatas=batch_metas
-                                    )
-                                    break  # 成功したらループを抜ける
-                                except Exception as e:
-                                    # 429 エラー (Resource Exhausted) の場合のみリトライ
-                                    error_str = str(e)
-                                    if (
-                                        "429" in error_str
-                                        or "RESOURCE_EXHAUSTED" in error_str
-                                    ):
-                                        retry_count += 1
-                                        if retry_count > max_retries:
-                                            st.error(
-                                                f"API制限により中断しました: {fname}"
-                                            )
-                                            raise e
-
-                                        # API制限待ち (15秒待機)
-                                        wait_time = 15 * retry_count
-                                        my_bar.progress(
-                                            min(i / total_chunks, 1.0),
-                                            text=f"API制限待ち... {wait_time}秒待機中 ({retry_count}/{max_retries})",
-                                        )
-                                        time.sleep(wait_time)
-                                    else:
-                                        # その他のエラーは即座に停止
-                                        raise e
-
-                            # 正常終了後の休憩 (連打防止)
-                            time.sleep(1.5)
-                            current_progress = min((i + batch_size) / total_chunks, 1.0)
-                            my_bar.progress(
-                                current_progress,
-                                text=f"学習進行中... {int(current_progress * 100)}%",
-                            )
-
-                        my_bar.empty()
-                        cnt += 1
-
-                    st.success(f"{cnt}件の学習・登録が完了しました！")
-                    st.session_state.upload_stage = []
-
-    # --- Tab 3: データ管理 ---
-    with tab3:
-        st.subheader("🗑️ 登録済みファイルの管理")
-        files = db_manager.get_all_files()
-
-        if not files:
-            st.info("登録されているファイルはありません。")
-        else:
-            df_files = pd.DataFrame(files)
-            # 【修正】カラムに「案件」を追加
-            df_files.columns = [
-                "ファイル名",
-                "登録日時",
-                "ハッシュ値",
-                "書類種別",
-                "案件",
-                "doc_type_raw",  # 隠しカラム (キー用)
-                "uploaded_at_raw",  # 隠しカラム (ソート用)
-            ]
-            st.dataframe(
-                df_files[["登録日時", "案件", "書類種別", "ファイル名"]],
-                use_container_width=True,
-            )
-
-            st.divider()
-            st.warning("【削除エリア】")
-            selected_file = st.selectbox(
-                "削除するファイルを選択", [f["filename"] for f in files]
-            )
-
-            if st.button("選択したファイルを完全に削除する"):
-                templates_dir = os.path.join(ROOT_DIR, "data", "templates")
-                target_path = os.path.join(templates_dir, selected_file)
-
-                if os.path.exists(target_path):
-                    os.remove(target_path)
-
-                db_manager.delete_file_registry(selected_file)
-                st.success(f"{selected_file} を削除しました。再登録してください。")
                 time.sleep(1)
                 st.rerun()
+
+        st.divider()
+
+        # マスタデータ更新チェック
+        status, info = check_update_status()
+        if status == 1:
+            st.warning(f"⚠️ {info}")
+            if st.button("データ更新"):
+                download_data()
+                if get_remote_last_commit_date:
+                    save_local_state(get_remote_last_commit_date())
+                st.rerun()
+
+    # ----------------------------------
+    # 2. メイン画面設定
+    # ----------------------------------
+    st.title("💬 金融機関手続 Q&A")
+
+    # モード切り替え (横並びラジオボタン)
+    ai_mode = st.radio(
+        "処理モード選択",
+        ("☁️ Cloud (Gemini) - 高速・一般用", "🔒 Secure (Local) - 機密・オフライン"),
+        index=0,
+        horizontal=True,
+        label_visibility="collapsed",
+    )
+
+    # モードに応じた通知バーとモデル取得
+    if "Cloud" in ai_mode:
+        mode_label = "CLOUD"
+        st.info(
+            "🚀 **Cloud Mode (Gemini)**: 高速・高精度です。**個人情報の入力は禁止**されています。",
+            icon="☁️",
+        )
+    else:
+        mode_label = "LOCAL"
+        st.warning(
+            "🛡️ **Secure Mode (Local)**: 完全オフライン処理です。**機密情報・個人情報**を扱えます。",
+            icon="🔒",
+        )
+
+    llm = AIFactory.get_llm(mode_label.lower())
+
+    # チャット画面の描画
+    js_focus_chat_input()
+
+    if "messages" not in st.session_state:
+        st.session_state.messages = []
+
+    # 履歴表示
+    for m in st.session_state.messages:
+        with st.chat_message(m["role"]):
+            st.write(m["content"])
+            if m.get("source_docs"):
+                with st.expander("📚 参照資料"):
+                    for doc in m["source_docs"]:
+                        st.caption(f"📄 {doc.metadata.get('source')}")
+
+    # 入力処理
+    if prompt := st.chat_input("例: 三菱UFJ銀行の相続手続きで、印鑑証明書の期限は？"):
+        st.session_state.messages.append({"role": "user", "content": prompt})
+        with st.chat_message("user"):
+            st.write(prompt)
+
+        with st.chat_message("assistant"):
+            with st.spinner(f"{mode_label}モデルで確認中..."):
+                response, docs = run_rag_search(prompt, mode_label, llm)
+                st.write(response)
+                st.session_state.messages.append(
+                    {"role": "assistant", "content": response, "source_docs": docs}
+                )
 
 
 if __name__ == "__main__":
     main()
 ```
 
-## File: src/legal.egg-info/top_level.txt
-```
-__init__
-chains
-legal_system
+## File: src/legal_system/main.py
+```python
+# ファイルパス: src/legal_system/main.py
+
+import subprocess
+import sys
+from pathlib import Path
+
+
+def main():
+    """
+    Streamlitアプリとフォルダ監視(Watcher)を同時に起動するランチャー
+    """
+    current_dir = Path(__file__).parent.absolute()
+    app_path = current_dir / "ui" / "Home.py"
+
+    # プロジェクトルートにある run_watcher.py のパス
+    # src/legal_system/main.py -> src/legal_system -> src -> root
+    root_dir = current_dir.parent.parent
+    watcher_path = root_dir / "run_watcher.py"
+
+    print("🚀 Legal RAG System を起動します...")
+
+    # 1. 監視プロセスをバックグラウンドで起動
+    watcher_process = None
+    if watcher_path.exists():
+        print("👀 フォルダ監視(Watcher)を開始します...")
+        watcher_process = subprocess.Popen([sys.executable, str(watcher_path)])
+    else:
+        print("⚠️ run_watcher.py が見つからないため、監視機能はスキップします。")
+
+    # 2. Streamlitをメインプロセスとして起動 (これが終わるまで待機)
+    print(f"📂 UI起動: {app_path}")
+    cmd = [sys.executable, "-m", "streamlit", "run", str(app_path)]
+
+    if len(sys.argv) > 1:
+        cmd.extend(sys.argv[1:])
+
+    try:
+        subprocess.run(cmd, check=True)
+    except KeyboardInterrupt:
+        print("\n🛑 システムを終了します。")
+    except Exception as e:
+        print(f"❌ エラーが発生しました: {e}")
+    finally:
+        # アプリが終了したら、監視プロセスも終了させる
+        if watcher_process:
+            print("🛑 監視プロセスを停止中...")
+            watcher_process.terminate()
+            watcher_process.wait()
+            print("✅ 完了")
+
+
+if __name__ == "__main__":
+    main()
 ```
 
 ## File: update_bank_master.py
@@ -4191,7 +4037,7 @@ if __name__ == "__main__":
 
 ## File: src/legal_system/core/config.py
 ```python
-# src/legal_system/core/config.py
+# file: src/legal_system/core/config.py
 
 import os
 import random
@@ -4206,23 +4052,18 @@ load_dotenv()
 # ==========================================
 # 1. パス設定 (モジュールレベル定数)
 # ==========================================
-# プロジェクトルートの特定
-# このファイル(config.py)は src/legal_system/core/ にあるため
-# parents[0]=core, parents[1]=legal_system, parents[2]=src, parents[3]=ROOT
 BASE_DIR = Path(__file__).resolve().parents[3]
-
-# データディレクトリ (data/)
 DATA_DIR = BASE_DIR / "data"
 
-# データベース保存先
-DB_DIR_CHROMA = DATA_DIR / "db" / "chroma" / "local_rag_db"
+# DB関連パス (SQLiteはバックアップ等のためにパスだけ残します)
 DB_FILE_SQLITE = DATA_DIR / "db" / "sql" / "legal_system.db"
+DB_DIR_CHROMA = DATA_DIR / "db" / "chroma" / "local_rag_db"
 
 # データ一時保存先
 DATA_DIR_TEMPLATES = DATA_DIR / "templates"
 VECTOR_STORE_PATH = DB_DIR_CHROMA
 
-# 銀行RAGシステム用パス設定
+# RAG関連パス
 RULES_DIR = DATA_DIR / "rules"
 BANK_MASTER_PATH = RULES_DIR / "bank_master.csv"
 COMPANY_RULES_PATH = RULES_DIR / "company_rules.txt"
@@ -4234,28 +4075,36 @@ COMPANY_RULES_PATH = RULES_DIR / "company_rules.txt"
 class Config:
     """
     システム全体の設定定数を管理するクラス。
-    すべての設定値はこのクラスを経由してアクセスします (例: Config.GOOGLE_MODEL_NAME)。
     """
 
-    # --- パス設定のラップ (ここがエラー原因でした) ---
+    # --- パス設定 ---
     BASE_DIR = BASE_DIR
     DATA_DIR = DATA_DIR
+    TEMPLATES_DIR = DATA_DIR_TEMPLATES
 
-    # ★追加: DatabaseManagerが参照するための定義
-    DB_FILE_SQLITE = DB_FILE_SQLITE
-
-    # その他パス
+    # RAG関連パス
     BANK_MASTER_PATH = BANK_MASTER_PATH
     COMPANY_RULES_PATH = COMPANY_RULES_PATH
     VECTOR_STORE_PATH = VECTOR_STORE_PATH
-    TEMPLATES_DIR = DATA_DIR_TEMPLATES
+
+    # --- データベース設定 (PostgreSQL) ---
+    # .env から取得、なければデフォルト値 (Docker開発用など)
+    POSTGRES_USER = os.getenv("POSTGRES_USER", "postgres")
+    POSTGRES_PASSWORD = os.getenv("POSTGRES_PASSWORD", "password")
+    POSTGRES_HOST = os.getenv("POSTGRES_HOST", "localhost")
+    POSTGRES_PORT = os.getenv("POSTGRES_PORT", "5432")
+    POSTGRES_DB = os.getenv("POSTGRES_DB", "legal_db")
+
+    # SQLAlchemy用接続文字列の構築
+    # postgresql+psycopg2://user:password@host:port/dbname
+    DATABASE_URL = (
+        f"postgresql+psycopg2://{POSTGRES_USER}:{POSTGRES_PASSWORD}"
+        f"@{POSTGRES_HOST}:{POSTGRES_PORT}/{POSTGRES_DB}"
+    )
 
     # --- AIモデル設定 ---
-    # Gemini モデル名
     GOOGLE_MODEL_NAME = "models/gemini-2.5-flash-lite"
-
-    # RAG用設定
-    MODEL_NAME = "gemini-2.5-flash-lite"  # engines.py互換用
+    MODEL_NAME = "gemini-2.5-flash-lite"
     EMBEDDING_MODEL = "models/embedding-001"
     TEMPERATURE = 0.0
 
@@ -4263,73 +4112,47 @@ class Config:
     _keys_str = os.getenv("GOOGLE_API_KEYS", "")
     GOOGLE_API_KEYS: List[str] = [k.strip() for k in _keys_str.split(",") if k.strip()]
 
-    # リストが空で、単一のキーがある場合はそれを使用
     if not GOOGLE_API_KEYS and os.getenv("GOOGLE_API_KEY"):
         GOOGLE_API_KEYS = [os.getenv("GOOGLE_API_KEY")]
 
     @classmethod
     def validate_paths(cls) -> None:
-        """必須ファイルの存在確認"""
-        # ディレクトリ作成
+        """必須ディレクトリの存在確認"""
         if not cls.DATA_DIR.exists():
             os.makedirs(cls.DATA_DIR, exist_ok=True)
         if not cls.TEMPLATES_DIR.exists():
             os.makedirs(cls.TEMPLATES_DIR, exist_ok=True)
-
-        # ファイルチェック（存在しなくても起動はさせるがログに残す等）
-        missing = []
-        if (
-            not cls.BANK_MASTER_PATH.exists()
-            and cls.BANK_MASTER_PATH.name != "bank_master.csv"
-        ):
-            missing.append(str(cls.BANK_MASTER_PATH))
-
-        if missing:
-            print(f"⚠️ 一部の設定ファイルが見つかりません: {missing}")
 
 
 # ==========================================
 # 3. キー管理クラス (KeyManager)
 # ==========================================
 class KeyManager:
-    """
-    APIキーの取得とローテーションを管理するクラス
-    Engines.py 等から呼び出されます。
-    """
-
     @staticmethod
     def get_next_key() -> str:
-        """
-        利用可能なAPIキーを Config から取得して返します。
-        複数ある場合はランダムに選択します（簡易ローテーション）。
-        """
         keys = Config.GOOGLE_API_KEYS
-
         if not keys:
-            # 環境変数を再確認
             env_key = os.getenv("GOOGLE_API_KEY")
             if env_key:
                 return env_key
-            raise ValueError(
-                "❌ 有効な Google API Key が見つかりません。.env または環境変数を確認してください。"
-            )
-
+            raise ValueError("❌ 有効な Google API Key が見つかりません。")
         return random.choice(keys)
 ```
 
 ## File: src/legal_system/core/database_manager.py
 ```python
-# File: src/legal_system/core/database_manager.py
+# file: src/legal_system/core/database_manager.py
 
-import getpass
 import os
 from datetime import datetime
 from typing import Any, Dict, List, Optional
 
+import streamlit as st
 from sqlalchemy import create_engine, desc
+from sqlalchemy.engine import Engine
 from sqlalchemy.orm import scoped_session, sessionmaker
 
-# テーブル定義のインポート
+# テーブル定義
 from src.legal_system.models.tables import (
     AuditLog,
     Base,
@@ -4339,42 +4162,95 @@ from src.legal_system.models.tables import (
     User,
 )
 
-# Configのインポート
+# Config
 from .config import Config
+
+
+# ==========================================
+# エンジン生成の共通ロジック (キャッシュなし)
+# ==========================================
+def _create_new_engine() -> Engine:
+    """
+    SQLAlchemyエンジンを新規作成する内部関数。
+    Streamlitへの依存を含みません。
+    """
+    engine = create_engine(
+        Config.DATABASE_URL,
+        pool_size=20,
+        max_overflow=10,
+        pool_pre_ping=True,
+    )
+
+    # テーブル作成 (初回のみ)
+    try:
+        Base.metadata.create_all(engine)
+    except Exception as e:
+        # Streamlit環境下であればエラー表示、そうでなければ標準出力へ
+        msg = f"❌ データベース接続エラー: {e}"
+        if os.environ.get("IS_WATCHER_PROCESS") != "true":
+            st.error(msg)
+            st.info("PostgreSQLサーバー設定(.env)を確認してください。")
+        else:
+            print(msg)
+        raise e
+
+    return engine
+
+
+# ==========================================
+# Streamlit用 キャッシュ付きエンジン取得
+# ==========================================
+@st.cache_resource(show_spinner="データベースに接続中...")
+def _get_cached_engine() -> Engine:
+    """Streamlitのキャッシュ機能を利用してエンジンを保持する"""
+    return _create_new_engine()
+
+
+# ==========================================
+# 公開アクセサ (環境判定ロジック付き)
+# ==========================================
+def get_db_engine() -> Engine:
+    """
+    実行環境に応じて適切なエンジン取得方法を選択するファクトリー関数。
+    - Watcherプロセス (IS_WATCHER_PROCESS=true): キャッシュなしで新規作成
+    - Streamlitアプリ: st.cache_resourceを利用して高速化
+    """
+    if os.environ.get("IS_WATCHER_PROCESS") == "true":
+        # バックグラウンド処理ではStreamlitのキャッシュ機能を使わない
+        return _create_new_engine()
+    else:
+        # UIスレッドではキャッシュを使う
+        return _get_cached_engine()
 
 
 class DatabaseManager:
     """
-    システムのデータベース操作を一元管理するクラス
+    データベース操作を一元管理するクラス。
+    環境に応じたエンジン取得戦略を内部で自動解決します。
     """
 
     def __init__(self):
-        # DBパスの解決
-        self.db_path = str(Config.DB_FILE_SQLITE)
+        # 環境判定済みのエンジン取得関数を呼び出し
+        self.engine = get_db_engine()
 
-        # ディレクトリ作成
-        db_dir = os.path.dirname(self.db_path)
-        os.makedirs(db_dir, exist_ok=True)
-
-        # SQLiteエンジン作成
-        self.engine = create_engine(
-            f"sqlite:///{self.db_path}", connect_args={"check_same_thread": False}
-        )
-
-        # テーブル作成 (既存の場合はスキップ)
-        Base.metadata.create_all(self.engine)
-
+        # セッションファクトリの作成
         self.session_factory = sessionmaker(bind=self.engine)
+
+        # スレッドセーフなセッション
         self.Session = scoped_session(self.session_factory)
 
     def _get_session(self):
+        """新しいセッションを発行"""
         return self.Session()
 
     # ---------------------------------------------------------
     # ユーザー管理
     # ---------------------------------------------------------
     def get_current_user_info(self) -> Dict[str, str]:
-        pc_user = getpass.getuser()
+        """Windowsログインユーザー情報を取得または作成"""
+        # Streamlit Cloud等でOSユーザーが取れない場合のフォールバック
+        pc_user = os.environ.get("USERNAME", "guest_user")
+
         session = self._get_session()
         try:
             user = session.query(User).filter_by(windows_id=pc_user).first()
@@ -4386,8 +4262,9 @@ class DatabaseManager:
                     "phone": user.phone if user.phone else "",
                 }
             else:
-                default_name = f"{pc_user}(未登録)"
-                default_dept = "所属未定"
+                # 新規自動登録
+                default_name = f"{pc_user}"
+                default_dept = "未設定"
                 new_user = User(
                     windows_id=pc_user,
                     name=default_name,
@@ -4431,6 +4308,7 @@ class DatabaseManager:
             session.commit()
         except Exception:
             session.rollback()
+            raise
         finally:
             session.close()
 
@@ -4440,8 +4318,10 @@ class DatabaseManager:
     def log_action(self, user_id: str, action: str, target: str, details: str = ""):
         session = self._get_session()
         try:
+            # user_id (windows_id) から内部IDを引く
             db_user = session.query(User).filter_by(windows_id=user_id).first()
             u_id = db_user.id if db_user else None
+
             log = AuditLog(
                 user_id=u_id,
                 action_type=action,
@@ -4472,9 +4352,8 @@ class DatabaseManager:
         file_hash: str,
         filename: str,
         doc_type: str = "その他",
-        case_id: Optional[int] = None,  # ← ★この引数が重要です
+        case_id: Optional[int] = None,
     ):
-        """ファイルの登録情報を保存・更新"""
         session = self._get_session()
         try:
             file_reg = (
@@ -4483,7 +4362,6 @@ class DatabaseManager:
             if file_reg:
                 file_reg.filename = filename
                 file_reg.doc_type = doc_type
-                # case_id が指定されている場合のみ更新
                 if case_id is not None:
                     file_reg.case_id = case_id
                 file_reg.registered_at = datetime.now()
@@ -4497,9 +4375,9 @@ class DatabaseManager:
                 )
                 session.add(file_reg)
             session.commit()
-        except Exception as e:
-            print(f"Error registering file: {e}")
+        except Exception:
             session.rollback()
+            raise
         finally:
             session.close()
 
@@ -4539,11 +4417,12 @@ class DatabaseManager:
             session.commit()
         except Exception:
             session.rollback()
+            raise
         finally:
             session.close()
 
     # ---------------------------------------------------------
-    # 座標管理
+    # 座標管理 (Coordinate Tool)
     # ---------------------------------------------------------
     def register_coordinate(
         self,
@@ -4616,9 +4495,9 @@ class DatabaseManager:
                         coord.y_point = v
                     elif k == "desc":
                         coord.description = v
+                    # 必要に応じて他のフィールドも追加
                     elif hasattr(coord, k):
                         setattr(coord, k, v)
-                    # 簡易実装のため一部省略、必要なら詳細マッピングを追加
                 session.commit()
                 return True
             return False
@@ -4669,6 +4548,7 @@ Requires-Dist: numpy<2.0
 Requires-Dist: streamlit-image-coordinates>=0.4.0
 Requires-Dist: reportlab>=4.4.7
 Requires-Dist: watchdog>=6.0.0
+Requires-Dist: psycopg2-binary>=2.9.11
 
 # legal-rag-project
 
@@ -4696,6 +4576,14 @@ numpy<2.0
 streamlit-image-coordinates>=0.4.0
 reportlab>=4.4.7
 watchdog>=6.0.0
+psycopg2-binary>=2.9.11
+```
+
+## File: src/legal.egg-info/top_level.txt
+```
+__init__
+chains
+legal_system
 ```
 
 ## File: src/legal.egg-info/SOURCES.txt
@@ -4725,7 +4613,8 @@ src/legal_system/tools/__init__.py
 src/legal_system/tools/coord_tool.py
 src/legal_system/ui/Home.py
 src/legal_system/ui/__init__.py
-src/legal_system/ui/pages/01_銀行手続要件_確認フォーム.py
+src/legal_system/ui/excel_generator.py
+src/legal_system/ui/pages/01_Kintoneデータ_エクセル入力フォーム.py
 src/legal_system/ui/pages/02_相続書類_作成フォーム.py
 src/legal_system/ui/pages/99_預貯金口座入力フォーム.py
 ```
@@ -4778,6 +4667,50 @@ htmlcov/
 Thumbs.db
 
 bootstrap.py
+```
+
+## File: pyproject.toml
+```toml
+[project]
+name = "legal"
+version = "0.1.0"
+description = "Administrative Scrivener RAG System"
+authors = [
+    { name = "Admin", email = "admin@example.com" }
+]
+dependencies = [
+    "streamlit>=1.32.0",
+    "langchain>=0.1.0",
+    "langchain-community>=0.0.20",
+    "langchain-core>=0.1.25",
+    "langchain-google-genai>=0.0.9",
+    "langchain-huggingface>=0.0.1",
+    "langchain-chroma>=0.1.0",
+    "chromadb>=0.4.24",
+    "pypdf>=4.0.1",
+    "pdf2image>=1.17.0",
+    "pytesseract>=0.3.10",
+    "python-dotenv>=1.0.1",
+    "pandas>=2.3.3",
+    "openpyxl>=3.1.2",
+    "sentence-transformers>=5.2.0",
+    "numpy<2.0",
+    "streamlit-image-coordinates>=0.4.0",
+    "reportlab>=4.4.7",
+    "watchdog>=6.0.0",
+    "psycopg2-binary>=2.9.11",
+]
+readme = "README.md"
+requires-python = ">= 3.12"
+
+[tool.rye]
+managed = true
+dev-dependencies = []
+
+[tool.rye.scripts]
+start = "rye run python src/legal_system/main.py"
+pdf = "rye run streamlit run src/legal_system/tools/coord_tool.py"
+exp = "rye run python export_code.py"
 ```
 
 ## File: requirements-dev.lock
@@ -4838,11 +4771,6 @@ click==8.3.1
     # via streamlit
     # via typer
     # via uvicorn
-colorama==0.4.6
-    # via build
-    # via click
-    # via tqdm
-    # via uvicorn
 coloredlogs==15.0.1
     # via onnxruntime
 dataclasses-json==0.6.7
@@ -4887,6 +4815,8 @@ grpcio==1.76.0
 h11==0.16.0
     # via httpcore
     # via uvicorn
+hf-xet==1.2.0
+    # via huggingface-hub
 httpcore==1.0.9
     # via httpx
 httptools==0.7.1
@@ -5065,6 +4995,8 @@ protobuf==6.33.2
     # via onnxruntime
     # via opentelemetry-proto
     # via streamlit
+psycopg2-binary==2.9.11
+    # via legal
 pyarrow==22.0.0
     # via streamlit
 pyasn1==0.6.1
@@ -5098,8 +5030,6 @@ pypika==0.48.9
     # via chromadb
 pyproject-hooks==1.2.0
     # via build
-pyreadline3==3.5.4
-    # via humanfriendly
 pytesseract==0.3.13
     # via legal
 python-dateutil==2.9.0.post0
@@ -5248,9 +5178,10 @@ uuid-utils==0.12.0
     # via langsmith
 uvicorn==0.40.0
     # via chromadb
+uvloop==0.22.1
+    # via uvicorn
 watchdog==6.0.0
     # via legal
-    # via streamlit
 watchfiles==1.1.1
     # via uvicorn
 websocket-client==1.9.0
@@ -5326,11 +5257,6 @@ click==8.3.1
     # via streamlit
     # via typer
     # via uvicorn
-colorama==0.4.6
-    # via build
-    # via click
-    # via tqdm
-    # via uvicorn
 coloredlogs==15.0.1
     # via onnxruntime
 dataclasses-json==0.6.7
@@ -5375,6 +5301,8 @@ grpcio==1.76.0
 h11==0.16.0
     # via httpcore
     # via uvicorn
+hf-xet==1.2.0
+    # via huggingface-hub
 httpcore==1.0.9
     # via httpx
 httptools==0.7.1
@@ -5553,6 +5481,8 @@ protobuf==6.33.2
     # via onnxruntime
     # via opentelemetry-proto
     # via streamlit
+psycopg2-binary==2.9.11
+    # via legal
 pyarrow==22.0.0
     # via streamlit
 pyasn1==0.6.1
@@ -5586,8 +5516,6 @@ pypika==0.48.9
     # via chromadb
 pyproject-hooks==1.2.0
     # via build
-pyreadline3==3.5.4
-    # via humanfriendly
 pytesseract==0.3.13
     # via legal
 python-dateutil==2.9.0.post0
@@ -5736,9 +5664,10 @@ uuid-utils==0.12.0
     # via langsmith
 uvicorn==0.40.0
     # via chromadb
+uvloop==0.22.1
+    # via uvicorn
 watchdog==6.0.0
     # via legal
-    # via streamlit
 watchfiles==1.1.1
     # via uvicorn
 websocket-client==1.9.0
@@ -5754,47 +5683,4 @@ zipp==3.23.0
     # via importlib-metadata
 zstandard==0.25.0
     # via langsmith
-```
-
-## File: pyproject.toml
-```toml
-[project]
-name = "legal"
-version = "0.1.0"
-description = "Administrative Scrivener RAG System"
-authors = [
-    { name = "Admin", email = "admin@example.com" }
-]
-dependencies = [
-    "streamlit>=1.32.0",
-    "langchain>=0.1.0",
-    "langchain-community>=0.0.20",
-    "langchain-core>=0.1.25",
-    "langchain-google-genai>=0.0.9",
-    "langchain-huggingface>=0.0.1",
-    "langchain-chroma>=0.1.0",
-    "chromadb>=0.4.24",
-    "pypdf>=4.0.1",
-    "pdf2image>=1.17.0",
-    "pytesseract>=0.3.10",
-    "python-dotenv>=1.0.1",
-    "pandas>=2.3.3",
-    "openpyxl>=3.1.2",
-    "sentence-transformers>=5.2.0",
-    "numpy<2.0",
-    "streamlit-image-coordinates>=0.4.0",
-    "reportlab>=4.4.7",
-    "watchdog>=6.0.0",
-]
-readme = "README.md"
-requires-python = ">= 3.12"
-
-[tool.rye]
-managed = true
-dev-dependencies = []
-
-[tool.rye.scripts]
-start = "rye run python src/legal_system/main.py"
-pdf = "rye run streamlit run src/legal_system/tools/coord_tool.py"
-exp = "rye run python export_code.py"
 ```

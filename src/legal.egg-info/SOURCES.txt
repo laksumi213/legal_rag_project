@@ -23,6 +23,7 @@ src/legal_system/tools/__init__.py
 src/legal_system/tools/coord_tool.py
 src/legal_system/ui/Home.py
 src/legal_system/ui/__init__.py
-src/legal_system/ui/pages/01_銀行手続要件_確認フォーム.py
+src/legal_system/ui/excel_generator.py
+src/legal_system/ui/pages/01_Kintoneデータ_エクセル入力フォーム.py
 src/legal_system/ui/pages/02_相続書類_作成フォーム.py
 src/legal_system/ui/pages/99_預貯金口座入力フォーム.py

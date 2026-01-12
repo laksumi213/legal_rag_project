@@ -24,6 +24,7 @@ Requires-Dist: numpy<2.0
 Requires-Dist: streamlit-image-coordinates>=0.4.0
 Requires-Dist: reportlab>=4.4.7
 Requires-Dist: watchdog>=6.0.0
+Requires-Dist: psycopg2-binary>=2.9.11
 
 # legal-rag-project
 

@@ -1,14 +1,15 @@
-# File: src/legal_system/core/database_manager.py
+# file: src/legal_system/core/database_manager.py
 
-import getpass
 import os
 from datetime import datetime
 from typing import Any, Dict, List, Optional
 
+import streamlit as st
 from sqlalchemy import create_engine, desc
+from sqlalchemy.engine import Engine
 from sqlalchemy.orm import scoped_session, sessionmaker
 
-# テーブル定義のインポート
+# テーブル定義
 from src.legal_system.models.tables import (
     AuditLog,
     Base,
@@ -18,42 +19,95 @@ from src.legal_system.models.tables import (
     User,
 )
 
-# Configのインポート
+# Config
 from .config import Config
+
+
+# ==========================================
+# エンジン生成の共通ロジック (キャッシュなし)
+# ==========================================
+def _create_new_engine() -> Engine:
+    """
+    SQLAlchemyエンジンを新規作成する内部関数。
+    Streamlitへの依存を含みません。
+    """
+    engine = create_engine(
+        Config.DATABASE_URL,
+        pool_size=20,
+        max_overflow=10,
+        pool_pre_ping=True,
+    )
+
+    # テーブル作成 (初回のみ)
+    try:
+        Base.metadata.create_all(engine)
+    except Exception as e:
+        # Streamlit環境下であればエラー表示、そうでなければ標準出力へ
+        msg = f"❌ データベース接続エラー: {e}"
+        if os.environ.get("IS_WATCHER_PROCESS") != "true":
+            st.error(msg)
+            st.info("PostgreSQLサーバー設定(.env)を確認してください。")
+        else:
+            print(msg)
+        raise e
+
+    return engine
+
+
+# ==========================================
+# Streamlit用 キャッシュ付きエンジン取得
+# ==========================================
+@st.cache_resource(show_spinner="データベースに接続中...")
+def _get_cached_engine() -> Engine:
+    """Streamlitのキャッシュ機能を利用してエンジンを保持する"""
+    return _create_new_engine()
+
+
+# ==========================================
+# 公開アクセサ (環境判定ロジック付き)
+# ==========================================
+def get_db_engine() -> Engine:
+    """
+    実行環境に応じて適切なエンジン取得方法を選択するファクトリー関数。
+    - Watcherプロセス (IS_WATCHER_PROCESS=true): キャッシュなしで新規作成
+    - Streamlitアプリ: st.cache_resourceを利用して高速化
+    """
+    if os.environ.get("IS_WATCHER_PROCESS") == "true":
+        # バックグラウンド処理ではStreamlitのキャッシュ機能を使わない
+        return _create_new_engine()
+    else:
+        # UIスレッドではキャッシュを使う
+        return _get_cached_engine()
 
 
 class DatabaseManager:
     """
-    システムのデータベース操作を一元管理するクラス
+    データベース操作を一元管理するクラス。
+    環境に応じたエンジン取得戦略を内部で自動解決します。
     """
 
     def __init__(self):
-        # DBパスの解決
-        self.db_path = str(Config.DB_FILE_SQLITE)
+        # 環境判定済みのエンジン取得関数を呼び出し
+        self.engine = get_db_engine()
 
-        # ディレクトリ作成
-        db_dir = os.path.dirname(self.db_path)
-        os.makedirs(db_dir, exist_ok=True)
-
-        # SQLiteエンジン作成
-        self.engine = create_engine(
-            f"sqlite:///{self.db_path}", connect_args={"check_same_thread": False}
-        )
-
-        # テーブル作成 (既存の場合はスキップ)
-        Base.metadata.create_all(self.engine)
-
+        # セッションファクトリの作成
         self.session_factory = sessionmaker(bind=self.engine)
+
+        # スレッドセーフなセッション
         self.Session = scoped_session(self.session_factory)
 
     def _get_session(self):
+        """新しいセッションを発行"""
         return self.Session()
 
     # ---------------------------------------------------------
     # ユーザー管理
     # ---------------------------------------------------------
     def get_current_user_info(self) -> Dict[str, str]:
-        pc_user = getpass.getuser()
+        """Windowsログインユーザー情報を取得または作成"""
+        # Streamlit Cloud等でOSユーザーが取れない場合のフォールバック
+        pc_user = os.environ.get("USERNAME", "guest_user")
+
         session = self._get_session()
         try:
             user = session.query(User).filter_by(windows_id=pc_user).first()
@@ -65,8 +119,9 @@ class DatabaseManager:
                     "phone": user.phone if user.phone else "",
                 }
             else:
-                default_name = f"{pc_user}(未登録)"
-                default_dept = "所属未定"
+                # 新規自動登録
+                default_name = f"{pc_user}"
+                default_dept = "未設定"
                 new_user = User(
                     windows_id=pc_user,
                     name=default_name,
@@ -110,6 +165,7 @@ class DatabaseManager:
             session.commit()
         except Exception:
             session.rollback()
+            raise
         finally:
             session.close()
 
@@ -119,8 +175,10 @@ class DatabaseManager:
     def log_action(self, user_id: str, action: str, target: str, details: str = ""):
         session = self._get_session()
         try:
+            # user_id (windows_id) から内部IDを引く
             db_user = session.query(User).filter_by(windows_id=user_id).first()
             u_id = db_user.id if db_user else None
+
             log = AuditLog(
                 user_id=u_id,
                 action_type=action,
@@ -151,9 +209,8 @@ class DatabaseManager:
         file_hash: str,
         filename: str,
         doc_type: str = "その他",
-        case_id: Optional[int] = None,  # ← ★この引数が重要です
+        case_id: Optional[int] = None,
     ):
-        """ファイルの登録情報を保存・更新"""
         session = self._get_session()
         try:
             file_reg = (
@@ -162,7 +219,6 @@ class DatabaseManager:
             if file_reg:
                 file_reg.filename = filename
                 file_reg.doc_type = doc_type
-                # case_id が指定されている場合のみ更新
                 if case_id is not None:
                     file_reg.case_id = case_id
                 file_reg.registered_at = datetime.now()
@@ -176,9 +232,9 @@ class DatabaseManager:
                 )
                 session.add(file_reg)
             session.commit()
-        except Exception as e:
-            print(f"Error registering file: {e}")
+        except Exception:
             session.rollback()
+            raise
         finally:
             session.close()
 
@@ -218,11 +274,12 @@ class DatabaseManager:
             session.commit()
         except Exception:
             session.rollback()
+            raise
         finally:
             session.close()
 
     # ---------------------------------------------------------
-    # 座標管理
+    # 座標管理 (Coordinate Tool)
     # ---------------------------------------------------------
     def register_coordinate(
         self,
@@ -295,9 +352,9 @@ class DatabaseManager:
                         coord.y_point = v
                     elif k == "desc":
                         coord.description = v
+                    # 必要に応じて他のフィールドも追加
                     elif hasattr(coord, k):
                         setattr(coord, k, v)
-                    # 簡易実装のため一部省略、必要なら詳細マッピングを追加
                 session.commit()
                 return True
             return False

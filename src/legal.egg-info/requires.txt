@@ -17,3 +17,4 @@ numpy<2.0
 streamlit-image-coordinates>=0.4.0
 reportlab>=4.4.7
 watchdog>=6.0.0
+psycopg2-binary>=2.9.11

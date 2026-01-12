@@ -83,8 +83,8 @@ src/
         admin_tools.py
       pages/
         01_Kintoneデータ_エクセル入力フォーム.py
-        02_相続書類_作成フォーム.py
-        03_預貯金口座入力フォーム.py
+        02_預貯金口座入力フォーム.py
+        03_相続書類_作成フォーム.py
         99_書式座標登録ツール.py
       __init__.py
       excel_generator.py
@@ -202,141 +202,7 @@ if __name__ == "__main__":
     show_document_creation_page()
 ```
 
-## File: src/legal_system/ui/pages/02_相続書類_作成フォーム.py
-```python
-# src/legal_system/ui/pages/02_相続書類_作成フォーム.py
-
-import os
-import sys
-
-import streamlit as st
-from reportlab.pdfbase import pdfmetrics
-from reportlab.pdfbase.ttfonts import TTFont
-
-# パス解決
-CURRENT_DIR = os.path.dirname(os.path.abspath(__file__))
-SRC_DIR = os.path.dirname(os.path.dirname(os.path.dirname(CURRENT_DIR)))
-ROOT_DIR = os.path.dirname(SRC_DIR)
-sys.path.append(SRC_DIR)
-
-from legal_system.core.database_manager import DatabaseManager
-from legal_system.models.tables import Case
-
-# ★追加: コンポーネントのインポート
-# from legal_system.ui.components.admin_tools import (
-#     render_management_tab,
-#     render_upload_tab,
-# )
-
-st.set_page_config(
-    page_title="書類作成・管理 | 相続業務支援", page_icon="📄", layout="wide"
-)
-
-# フォント登録
-FONT_PATH = os.path.join(ROOT_DIR, "data", "fonts", "ipaexg.ttf")
-try:
-    if os.path.exists(FONT_PATH):
-        pdfmetrics.registerFont(TTFont("IPAexG", FONT_PATH))
-except Exception:
-    pass
-
-
-def render_creation_tab(db, session):
-    """既存の書類作成ロジック（そのまま関数化）"""
-    st.subheader("🖨️ 書類自動作成")
-
-    # 1. 案件選択
-    cases = session.query(Case).all()
-    if not cases:
-        st.warning("案件データがありません。")
-        return
-
-    case_options = {f"{c.case_number}: {c.client_name}": c.case_id for c in cases}
-
-    # セッション復元ロジック
-    default_idx = 0
-    if "current_case_id" in st.session_state:
-        cid = st.session_state["current_case_id"]
-        keys = list(case_options.keys())
-        for i, k in enumerate(keys):
-            if case_options[k] == cid:
-                default_idx = i
-                break
-
-    selected_label = st.selectbox(
-        "📂 案件選択", list(case_options.keys()), index=default_idx
-    )
-
-    if selected_label:
-        cid = case_options[selected_label]
-        st.session_state["current_case_id"] = cid
-        target_case = session.query(Case).filter_by(case_id=cid).first()
-        st.caption(
-            f"被相続人: {target_case.deceased_ref.name_last if target_case.deceased_ref else ''}"
-        )
-
-        # 2. 銀行選択
-        assets = target_case.financial_assets
-        if not assets:
-            st.info("登録されている口座がありません。")
-            return
-
-        bank_map = {}
-        for a in assets:
-            bn = a.bank_ref.bank_name if a.bank_ref else "不明"
-            if bn not in bank_map:
-                bank_map[bn] = []
-            bank_map[bn].append(a)
-
-        st.divider()
-        sel_bank = st.radio("提出先", list(bank_map.keys()), horizontal=True)
-
-        # 3. テンプレート選択と作成
-        files = db.get_all_files()
-        # 案件専用 or 共通テンプレートでフィルタリングすべきだが、一旦全て表示
-        file_opts = {f["filename"]: f["hash"] for f in files}
-
-        c1, c2 = st.columns([3, 1])
-        sel_file = c1.selectbox("テンプレート", list(file_opts.keys()))
-
-        if c2.button("PDF作成", type="primary"):
-            # ... (既存のPDF生成ロジックをここに記述) ...
-            # ※ 長くなるため省略しますが、元の main() 内のロジックをここに置いてください
-            st.success("PDF作成ロジック実行 (実装済みのコードをここに配置)")
-
-
-def main():
-    st.title("📑 書類作成・データ管理")
-
-    db = DatabaseManager()
-    session = db._get_session()
-
-    # タブ定義
-    tab1, tab2, tab3 = st.tabs(["🖨️ 書類作成", "📥 雛形登録 (OCR)", "🗑️ データ管理"])
-
-    with tab1:
-        render_creation_tab(db, session)
-
-    with tab2:
-        # ★ここでインポートする
-        from legal_system.ui.components.admin_tools import render_upload_tab
-
-        render_upload_tab(db)
-
-    with tab3:
-        # ★ここでインポートする
-        from legal_system.ui.components.admin_tools import render_management_tab
-
-        render_management_tab(db)
-
-    session.close()
-
-
-if __name__ == "__main__":
-    main()
-```
-
-## File: src/legal_system/ui/pages/03_預貯金口座入力フォーム.py
+## File: src/legal_system/ui/pages/02_預貯金口座入力フォーム.py
 ```python
 import json
 import os
@@ -564,6 +430,246 @@ if __name__ == "__main__":
     main()
 ```
 
+## File: src/legal_system/ui/pages/03_相続書類_作成フォーム.py
+```python
+# src/legal_system/ui/pages/03_相続書類_作成フォーム.py
+
+import os
+import sys
+from io import BytesIO
+
+import streamlit as st
+from pypdf import PdfReader, PdfWriter
+from reportlab.lib.colors import black, red
+from reportlab.pdfbase import pdfmetrics
+from reportlab.pdfbase.ttfonts import TTFont
+from reportlab.pdfgen import canvas
+
+# パス解決
+CURRENT_DIR = os.path.dirname(os.path.abspath(__file__))
+ROOT_DIR = os.path.dirname(
+    os.path.dirname(os.path.dirname(os.path.dirname(CURRENT_DIR)))
+)
+sys.path.append(ROOT_DIR)
+
+from legal_system.core.database_manager import DatabaseManager
+from legal_system.models.tables import Case, FileRegistry
+
+# フォント設定
+FONT_PATH = os.path.join(ROOT_DIR, "data", "fonts", "ipaexg.ttf")
+try:
+    if os.path.exists(FONT_PATH):
+        pdfmetrics.registerFont(TTFont("IPAexG", FONT_PATH))
+except Exception:
+    pass
+
+st.set_page_config(page_title="書類作成 | 相続業務支援", page_icon="📄", layout="wide")
+
+
+# ==========================================
+# データ置換ロジック
+# ==========================================
+def create_replacement_map(case_data):
+    map_dict = {}
+
+    # 基本情報
+    map_dict["{case_number}"] = case_data.case_number
+    map_dict["{client_name}"] = case_data.client_name
+
+    # 被相続人情報
+    if case_data.deceased_ref:
+        d = case_data.deceased_ref
+        full_name = f"{d.name_last} {d.name_first}".strip()
+        map_dict["{deceased_name}"] = full_name
+        map_dict["{deceased_name_last}"] = d.name_last or ""
+        map_dict["{deceased_name_first}"] = d.name_first or ""
+
+        if d.date_of_death:
+            map_dict["{death_date}"] = d.date_of_death.strftime("%Y年%m月%d日")
+            map_dict["{death_year_seireki}"] = str(d.date_of_death.year)
+            if d.date_of_death.year >= 2019:
+                map_dict["{death_year_wareki}"] = f"令和{d.date_of_death.year - 2018}"
+            else:
+                map_dict["{death_year_wareki}"] = str(d.date_of_death.year)
+            map_dict["{death_month}"] = str(d.date_of_death.month)
+            map_dict["{death_day}"] = str(d.date_of_death.day)
+
+    # 相続人情報 (簡易実装)
+    if case_data.deceased_ref and case_data.deceased_ref.heirs:
+        h = case_data.deceased_ref.heirs[0]
+        full_name_h = f"{h.name_last} {h.name_first}".strip()
+        map_dict["{heir_name}"] = full_name_h
+        map_dict["{heir_name_last}"] = h.name_last or ""
+        map_dict["{heir_name_first}"] = h.name_first or ""
+        map_dict["{heir_address}"] = "（住所未登録）"
+        map_dict["{heir_pref}"] = ""
+        map_dict["{heir_city}"] = ""
+        map_dict["{heir_street}"] = ""
+        map_dict["{heir_building}"] = ""
+
+    return map_dict
+
+
+def generate_pdf(template_path, coords, replacement_map):
+    try:
+        reader = PdfReader(template_path)
+        output = PdfWriter()
+        SCALE_FACTOR = 72.0 / 200.0
+
+        for i, page_obj in enumerate(reader.pages):
+            page_num = i + 1
+            page_coords = [c for c in coords if c["page"] == page_num]
+
+            if page_coords:
+                packet = BytesIO()
+                pw = float(page_obj.mediabox.width)
+                ph = float(page_obj.mediabox.height)
+                can = canvas.Canvas(packet, pagesize=(pw, ph))
+
+                for c in page_coords:
+                    raw_val = c["value"]
+                    text_to_draw = replacement_map.get(raw_val, raw_val)
+                    if not text_to_draw:
+                        continue
+
+                    draw_x = c["x"] * SCALE_FACTOR
+                    top_y = ph - (c["y"] * SCALE_FACTOR)
+                    c_obj = red if c["color"] == "red" else black
+                    can.setStrokeColor(c_obj)
+                    can.setFillColor(c_obj)
+                    font_sz = float(c["font_size"])
+
+                    if str(text_to_draw).startswith("RECT:"):
+                        try:
+                            dims = text_to_draw.replace("RECT:", "").split("x")
+                            w_pt, h_pt = float(dims[0]), float(dims[1])
+                            can.rect(draw_x, top_y - h_pt, w_pt, h_pt, stroke=1, fill=0)
+                        except:
+                            pass
+                    else:
+                        baseline_y = top_y - (font_sz * 0.9)
+                        can.setFont("IPAexG", font_sz)
+                        can.drawString(draw_x, baseline_y, str(text_to_draw))
+
+                can.save()
+                packet.seek(0)
+                overlay = PdfReader(packet)
+                page_obj.merge_page(overlay.pages[0])
+
+            output.add_page(page_obj)
+
+        out_stream = BytesIO()
+        output.write(out_stream)
+        return out_stream
+
+    except Exception as e:
+        st.error(f"PDF生成エラー: {e}")
+        return None
+
+
+# ==========================================
+# メイン画面
+# ==========================================
+def main():
+    st.title("🖨️ 書類自動作成")
+    st.caption("登録済みの案件データを選択し、PDFを作成します。")
+
+    db = DatabaseManager()
+    session = db._get_session()
+
+    # 1. 案件選択
+    cases = session.query(Case).all()
+    if not cases:
+        st.warning("案件データがありません。")
+        session.close()
+        return
+
+    case_options = {f"{c.case_number}: {c.client_name}": c.case_id for c in cases}
+
+    default_idx = 0
+    if "current_case_id" in st.session_state:
+        cid = st.session_state["current_case_id"]
+        keys = list(case_options.keys())
+        for i, k in enumerate(keys):
+            if case_options[k] == cid:
+                default_idx = i
+                break
+
+    selected_label = st.selectbox(
+        "📂 案件選択", list(case_options.keys()), index=default_idx
+    )
+
+    if selected_label:
+        cid = case_options[selected_label]
+        st.session_state["current_case_id"] = cid
+        target_case = session.query(Case).filter_by(case_id=cid).first()
+
+        d_name = (
+            target_case.deceased_ref.name_last
+            + " "
+            + target_case.deceased_ref.name_first
+            if target_case.deceased_ref
+            else "未登録"
+        )
+        st.info(f"被相続人: **{d_name}**")
+
+        st.divider()
+
+        # 2. テンプレート選択
+        files = (
+            session.query(FileRegistry)
+            .filter(FileRegistry.filename.like("%.pdf"))
+            .all()
+        )
+
+        if not files:
+            st.warning(
+                "テンプレート(PDF)が登録されていません。「書式座標登録ツール」のメニューから登録してください。"
+            )
+        else:
+            file_opts = {f.filename: f.file_hash for f in files}
+            selected_file_name = st.selectbox(
+                "使用するテンプレート", list(file_opts.keys())
+            )
+
+            if selected_file_name:
+                target_hash = file_opts[selected_file_name]
+
+                # 3. 作成ボタン
+                if st.button("🚀 PDFを作成する", type="primary"):
+                    coords = db.get_coordinates_by_hash(target_hash)
+                    if not coords:
+                        st.error(
+                            "このファイルには座標データが登録されていません。「書式座標登録ツール」で設定してください。"
+                        )
+                    else:
+                        template_path = os.path.join(
+                            ROOT_DIR, "data", "templates", selected_file_name
+                        )
+
+                        if not os.path.exists(template_path):
+                            st.error(
+                                f"テンプレートファイルが見つかりません: {template_path}"
+                            )
+                        else:
+                            replace_map = create_replacement_map(target_case)
+                            pdf_data = generate_pdf(template_path, coords, replace_map)
+
+                            if pdf_data:
+                                st.success("✅ 作成完了！")
+                                st.download_button(
+                                    label="📥 作成されたPDFをダウンロード",
+                                    data=pdf_data,
+                                    file_name=f"作成済_{selected_file_name}",
+                                    mime="application/pdf",
+                                )
+    session.close()
+
+
+if __name__ == "__main__":
+    main()
+```
+
 ## File: src/legal_system/ui/pages/99_書式座標登録ツール.py
 ```python
 # src/legal_system/ui/pages/99_書式座標登録ツール.py
@@ -571,6 +677,8 @@ if __name__ == "__main__":
 import hashlib
 import os
 import sys
+import time
+import uuid
 from datetime import datetime
 from io import BytesIO
 
@@ -590,8 +698,6 @@ from streamlit_image_coordinates import streamlit_image_coordinates
 # ==========================================
 # 1. パス解決 & 初期設定
 # ==========================================
-# 現在のファイル: src/legal_system/ui/pages/90_書式座標登録ツール.py
-# 目的のルート: プロジェクトルート (5階層上)
 CURRENT_DIR = os.path.dirname(os.path.abspath(__file__))
 ROOT_DIR = os.path.dirname(
     os.path.dirname(os.path.dirname(os.path.dirname(CURRENT_DIR)))
@@ -600,14 +706,13 @@ sys.path.append(ROOT_DIR)
 
 from legal_system.core.database_manager import DatabaseManager
 
-# ページ設定 (サイドバー表示名とアイコン)
-st.set_page_config(layout="wide", page_title="書式座標登録", page_icon="📍")
-st.title("📍 銀行書式・座標登録ツール")
-st.caption(
-    "新しい銀行のPDF書式を追加したり、文字を入れる位置（座標）を修正するためのツールです。"
-)
+# テンプレート保存ディレクトリ
+TEMPLATES_DIR = os.path.join(ROOT_DIR, "data", "templates")
 
-# フォント設定 (IPAexゴシック)
+# ページ設定
+st.set_page_config(layout="wide", page_title="書式・座標管理", page_icon="🛠️")
+
+# フォント設定
 FONT_PATH = os.path.join(ROOT_DIR, "data", "fonts", "ipaexg.ttf")
 try:
     if os.path.exists(FONT_PATH):
@@ -615,7 +720,6 @@ try:
 except Exception:
     pass
 
-# DB接続
 db = DatabaseManager()
 user_info = db.get_current_user_info()
 
@@ -624,19 +728,16 @@ user_info = db.get_current_user_info()
 # 2. ヘルパー関数 & プリセット定義
 # ==========================================
 def calculate_hash(file_bytes):
-    """ファイルのMD5ハッシュ値を計算"""
     return hashlib.md5(file_bytes).hexdigest()
 
 
 def get_wareki(dt):
-    """日付を和暦(令和)に変換"""
     if dt.year >= 2019:
         return f"令和{dt.year - 2018}"
     return str(dt.year)
 
 
 def split_phone_number(phone_str):
-    """電話番号を3つに分割"""
     parts = ["", "", ""]
     if phone_str:
         phone_str = phone_str.replace("ー", "-").replace("−", "-")
@@ -647,8 +748,6 @@ def split_phone_number(phone_str):
 
 
 user_phone_parts = split_phone_number(user_info.get("phone", ""))
-
-# テスト入力用のダミー会社情報
 COMPANY_INFO = {
     "zip1": "100",
     "zip2": "0001",
@@ -659,55 +758,58 @@ COMPANY_INFO = {
 today = datetime.now()
 wareki_year = get_wareki(today)
 
-# 入力プリセット (よく使う項目)
 PRESETS = {
     "（選択なし）": {"label": "", "val": ""},
-    "----- ★DB連携用タグ (自動差込)★ -----": {"label": "", "val": ""},
-    "{被相続人 氏名}": {
-        "label": "被相続人氏名",
-        "val": "{deceased_name}",
-        "desc": "DBから被相続人名を自動取得",
-    },
-    "{被相続人 死亡日}": {
-        "label": "被相続人死亡日",
-        "val": "{death_date}",
-        "desc": "DBから死亡日を自動取得",
-    },
-    "{相続人 氏名}": {
-        "label": "相続人氏名",
-        "val": "{heir_name}",
-        "desc": "DBから相続人名を自動取得",
-    },
-    "{相続人 住所}": {
-        "label": "相続人住所",
-        "val": "{heir_address}",
-        "desc": "DBから住所を自動取得",
-    },
+    "----- ★DB連携: 氏名 -----": {"label": "", "val": ""},
+    "{被相続人 氏名(全)}": {"label": "被相続人氏名", "val": "{deceased_name}"},
+    "{被相続人 氏(姓)}": {"label": "被相続人_姓", "val": "{deceased_name_last}"},
+    "{被相続人 名}": {"label": "被相続人_名", "val": "{deceased_name_first}"},
+    "{相続人 氏名(全)}": {"label": "相続人氏名", "val": "{heir_name}"},
+    "{相続人 氏(姓)}": {"label": "相続人_姓", "val": "{heir_name_last}"},
+    "{相続人 名}": {"label": "相続人_名", "val": "{heir_name_first}"},
+    "{相続人 代理人氏名}": {"label": "相続人_代理人", "val": "{heir_name} 代理人"},
+    "----- ★DB連携: 死亡日 -----": {"label": "", "val": ""},
+    "{死亡日 (和暦全)}": {"label": "被相続人死亡日", "val": "{death_date}"},
+    "{死亡日 年(西暦)}": {"label": "死亡日_西暦年", "val": "{death_year_seireki}"},
+    "{死亡日 年(和暦)}": {"label": "死亡日_和暦年", "val": "{death_year_wareki}"},
+    "{死亡日 月}": {"label": "死亡日_月", "val": "{death_month}"},
+    "{死亡日 日}": {"label": "死亡日_日", "val": "{death_day}"},
+    "----- ★DB連携: 住所 -----": {"label": "", "val": ""},
+    "{相続人 住所(全)}": {"label": "相続人住所", "val": "{heir_address}"},
+    "{相続人 都道府県}": {"label": "相続人_都道府県", "val": "{heir_pref}"},
+    "{相続人 市区町村}": {"label": "相続人_市区町村", "val": "{heir_city}"},
+    "{相続人 番地}": {"label": "相続人_番地", "val": "{heir_street}"},
+    "{相続人 建物名}": {"label": "相続人_建物", "val": "{heir_building}"},
     "----- 図形・記号 -----": {"label": "", "val": ""},
-    "四角形枠 (サイズ指定)": {
-        "label": "枠線",
-        "val": "RECT:30x30",
-        "desc": "RECT:幅x高さ (pt単位)",
-    },
-    "数字「1」": {"label": "数字1", "val": "1", "size": 11},
-    "チェック (✓)": {"label": "チェック", "val": "✓", "size": 14},
-    "丸 (◯)": {"label": "丸", "val": "◯", "size": 14},
-    "----- 日付関連 (固定値) -----": {"label": "", "val": ""},
-    "今日 (令和〇年)": {"label": "記入日_和暦年", "val": wareki_year},
-    "今日 (20XX年)": {"label": "記入日_西暦年", "val": str(today.year)},
-    "----- 担当者・会社 (固定値) -----": {"label": "", "val": ""},
+    "四角形枠": {"label": "枠線", "val": "RECT:30x30"},
+    "数字「1」": {"label": "数字1", "val": "1", "size": 11.0},
+    "チェック (✓)": {"label": "チェック", "val": "✓", "size": 14.0},
+    "丸 (◯)": {"label": "丸", "val": "◯", "size": 14.0},
+    "----- 担当者・会社 -----": {"label": "", "val": ""},
     "担当者名": {"label": "担当者氏名", "val": user_info["name"]},
-    "代理人 (肩書)": {"label": "代理人肩書", "val": "代理人"},
-    "電話番号 (市外局番)": {"label": "担当者TEL_1", "val": user_phone_parts[0]},
-    "電話番号 (市内局番)": {"label": "担当者TEL_2", "val": user_phone_parts[1]},
-    "電話番号 (加入者)": {"label": "担当者TEL_3", "val": user_phone_parts[2]},
-    "会社郵便番号 (3桁)": {"label": "会社郵便番号1", "val": COMPANY_INFO["zip1"]},
-    "会社郵便番号 (4桁)": {"label": "会社郵便番号2", "val": COMPANY_INFO["zip2"]},
+    "代理人肩書": {"label": "代理人肩書", "val": "代理人"},
     "会社住所": {"label": "会社住所", "val": COMPANY_INFO["address"]},
-    "代表者名": {"label": "代表者名", "val": COMPANY_INFO["rep_name"]},
 }
 
-# セッション状態の初期化
+# ---------------------------------------------------------
+# ★ステート初期化
+# ---------------------------------------------------------
+if st.session_state.get("trigger_reset"):
+    st.session_state["input_label"] = ""
+    st.session_state["input_val"] = ""
+    st.session_state["input_desc"] = ""
+    st.session_state["preset_sel"] = "（選択なし）"
+    st.session_state["trigger_reset"] = False
+
+if "editor_key" not in st.session_state:
+    st.session_state["editor_key"] = str(uuid.uuid4())
+
+if "current_ids" not in st.session_state:
+    st.session_state["current_ids"] = []
+
+if "current_file_hash" not in st.session_state:
+    st.session_state["current_file_hash"] = None
+
 if "last_x" not in st.session_state:
     st.session_state["last_x"] = 0
 if "last_y" not in st.session_state:
@@ -715,364 +817,473 @@ if "last_y" not in st.session_state:
 if "current_page" not in st.session_state:
     st.session_state["current_page"] = 1
 
+if "target_file_bytes" not in st.session_state:
+    st.session_state["target_file_bytes"] = None
+if "target_file_name" not in st.session_state:
+    st.session_state["target_file_name"] = None
+
+# 入力フォーム用
 if "input_label" not in st.session_state:
     st.session_state["input_label"] = ""
 if "input_val" not in st.session_state:
     st.session_state["input_val"] = ""
 if "input_size" not in st.session_state:
-    st.session_state["input_size"] = 10.5
-if "input_color" not in st.session_state:
-    st.session_state["input_color"] = "black"
+    st.session_state["input_size"] = 11.0  # ★初期値11.0
 if "input_desc" not in st.session_state:
     st.session_state["input_desc"] = ""
+if "preset_sel" not in st.session_state:
+    st.session_state["preset_sel"] = "（選択なし）"
+
 
 # ==========================================
-# 3. サイドバー: ファイル管理エリア
+# ★コールバック関数
 # ==========================================
-with st.sidebar:
-    st.header("📂 対象ファイル")
-    st.info("ここにPDFをドラッグ&ドロップして、編集を開始します。")
-    uploaded_file = st.file_uploader("帳票PDFをアップロード", type="pdf")
-
-    file_hash = None
-    existing_coords = []
-    df_existing = pd.DataFrame()
-
-    if uploaded_file:
-        file_bytes = uploaded_file.read()
-        file_hash = calculate_hash(file_bytes)
-        st.caption(f"File ID: {file_hash[:8]}...")
-
-        # データベースから座標を取得
-        existing_coords = db.get_coordinates_by_hash(file_hash)
-        if existing_coords:
-            df_existing = pd.DataFrame(existing_coords)
-
-        if len(existing_coords) > 0:
-            st.success(f"登録済み座標: {len(existing_coords)} 件")
-        else:
-            st.info("新規ファイルです。座標を登録してください。")
-    else:
-        st.warning("👈 左記でファイルをアップロードしてください。")
-
-    st.divider()
-    st.header("⚙️ フォント設定")
-
-    def on_def_size_change():
-        st.session_state["input_size"] = st.session_state["def_font_size_key"]
-
-    def_font_size = st.number_input(
-        "基本フォントサイズ (pt)",
-        4.0,
-        72.0,
-        10.5,
-        step=0.5,
-        key="def_font_size_key",
-        on_change=on_def_size_change,
-    )
-
-# ==========================================
-# 4. メインエリア
-# ==========================================
-if not uploaded_file:
-    st.info("👈 サイドバーからPDFをアップロードして、設定を開始してください。")
-    st.stop()
-
-# レイアウト (左: 画像プレビュー / 右: 操作パネル)
-col_img, col_ctrl = st.columns([1.8, 1.2])
-
-# --- プレビュー用準備 ---
-reader = PdfReader(BytesIO(file_bytes))
-# 1ページ目のサイズを取得 (Point単位)
-media_box = reader.pages[0].mediabox
-pdf_w_pt = float(media_box.width)
-pdf_h_pt = float(media_box.height)
-
-# 画像変換
-images = convert_from_bytes(file_bytes)
-total_pages = len(images)
-img_w_px, img_h_px = images[0].size
-# プレビュー拡大率
-preview_scale = img_h_px / pdf_h_pt
-
-
-# データ更新用コールバック関数
 def on_data_editor_change():
-    changes = st.session_state["editor"]
+    """テーブル編集時のコールバック"""
+    current_key = st.session_state.get("editor_key", "editor")
+    if current_key not in st.session_state:
+        return
+
+    changes = st.session_state[current_key]
+    needs_refresh = False
+
+    # 新規追加
+    if changes["added_rows"]:
+        for new_row in changes["added_rows"]:
+            label = new_row.get("label", "新規項目")
+
+            # 手動追加時の重複チェック
+            current_hash = st.session_state.get("current_file_hash")
+            new_label = label
+            if current_hash:
+                current_coords = db.get_coordinates_by_hash(current_hash)
+                existing_labels = [c["label"] for c in current_coords]
+                count = 1
+                while new_label in existing_labels:
+                    count += 1
+                    new_label = f"{label}_{count}"
+
+            db.register_coordinate(
+                file_hash=st.session_state["current_file_hash"],
+                label=new_label,
+                x=float(new_row.get("x", 100.0)),
+                y=float(new_row.get("y", 100.0)),
+                page_number=int(new_row.get("page", st.session_state["current_page"])),
+                description="手動追加",
+                font_size=float(new_row.get("font_size", 11.0)),
+                color=new_row.get("color", "black"),
+                test_value=new_row.get("value", ""),
+            )
+        st.toast("✅ 新規行を追加しました")
+        needs_refresh = True
+
+    # 編集
     if changes["edited_rows"]:
-        for idx, row_changes in changes["edited_rows"].items():
-            target_id = df_existing.iloc[int(idx)]["id"]
-            db.update_coordinate_direct(int(target_id), row_changes)
+        id_list = st.session_state["current_ids"]
+        for idx_str, row_changes in changes["edited_rows"].items():
+            idx = int(idx_str)
+            if idx < len(id_list):
+                target_id = id_list[idx]
+                if "font_size" in row_changes:
+                    row_changes["font_size"] = float(row_changes["font_size"])
+                db.update_coordinate_direct(int(target_id), row_changes)
         st.toast("✅ 変更を保存しました")
 
+    # 削除
     if changes["deleted_rows"]:
+        id_list = st.session_state["current_ids"]
         for idx in changes["deleted_rows"]:
-            target_id = df_existing.iloc[int(idx)]["id"]
-            db.delete_coordinate(int(target_id))
+            if int(idx) < len(id_list):
+                target_id = id_list[int(idx)]
+                db.delete_coordinate(int(target_id))
         st.toast("🗑️ 削除しました")
+        needs_refresh = True
+
+    if needs_refresh:
+        st.session_state["editor_key"] = str(uuid.uuid4())
 
 
-# --- 右カラム: 入力 & リスト編集 ---
-with col_ctrl:
-    st.subheader("2. 設定と登録")
-    st.markdown("左の画像をクリックすると、その位置（座標）が自動入力されます。")
+# ==========================================
+# ★座標エディタ画面のロジック
+# ==========================================
+def render_coordinate_editor():
+    # サイドバー: ファイル選択（新規アップロードは廃止）
+    st.sidebar.header("📂 対象ファイル")
+    all_files = db.get_all_files()
+    if not all_files:
+        st.sidebar.warning("登録済みのファイルがありません。")
+        st.info(
+            "👈 サイドバーで「📥 雛形ファイル登録」を選んでファイルを登録してください。"
+        )
+        return
 
-    # プリセット選択
-    def on_preset():
-        sel = st.session_state["preset_sel"]
-        if sel and PRESETS[sel]["val"]:
-            p = PRESETS[sel]
-            st.session_state["input_label"] = p["label"]
-            st.session_state["input_val"] = p["val"]
-            if "size" in p:
-                st.session_state["input_size"] = float(p["size"])
-            if "desc" in p:
-                st.session_state["input_desc"] = p["desc"]
+    file_options = {f"{f['filename']}": f for f in all_files}
 
-    st.selectbox(
-        "⚡️ クイック入力（プリセット）",
-        list(PRESETS.keys()),
-        key="preset_sel",
-        on_change=on_preset,
+    current_fname = st.session_state.get("target_file_name")
+    idx = 0
+    if current_fname:
+        keys = list(file_options.keys())
+        for i, k in enumerate(keys):
+            if current_fname in k:
+                idx = i
+                break
+
+    selected_label = st.sidebar.selectbox(
+        "編集するファイルを選択", list(file_options.keys()), index=idx
     )
 
-    # 入力フォーム
-    c1, c2 = st.columns([2, 1])
-    label_in = c1.text_input(
-        "項目名 (必須)", key="input_label", placeholder="例: 被相続人氏名"
-    )
-    val_in = c2.text_input(
-        "テスト値",
-        key="input_val",
-        help="DB連携タグを入れると本番で自動置換されます",
-    )
+    if selected_label:
+        selected_data = file_options[selected_label]
+        fname = selected_data["filename"]
 
-    c3, c4 = st.columns(2)
-    size_in = c3.number_input(
-        "サイズ(pt)", 0.5, 100.0, key="input_size", step=0.5, format="%.1f"
-    )
-    color_in = c4.selectbox("文字色", ["black", "red"], key="input_color")
-
-    desc_in = st.text_input("備考", key="input_desc", placeholder="メモなど")
-
-    st.write(
-        f"📍 選択中の座標: X={st.session_state['last_x']} / Y={st.session_state['last_y']} (P.{st.session_state['current_page']})"
-    )
-
-    if st.button("💾 この位置で登録する", type="primary", use_container_width=True):
-        if not label_in:
-            st.error("項目名は必須です")
-        elif st.session_state["last_x"] == 0:
-            st.error("左の画像をクリックして位置を決めてください")
-        else:
-            success = db.register_coordinate(
-                file_hash=file_hash,
-                label=label_in,
-                x=st.session_state["last_x"],
-                y=st.session_state["last_y"],
-                page_number=st.session_state["current_page"],
-                description=desc_in,
-                font_size=size_in,
-                color=color_in,
-                test_value=val_in,
-            )
-            if success:
-                st.toast(f"✅ 「{label_in}」を登録しました！")
-                time.sleep(0.5)
+        if st.session_state["target_file_name"] != fname:
+            file_path = os.path.join(TEMPLATES_DIR, fname)
+            if os.path.exists(file_path):
+                with open(file_path, "rb") as f:
+                    st.session_state["target_file_bytes"] = f.read()
+                st.session_state["target_file_name"] = fname
+                st.session_state["current_page"] = 1
                 st.rerun()
 
-    st.divider()
+    target_file_bytes = st.session_state["target_file_bytes"]
+    if not target_file_bytes:
+        return
 
-    # ▼▼▼ 登録済みリスト ▼▼▼
-    st.subheader("📋 登録済みリスト")
-    st.caption(
-        "下表を直接編集して修正できます。行の左側を選択してDeleteキーで削除可能です。"
-    )
+    # PDF解析
+    try:
+        reader = PdfReader(BytesIO(target_file_bytes))
+        media_box = reader.pages[0].mediabox
+        pdf_w_pt = float(media_box.width)
+        pdf_h_pt = float(media_box.height)
 
-    if not df_existing.empty:
-        column_order = [
-            "label",
-            "x",
-            "y",
-            "page",
-            "font_size",
-            "color",
-            "value",
-            "desc",
-            "id",
-        ]
-        df_display = df_existing[[c for c in column_order if c in df_existing.columns]]
+        images = convert_from_bytes(target_file_bytes, dpi=200)
+        total_pages = len(images)
 
-        st.data_editor(
-            df_display,
-            column_config={
-                "id": None,
-                "label": st.column_config.TextColumn("項目名", width="medium"),
-                "x": st.column_config.NumberColumn("X", format="%.1f", step=0.1),
-                "y": st.column_config.NumberColumn("Y", format="%.1f", step=0.1),
-                "page": st.column_config.NumberColumn("頁", width="small"),
-                "font_size": st.column_config.NumberColumn(
-                    "pt", width="small", format="%.1f", step=0.5
-                ),
-                "color": st.column_config.SelectboxColumn(
-                    "色", options=["black", "red"], width="small"
-                ),
-                "value": st.column_config.TextColumn("値/タグ", width="medium"),
-                "desc": st.column_config.TextColumn("備考", width="large"),
-            },
-            hide_index=True,
-            use_container_width=True,
-            key="editor",
-            num_rows="dynamic",
-            on_change=on_data_editor_change,
-        )
-    else:
-        st.info("登録データはありません")
+        p_idx = st.session_state["current_page"] - 1
+        if p_idx >= total_pages:
+            p_idx = 0
+    except Exception as e:
+        st.error(f"解析エラー: {e}")
+        return
 
-    # ▼▼▼ テスト出力機能 ▼▼▼
-    st.divider()
-    st.subheader("🖨️ テスト出力")
-    if st.button("テスト値を埋め込んだPDFを作成", use_container_width=True):
-        if df_existing.empty:
-            st.error("座標が登録されていません。")
-        else:
-            try:
-                # PDF生成ロジック
-                output = PdfWriter()
-                for i, page_obj in enumerate(reader.pages):
-                    page_num = i + 1
-                    page_coords = df_existing[df_existing["page"] == page_num]
-
-                    if not page_coords.empty:
-                        packet_page = BytesIO()
-                        pw = float(page_obj.mediabox.width)
-                        ph = float(page_obj.mediabox.height)
-                        can_page = canvas.Canvas(packet_page, pagesize=(pw, ph))
-
-                        for _, row in page_coords.iterrows():
-                            val = row["value"]
-                            if not val:
-                                continue
-
-                            x = float(row["x"])
-                            y = float(row["y"])
-                            f_size = float(row["font_size"])
-                            c_obj = red if row["color"] == "red" else black
-                            can_page.setFillColor(c_obj)
-                            can_page.setStrokeColor(c_obj)
-
-                            # 座標変換 (画像Click座標 -> PDF座標)
-                            scale_x = pw / img_w_px
-                            scale_y = ph / img_h_px
-                            draw_x = x * scale_x
-                            draw_y_base = ph - (y * scale_y)
-
-                            if str(val).startswith("RECT:"):
-                                try:
-                                    dims = val.replace("RECT:", "").split("x")
-                                    w_pt, h_pt = float(dims[0]), float(dims[1])
-                                    rect_y = draw_y_base - h_pt
-                                    can_page.setLineWidth(f_size)
-                                    can_page.rect(
-                                        draw_x, rect_y, w_pt, h_pt, stroke=1, fill=0
-                                    )
-                                except:
-                                    pass
-                            else:
-                                can_page.setFont("IPAexG", f_size)
-                                text_y = draw_y_base - (f_size * 0.8)
-                                can_page.drawString(draw_x, text_y, str(val))
-
-                        can_page.save()
-                        packet_page.seek(0)
-                        overlay = PdfReader(packet_page)
-                        page_obj.merge_page(overlay.pages[0])
-
-                    output.add_page(page_obj)
-
-                out_stream = BytesIO()
-                output.write(out_stream)
-                st.download_button(
-                    label="📥 テストPDFをダウンロード",
-                    data=out_stream,
-                    file_name="test_filled.pdf",
-                    mime="application/pdf",
-                )
-            except Exception as e:
-                st.error(f"作成エラー: {e}")
-
-# --- 左カラム: 画像プレビュー ---
-with col_img:
-    st.subheader("1. 座標指定 (画像をクリック)")
-
-    # ページ切り替え
-    if total_pages > 1:
+    # ------------------------------------
+    # メイン画面: 上部コントロール
+    # ------------------------------------
+    col_p, col_z, col_f = st.columns([1, 1.5, 1])
+    with col_p:
         new_page = st.number_input(
             "ページ切替", 1, total_pages, st.session_state["current_page"]
         )
         if new_page != st.session_state["current_page"]:
             st.session_state["current_page"] = new_page
             st.rerun()
+    with col_z:
+        zoom_rate = st.slider("プレビュー倍率", 0.1, 1.5, 0.4, 0.05)
+    with col_f:
 
-    bg_image = images[st.session_state["current_page"] - 1].copy()
-    draw = ImageDraw.Draw(bg_image)
+        def on_def_size_change():
+            st.session_state["input_size"] = st.session_state["def_font_size_key"]
 
-    # 描画用内部関数
-    def draw_on_image(draw_obj, x, y, val, size_pt, color_name):
-        color_rgba = (255, 0, 0, 255) if color_name == "red" else (0, 0, 0, 255)
-        if not val:
-            return
-
-        if str(val).startswith("RECT:"):
-            try:
-                dims = val.replace("RECT:", "").split("x")
-                w_pt, h_pt = float(dims[0]), float(dims[1])
-                w_px = w_pt * preview_scale
-                h_px = h_pt * preview_scale
-                line_width = int(max(1, size_pt * (preview_scale / 2)))
-                draw_obj.rectangle(
-                    [x, y, x + w_px, y + h_px], outline=color_rgba, width=line_width
-                )
-            except:
-                pass
-        else:
-            try:
-                px_size = size_pt * preview_scale
-                font = ImageFont.truetype(FONT_PATH, int(px_size))
-                draw_obj.text((x, y), str(val), font=font, fill=color_rgba)
-            except:
-                pass
-
-    # A. 編集中のプレビュー描画
-    if val_in:
-        draw_on_image(
-            draw,
-            st.session_state["last_x"],
-            st.session_state["last_y"],
-            val_in,
-            size_in,
-            color_in,
+        st.number_input(
+            "基本サイズ(pt)",
+            4.0,
+            72.0,
+            11.0,
+            step=0.5,  # ★初期値11.0
+            key="def_font_size_key",
+            on_change=on_def_size_change,
         )
 
-    # B. 登録済みデータのプレビュー描画
-    current_page_coords = [
-        c for c in existing_coords if c["page"] == st.session_state["current_page"]
-    ]
-    for c in current_page_coords:
-        draw_on_image(draw, c["x"], c["y"], c["value"], c["font_size"], c["color"])
+    # ------------------------------------
+    # データ準備 & 画像処理
+    # ------------------------------------
+    file_hash = calculate_hash(target_file_bytes)
+    st.session_state["current_file_hash"] = file_hash
 
-    # 座標取得コンポーネント
-    value = streamlit_image_coordinates(
-        bg_image, key=f"canvas_p{st.session_state['current_page']}"
+    existing_coords = db.get_coordinates_by_hash(file_hash)
+    if existing_coords:
+        df_existing = pd.DataFrame(existing_coords)
+        df_existing = df_existing.sort_values("id").reset_index(drop=True)
+        st.session_state["current_ids"] = df_existing["id"].tolist()
+    else:
+        df_existing = pd.DataFrame()
+        st.session_state["current_ids"] = []
+
+    original_image = images[p_idx]
+    orig_w_px, orig_h_px = original_image.size
+    preview_scale = orig_h_px / pdf_h_pt
+    display_image = original_image.resize(
+        (int(orig_w_px * zoom_rate), int(orig_h_px * zoom_rate))
     )
-    if value:
-        if (
-            value["x"] != st.session_state["last_x"]
-            or value["y"] != st.session_state["last_y"]
-        ):
-            st.session_state["last_x"] = value["x"]
-            st.session_state["last_y"] = value["y"]
-            st.rerun()
+
+    st.divider()
+
+    # ------------------------------------
+    # 2カラムレイアウト (画像:大 / 設定:小)
+    # ------------------------------------
+    col_img, col_ctrl = st.columns([2.5, 1.0])
+
+    # ★重要: 右カラム（設定フォーム）を先に処理してリセットを防ぐ
+    with col_ctrl:
+        st.subheader("設定・登録")
+
+        def on_preset_change():
+            sel = st.session_state["preset_sel"]
+            if sel in PRESETS and PRESETS[sel]["val"]:
+                p = PRESETS[sel]
+                base_label = p["label"]
+                # 重複チェック
+                existing_labels = (
+                    df_existing["label"].tolist() if not df_existing.empty else []
+                )
+                new_label = base_label
+                count = 1
+                while new_label in existing_labels:
+                    count += 1
+                    new_label = f"{base_label}_{count}"
+
+                st.session_state["input_label"] = new_label
+                st.session_state["input_val"] = p["val"]
+                if "size" in p:
+                    st.session_state["input_size"] = float(p["size"])
+
+        st.selectbox(
+            "⚡️ プリセット",
+            list(PRESETS.keys()),
+            key="preset_sel",
+            on_change=on_preset_change,
+        )
+
+        c1, c2 = st.columns([2, 1])
+        label_in = c1.text_input("項目名", key="input_label")
+        val_in = c2.text_input("値/タグ", key="input_val")
+        c3, c4 = st.columns(2)
+        size_in = c3.number_input(
+            "サイズ", 0.5, 100.0, key="input_size", step=0.5, format="%.1f"
+        )
+        color_in = c4.selectbox("色", ["black", "red"], key="input_color")
+        desc_in = st.text_input("備考", key="input_desc")
+
+        st.write(
+            f"📍 X={st.session_state['last_x']:.1f} / Y={st.session_state['last_y']:.1f}"
+        )
+
+        if st.button("💾 登録する", type="primary", use_container_width=True):
+            if not label_in:
+                st.error("項目名必須")
+            elif st.session_state["last_x"] == 0:
+                st.error("画像をクリックしてください")
+            else:
+                success = db.register_coordinate(
+                    file_hash=file_hash,
+                    label=label_in,
+                    x=st.session_state["last_x"],
+                    y=st.session_state["last_y"],
+                    page_number=st.session_state["current_page"],
+                    description=desc_in,
+                    font_size=float(size_in),
+                    color=color_in,
+                    test_value=val_in,
+                )
+                if success:
+                    st.toast("✅ 登録完了")
+                    st.session_state["trigger_reset"] = True
+                    st.session_state["editor_key"] = str(uuid.uuid4())
+                    time.sleep(0.5)
+                    st.rerun()
+
+    # --- 左カラム: 画像表示 (後続実行) ---
+    with col_img:
+        st.subheader("座標指定")
+        draw_bg = display_image.copy()
+        draw = ImageDraw.Draw(draw_bg)
+
+        def draw_mark(raw_x, raw_y, val, sz, clr):
+            dx = raw_x * zoom_rate
+            dy = raw_y * zoom_rate
+            vsz = int(float(sz) * preview_scale * zoom_rate)
+            c = (255, 0, 0) if clr == "red" else (0, 0, 0)
+            if not val:
+                return
+            if str(val).startswith("RECT:"):
+                try:
+                    dims = val.replace("RECT:", "").split("x")
+                    w_pt, h_pt = float(dims[0]), float(dims[1])
+                    w_px = w_pt * preview_scale * zoom_rate
+                    h_px = h_pt * preview_scale * zoom_rate
+                    lw = max(1, int(vsz / 10))
+                    draw.rectangle([dx, dy, dx + w_px, dy + h_px], outline=c, width=lw)
+                except:
+                    pass
+            else:
+                try:
+                    font = ImageFont.truetype(FONT_PATH, max(8, vsz))
+                    draw.text((dx, dy), str(val), font=font, fill=c)
+                except:
+                    pass
+
+        if st.session_state["input_val"]:
+            draw_mark(
+                st.session_state["last_x"],
+                st.session_state["last_y"],
+                st.session_state["input_val"],
+                size_in,
+                color_in,
+            )
+
+        if not df_existing.empty:
+            for _, c in df_existing.iterrows():
+                if c["page"] == st.session_state["current_page"]:
+                    draw_mark(c["x"], c["y"], c["value"], c["font_size"], c["color"])
+
+        # width指定でズレ防止
+        value = streamlit_image_coordinates(
+            draw_bg,
+            width=display_image.width,
+            key=f"c_{st.session_state['current_page']}_{zoom_rate}",
+        )
+
+        if value:
+            ox = value["x"] / zoom_rate
+            oy = value["y"] / zoom_rate
+            if (
+                abs(ox - st.session_state["last_x"]) > 1.0
+                or abs(oy - st.session_state["last_y"]) > 1.0
+            ):
+                st.session_state["last_x"] = ox
+                st.session_state["last_y"] = oy
+                st.rerun()
+
+    # --- 下部: リストエリア ---
+    st.divider()
+    st.subheader("📋 登録済みリスト")
+
+    cols = ["label", "x", "y", "page", "font_size", "color", "value", "desc", "id"]
+    if not df_existing.empty:
+        for c in cols:
+            if c not in df_existing.columns:
+                df_existing[c] = None
+        df_show = df_existing[cols]
+    else:
+        df_show = pd.DataFrame(columns=cols)
+
+    column_config = {
+        "label": st.column_config.TextColumn("項目名", width="medium", required=True),
+        "x": st.column_config.NumberColumn("X", format="%.1f", required=True),
+        "y": st.column_config.NumberColumn("Y", format="%.1f", required=True),
+        "page": st.column_config.NumberColumn("P", width="small", min_value=1, step=1),
+        "font_size": st.column_config.NumberColumn(
+            "サイズ", width="small", min_value=1.0, step=0.5, format="%.1f"
+        ),
+        "color": st.column_config.SelectboxColumn(
+            "色", width="small", options=["black", "red"], default="black"
+        ),
+        "value": st.column_config.TextColumn("値/タグ", width="medium"),
+        "desc": st.column_config.TextColumn("備考", width="large"),
+        "id": None,
+    }
+
+    st.data_editor(
+        df_show,
+        hide_index=True,
+        use_container_width=True,
+        column_config=column_config,
+        num_rows="dynamic",
+        key=st.session_state["editor_key"],
+        on_change=on_data_editor_change,
+    )
+
+    if st.button("テストPDF作成 (全ページ)"):
+        if df_existing.empty:
+            st.error("座標なし")
+        else:
+            try:
+                output = PdfWriter()
+                for i, page_obj in enumerate(reader.pages):
+                    page_num = i + 1
+                    page_coords = df_existing[df_existing["page"] == page_num]
+                    if not page_coords.empty:
+                        packet_page = BytesIO()
+                        pw = float(page_obj.mediabox.width)
+                        ph = float(page_obj.mediabox.height)
+                        can_page = canvas.Canvas(packet_page, pagesize=(pw, ph))
+                        for _, row in page_coords.iterrows():
+                            # 簡易プレビュー用スケール (72/200)
+                            scale = 72.0 / 200.0
+                            draw_x = float(row["x"]) * scale
+                            top_y = ph - (float(row["y"]) * scale)
+                            f_size = float(row["font_size"])
+                            c_obj = red if row["color"] == "red" else black
+                            can_page.setFillColor(c_obj)
+                            can_page.setStrokeColor(c_obj)
+
+                            val = row["value"]
+                            if str(val).startswith("RECT:"):
+                                try:
+                                    dims = val.replace("RECT:", "").split("x")
+                                    w_pt, h_pt = float(dims[0]), float(dims[1])
+                                    can_page.rect(
+                                        draw_x,
+                                        top_y - h_pt,
+                                        w_pt,
+                                        h_pt,
+                                        stroke=1,
+                                        fill=0,
+                                    )
+                                except:
+                                    pass
+                            else:
+                                can_page.setFont("IPAexG", f_size)
+                                can_page.drawString(
+                                    draw_x, top_y - (f_size * 0.9), str(val)
+                                )
+
+                        can_page.save()
+                        packet_page.seek(0)
+                        overlay = PdfReader(packet_page)
+                        page_obj.merge_page(overlay.pages[0])
+                    output.add_page(page_obj)
+                out_stream = BytesIO()
+                output.write(out_stream)
+                st.download_button(
+                    "📥 テストPDFダウンロード",
+                    out_stream,
+                    "test.pdf",
+                    "application/pdf",
+                )
+            except Exception as e:
+                st.error(f"エラー: {e}")
+
+
+# ==========================================
+# アプリケーション本体
+# ==========================================
+def main():
+    # サイドバーで機能切り替え (統合管理ツール化)
+    app_mode = st.sidebar.radio(
+        "機能選択", ["📍 座標定義 (編集)", "📥 雛形ファイル登録", "🗑️ 登録データ管理"]
+    )
+
+    if app_mode == "📍 座標定義 (編集)":
+        render_coordinate_editor()
+
+    elif app_mode == "📥 雛形ファイル登録":
+        st.title("📥 雛形ファイル登録")
+        st.caption("PDFファイルをシステムにアップロードします。")
+        from legal_system.ui.components.admin_tools import render_upload_tab
+
+        render_upload_tab(db)
+
+    elif app_mode == "🗑️ 登録データ管理":
+        st.title("🗑️ 登録データ管理")
+        st.caption("データベース内の全データを管理します。")
+        from legal_system.ui.components.admin_tools import render_management_tab
+
+        render_management_tab(db)
+
+
+if __name__ == "__main__":
+    main()
 ```
 
 ## File: .streamlit/config.toml

@@ -1,15 +1,18 @@
 # src/legal_system/core/ai_factory.py
 
 import os
+import platform
 import random
 from typing import Any
 
 from langchain_chroma import Chroma
 
-# LangChain / Google Generative AI
+# LangChain Community (Ollama用)
+from langchain_community.chat_models import ChatOllama
+
+# Google Generative AI
 from langchain_google_genai import ChatGoogleGenerativeAI, GoogleGenerativeAIEmbeddings
 
-# ★修正: 変数直接ではなく Config クラスをインポートします
 from .config import Config
 
 
@@ -45,16 +48,44 @@ class AIFactory:
     def get_llm(cls, mode: str = "cloud") -> Any:
         """
         指定されたモードに応じたLLMインスタンスを返します。
-        """
-        api_key = cls._get_api_key()
 
-        # ★修正: Config.GOOGLE_MODEL_NAME としてクラス変数にアクセス
-        return ChatGoogleGenerativeAI(
-            model=Config.GOOGLE_MODEL_NAME,
-            google_api_key=api_key,
-            temperature=Config.TEMPERATURE,
-            convert_system_message_to_human=True,
-        )
+        Args:
+            mode (str): "cloud" (Gemini) または "local" (Ollama)
+        """
+        if mode == "local":
+            # --- ローカルLLM (Ollama) の設定 ---
+
+            # OS判定によるモデル自動切り替え
+            current_os = platform.system()
+            if current_os == "Windows":
+                # Windows: VRAMに余裕がある場合が多いと仮定し、8bモデル推奨
+                # 事前に `ollama pull llama3.1` が必要
+                model_name = "llama3.1"
+                print(f"🖥️ Detected Windows. Using Local LLM: {model_name}")
+            else:
+                # Mac / Linux: Apple Silicon等での高速動作重視で軽量モデル推奨
+                # 事前に `ollama pull llama3.2:3b` が必要
+                model_name = "llama3.2:3b"
+                # model_name = "llama3.1"
+                print(f"🍎 Detected Mac/Linux. Using Local LLM: {model_name}")
+
+            return ChatOllama(
+                model=model_name,
+                temperature=0.0,
+                # JSONモードを有効化（構造化データ抽出のため）
+                format="json",
+            )
+
+        else:
+            # --- クラウドLLM (Google Gemini) の設定 ---
+            api_key = cls._get_api_key()
+
+            return ChatGoogleGenerativeAI(
+                model=Config.GOOGLE_MODEL_NAME,
+                google_api_key=api_key,
+                temperature=Config.TEMPERATURE,
+                convert_system_message_to_human=True,
+            )
 
     @classmethod
     def get_embeddings(cls) -> Any:
@@ -62,7 +93,6 @@ class AIFactory:
         埋め込みモデル（Embeddings）を返します。
         """
         api_key = cls._get_api_key()
-        # ★修正: Config.EMBEDDING_MODEL を使用
         return GoogleGenerativeAIEmbeddings(
             model=Config.EMBEDDING_MODEL, google_api_key=api_key
         )

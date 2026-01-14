@@ -31,11 +31,14 @@ def _create_new_engine() -> Engine:
     SQLAlchemyエンジンを新規作成する内部関数。
     Streamlitへの依存を含みません。
     """
+    # 【修正ポイント】 Windows環境での文字コードエラー(0x83)を防ぐため
+    # client_encoding='utf8' を明示的に指定します。
     engine = create_engine(
         Config.DATABASE_URL,
         pool_size=20,
         max_overflow=10,
         pool_pre_ping=True,
+        connect_args={"client_encoding": "utf8"}  # Windows対策: 文字化けクラッシュ防止
     )
 
     # テーブル作成 (初回のみ)
@@ -44,6 +47,7 @@ def _create_new_engine() -> Engine:
     except Exception as e:
         # Streamlit環境下であればエラー表示、そうでなければ標準出力へ
         msg = f"❌ データベース接続エラー: {e}"
+        # Watcherプロセスかどうかの判定
         if os.environ.get("IS_WATCHER_PROCESS") != "true":
             st.error(msg)
             st.info("PostgreSQLサーバー設定(.env)を確認してください。")

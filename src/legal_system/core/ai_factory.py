@@ -3,6 +3,7 @@
 import os
 import platform
 import random
+import requests
 from typing import Any
 
 from langchain_chroma import Chroma
@@ -19,22 +20,18 @@ from .config import Config
 class AIFactory:
     """
     AIモデル（LLM）、Embeddings、VectorStoreのインスタンス生成を一元管理するファクトリークラス。
-    APIキーのローテーション機能を含みます。
+    APIキーのローテーション機能およびOllamaの接続チェックを含みます。
     """
 
     @staticmethod
     def _get_api_key() -> str:
-        """
-        利用可能なAPIキーを取得します。
-        Home.py等で既に環境変数がセットされていればそれを使用し、
-        なければConfigリストからランダムに取得してセットします。
-        """
-        # 1. 既に環境変数にセットされている場合（優先）
+        """利用可能なAPIキーを取得します。"""
+        # 1. 環境変数から優先取得
         env_key = os.getenv("GOOGLE_API_KEY")
         if env_key:
             return env_key
 
-        # 2. 未セットの場合、Configから取得してセットする (ローテーション)
+        # 2. Configからローテーション取得
         if Config.GOOGLE_API_KEYS:
             selected_key = random.choice(Config.GOOGLE_API_KEYS)
             os.environ["GOOGLE_API_KEY"] = selected_key
@@ -44,38 +41,40 @@ class AIFactory:
             "❌ 有効な Google API Key が見つかりません。.env を確認してください。"
         )
 
+    @staticmethod
+    def _check_ollama_server(base_url: str) -> bool:
+        """
+        Ollamaサーバーが起動しているか、指定されたURLで疎通確認を行う。
+        """
+        try:
+            # タグ一覧取得APIを叩いて生存確認 (タイムアウト2秒)
+            response = requests.get(f"{base_url}/api/tags", timeout=2.0)
+            return response.status_code == 200
+        except requests.exceptions.RequestException:
+            return False
+
     @classmethod
     def get_llm(cls, mode: str = "cloud") -> Any:
-        """
-        指定されたモードに応じたLLMインスタンスを返します。
-
-        Args:
-            mode (str): "cloud" (Gemini) または "local" (Ollama)
-        """
         if mode == "local":
-            # --- ローカルLLM (Ollama) の設定 ---
+            base_url = "http://host.docker.internal:11434"
 
-            # OS判定によるモデル自動切り替え
-            current_os = platform.system()
-            if current_os == "Windows":
-                # Windows: VRAMに余裕がある場合が多いと仮定し、8bモデル推奨
-                # 事前に `ollama pull llama3.1` が必要
-                model_name = "llama3.1"
-                print(f"🖥️ Detected Windows. Using Local LLM: {model_name}")
-            else:
-                # Mac / Linux: Apple Silicon等での高速動作重視で軽量モデル推奨
-                # 事前に `ollama pull llama3.2:3b` が必要
-                model_name = "llama3.2:3b"
-                # model_name = "llama3.1"
-                print(f"🍎 Detected Mac/Linux. Using Local LLM: {model_name}")
+            if not cls._check_ollama_server(base_url):
+                raise ConnectionError(f"❌ Ollamaサーバーに接続できません。")
+
+            # 【修正】メモリ不足を回避するため、軽量な 1b モデルに固定
+            # ※ Llama 3.1:8b は約 5GB のメモリを消費しますが、3.2:1b は約 1.5GB で動きます。
+            model_name = "llama3.2:1b" 
+            
+            print(f"🤖 メモリ節約モード: {model_name} を使用します。")
 
             return ChatOllama(
+                base_url=base_url,
                 model=model_name,
                 temperature=0.0,
-                # JSONモードを有効化（構造化データ抽出のため）
                 format="json",
+                timeout=120,
             )
-
+        
         else:
             # --- クラウドLLM (Google Gemini) の設定 ---
             api_key = cls._get_api_key()
@@ -89,9 +88,7 @@ class AIFactory:
 
     @classmethod
     def get_embeddings(cls) -> Any:
-        """
-        埋め込みモデル（Embeddings）を返します。
-        """
+        """埋め込みモデル（Embeddings）を返します。"""
         api_key = cls._get_api_key()
         return GoogleGenerativeAIEmbeddings(
             model=Config.EMBEDDING_MODEL, google_api_key=api_key
@@ -99,9 +96,7 @@ class AIFactory:
 
     @classmethod
     def get_vector_store(cls) -> Chroma:
-        """
-        永続化されたChromaベクトルストアのインスタンスを返します。
-        """
+        """永続化されたChromaベクトルストアのインスタンスを返します。"""
         embeddings = cls.get_embeddings()
 
         # ディレクトリ作成 (念のため)

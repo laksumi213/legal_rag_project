@@ -34,75 +34,32 @@ The content is organized as follows:
 
 # Directory Structure
 ```
-.streamlit/
-  config.toml
-data/
-  db/
-    chroma/
-      local_rag_db/
-        d50e1e10-53e2-4aea-ac5d-95f27e67e86d/
-          data_level0.bin
-          header.bin
-          length.bin
-          link_lists.bin
-        chroma.sqlite3
-      .keep
-    sql/
-      .keep
-      legal_system.db
-  fonts/
-    ipaexg.ttf
-  rules/
-    bank_master.csv
-    company_rules.md
-  templates/
-    .keep
-  legal_system.db
-src/
-  chains/
-    bank_procedure_chain.py
-  legal_system/
-    core/
-      __init__.py
-      ai_factory.py
-      config.py
-      data_sync.py
-      database_manager.py
-      engines.py
-      ocr_engine.py
-      preload.py
-    models/
-      __init__.py
-      base.py
-      tables.py
-    tools/
-      __init__.py
-      coord_tool.py
-    ui/
-      components/
-        admin_tools.py
-      pages/
-        01_Kintoneデータ_エクセル入力フォーム.py
-        02_預貯金口座入力フォーム.py
-        03_相続書類_作成フォーム.py
-        99_書式座標登録ツール.py
-      __init__.py
-      excel_generator.py
-      Home.py
-    __init__.py
-    main.py
-  legal.egg-info/
-    dependency_links.txt
-    PKG-INFO
-    requires.txt
-    SOURCES.txt
-    top_level.txt
-  __init__.py
+.dockerignore
 .gitignore
 .python-version
+.streamlit/config.toml
 ■初回送付セット【20251218版】　.xlsx
 bank_master.json
 create_rule_master.py
+data/db/chroma/.keep
+data/db/chroma/local_rag_db/7ec55c3c-907b-4922-a7e0-989eb818156f/data_level0.bin
+data/db/chroma/local_rag_db/7ec55c3c-907b-4922-a7e0-989eb818156f/header.bin
+data/db/chroma/local_rag_db/7ec55c3c-907b-4922-a7e0-989eb818156f/length.bin
+data/db/chroma/local_rag_db/7ec55c3c-907b-4922-a7e0-989eb818156f/link_lists.bin
+data/db/chroma/local_rag_db/chroma.sqlite3
+data/db/chroma/local_rag_db/d50e1e10-53e2-4aea-ac5d-95f27e67e86d/data_level0.bin
+data/db/chroma/local_rag_db/d50e1e10-53e2-4aea-ac5d-95f27e67e86d/header.bin
+data/db/chroma/local_rag_db/d50e1e10-53e2-4aea-ac5d-95f27e67e86d/length.bin
+data/db/chroma/local_rag_db/d50e1e10-53e2-4aea-ac5d-95f27e67e86d/link_lists.bin
+data/db/sql/.keep
+data/db/sql/legal_system.db
+data/fonts/ipaexg.ttf
+data/legal_system.db
+data/rules/bank_master.csv
+data/rules/company_rules.md
+data/templates/.keep
+docker-compose.yml
+Dockerfile
 export_code.py
 pyproject.toml
 README.md
@@ -112,10 +69,139 @@ requirements.lock
 requirements.txt
 reset_db.py
 run_watcher.py
+src/__init__.py
+src/chains/bank_procedure_chain.py
+src/legal_system/__init__.py
+src/legal_system/core/__init__.py
+src/legal_system/core/ai_factory.py
+src/legal_system/core/config.py
+src/legal_system/core/data_sync.py
+src/legal_system/core/database_manager.py
+src/legal_system/core/engines.py
+src/legal_system/core/ocr_engine.py
+src/legal_system/core/preload.py
+src/legal_system/main.py
+src/legal_system/models/__init__.py
+src/legal_system/models/base.py
+src/legal_system/models/tables.py
+src/legal_system/tools/__init__.py
+src/legal_system/tools/coord_tool.py
+src/legal_system/ui/__init__.py
+src/legal_system/ui/components/admin_tools.py
+src/legal_system/ui/excel_generator.py
+src/legal_system/ui/Home.py
+src/legal_system/ui/pages/01_Kintoneデータ_エクセル入力フォーム.py
+src/legal_system/ui/pages/02_預貯金口座入力フォーム.py
+src/legal_system/ui/pages/03_相続書類_作成フォーム.py
+src/legal_system/ui/pages/04_法定相続情報_読取.py
+src/legal_system/ui/pages/05_顧客紹介連絡表_読取.py
+src/legal_system/ui/pages/99_書式座標登録ツール.py
+src/legal.egg-info/dependency_links.txt
+src/legal.egg-info/PKG-INFO
+src/legal.egg-info/requires.txt
+src/legal.egg-info/SOURCES.txt
+src/legal.egg-info/top_level.txt
 update_bank_master.py
 ```
 
 # Files
+
+## File: .dockerignore
+```
+.git
+.venv
+.rye
+__pycache__
+*.pyc
+.env
+.DS_Store
+data/db/chroma  # ローカルDBはホスト側からマウントするためコピー不要
+data/db/sql
+repomix-output.md
+```
+
+## File: docker-compose.yml
+```yaml
+# docker-compose.yml
+services:
+  # --- 1. アプリケーションサーバー (Streamlit) ---
+  app:
+    build: .
+    container_name: legal_app
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    ports:
+      - "8501:8501"  # ブラウザからアクセスするポート
+    environment:
+      - POSTGRES_HOST=db
+      - POSTGRES_PORT=5432
+      - POSTGRES_DB=legal_db
+      - POSTGRES_USER=postgres
+      - POSTGRES_PASSWORD=password
+      # 本番ではGoogle API Key等はここで渡すか、.envファイルを読み込ませます
+      - GOOGLE_API_KEY=${GOOGLE_API_KEY}
+    depends_on:
+      - db
+    volumes:
+      # ホストのソースコードをコンテナにマウント (開発中は変更が即反映されるように)
+      - ./src:/app/src
+      - ./data:/app/data
+    restart: always
+
+  # --- 2. データベースサーバー (PostgreSQL) ---
+  db:
+    image: postgres:15
+    container_name: legal_db
+    environment:
+      - POSTGRES_DB=legal_db
+      - POSTGRES_USER=postgres
+      - POSTGRES_PASSWORD=password
+    ports:
+      - "5432:5432"
+    volumes:
+      # DBのデータをDockerボリュームに保存 (コンテナを消してもデータは残る)
+      - postgres_data:/var/lib/postgresql/data
+    restart: always
+
+# データの永続化領域定義
+volumes:
+  postgres_data:
+```
+
+## File: Dockerfile
+```dockerfile
+# ベースイメージ: Python 3.12 (軽量版)
+FROM python:3.12-slim
+
+# 1. OSレベルの依存ライブラリをインストール
+RUN apt-get update && apt-get install -y \
+    build-essential \
+    curl \
+    tesseract-ocr \
+    tesseract-ocr-jpn \
+    libtesseract-dev \
+    poppler-utils \
+    libgl1 \
+    && apt-get clean \
+    && rm -rf /var/lib/apt/lists/*
+
+# 2. 作業ディレクトリの設定
+WORKDIR /app
+
+# 3. 依存関係ファイルのコピーとインストール
+# エラー回避のため、設定ファイル(pyproject.toml)と説明書(README.md)を先にコピーします
+COPY requirements.lock pyproject.toml README.md ./
+RUN pip install --no-cache-dir -r requirements.lock
+
+# 4. ソースコード全体をコピー
+COPY . .
+
+# 5. 環境変数の設定 (Streamlit用)
+ENV PYTHONUNBUFFERED=1
+
+# 6. アプリケーションの起動コマンド
+CMD ["python", "src/legal_system/main.py"]
+```
 
 ## File: src/legal_system/ui/pages/01_Kintoneデータ_エクセル入力フォーム.py
 ```python
@@ -663,6 +749,627 @@ def main():
                                     file_name=f"作成済_{selected_file_name}",
                                     mime="application/pdf",
                                 )
+    session.close()
+
+
+if __name__ == "__main__":
+    main()
+```
+
+## File: src/legal_system/ui/pages/04_法定相続情報_読取.py
+```python
+# src/legal_system/ui/pages/04_法定相続情報_読取.py
+
+import os
+import sys
+from datetime import datetime
+
+import pandas as pd
+import streamlit as st
+from pdf2image import convert_from_bytes
+
+# パス解決
+ROOT_DIR = os.path.dirname(
+    os.path.dirname(
+        os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+    )
+)
+sys.path.append(ROOT_DIR)
+
+from legal_system.core.database_manager import DatabaseManager
+from legal_system.core.ocr_engine import analyze_legal_heir_document
+from legal_system.models.tables import Address, Case, Deceased, Heir
+
+st.set_page_config(page_title="法定相続情報 読取", page_icon="👪", layout="wide")
+
+
+def main():
+    st.title("👪 法定相続情報 読取・登録")
+    st.caption(
+        "「法定相続情報一覧図」をAI解析(オフライン)し、データベースへ登録します。"
+    )
+
+    db = DatabaseManager()
+    session = db._get_session()
+
+    # --- サイドバー: 設定 ---
+    with st.sidebar:
+        st.header("📂 対象案件")
+        cases = session.query(Case).all()
+        case_opts = {f"{c.case_number}: {c.client_name}": c.case_id for c in cases}
+        selected_case_label = st.selectbox("案件選択", list(case_opts.keys()))
+
+        if not selected_case_label:
+            st.warning("案件を選択してください")
+            session.close()
+            return
+
+        current_case_id = case_opts[selected_case_label]
+        st.divider()
+        uploaded_file = st.file_uploader("PDFファイルをアップロード", type=["pdf"])
+
+    # --- メインエリア ---
+    if not uploaded_file:
+        st.info(
+            "👈 サイドバーから「法定相続情報一覧図(PDF)」をアップロードしてください。"
+        )
+        session.close()
+        return
+
+    # ファイル読込
+    file_bytes = uploaded_file.read()
+
+    # 画像変換（表示用）
+    try:
+        images = convert_from_bytes(file_bytes, dpi=200, fmt="jpeg")
+        display_img = images[0]
+    except Exception as e:
+        st.error(f"画像変換エラー: {e}")
+        session.close()
+        return
+
+    # --- 解析実行ボタン ---
+    if "ocr_result" not in st.session_state:
+        st.session_state["ocr_result"] = None
+
+    col_btn, col_status = st.columns([1, 4])
+    with col_btn:
+        analyze_btn = st.button(
+            "🔍 AI解析実行 (Local)", type="primary", use_container_width=True
+        )
+
+    if analyze_btn:
+        with st.spinner("🤖 ローカルAIが画像を解析中... (PlladeOCR + Ollama)"):
+            result = analyze_legal_heir_document(file_bytes)
+            if "error" in result:
+                st.error(result["error"])
+            else:
+                st.session_state["ocr_result"] = result
+                st.toast("✅ 解析完了しました！", icon="🎉")
+
+    st.divider()
+
+    # --- 2カラムレイアウト: 左(画像) / 右(編集フォーム) ---
+    col_img, col_data = st.columns([1, 1.2])
+
+    # 左側: 画像プレビュー
+    with col_img:
+        st.subheader("📄 原本プレビュー")
+        st.image(display_img, use_container_width=True, caption="アップロードされたPDF")
+
+    # 右側: データ編集 & 保存
+    with col_data:
+        st.subheader("📝 データ確認・編集")
+
+        if st.session_state["ocr_result"]:
+            data = st.session_state["ocr_result"]
+
+            # 1. 被相続人 (Deceased)
+            st.markdown("##### 1. 被相続人 (亡くなった方)")
+            with st.container(border=True):
+                d_info = data.get("deceased", {})
+                d_name = st.text_input("氏名", value=d_info.get("name", ""))
+                c1, c2 = st.columns(2)
+                d_date = c1.text_input(
+                    "死亡日",
+                    value=d_info.get("death_date", ""),
+                    help="YYYY-MM-DD形式推奨",
+                )
+                d_addr = st.text_input(
+                    "最後の住所", value=d_info.get("last_address", "")
+                )
+
+            # 2. 相続人 (Heirs) - DataEditorでExcelライクに
+            st.markdown("##### 2. 相続人一覧")
+            heirs_raw = data.get("heirs", [])
+
+            # DataFrame化して表示
+            df_heirs = pd.DataFrame(heirs_raw)
+            # カラム構成の定義
+            column_config = {
+                "name": st.column_config.TextColumn(
+                    "氏名", required=True, width="medium"
+                ),
+                "relationship": st.column_config.SelectboxColumn(
+                    "続柄",
+                    options=[
+                        "妻",
+                        "夫",
+                        "長男",
+                        "二男",
+                        "長女",
+                        "二女",
+                        "養子",
+                        "兄弟姉妹",
+                    ],
+                    required=True,
+                    width="small",
+                ),
+                "birth_date": st.column_config.TextColumn(
+                    "生年月日", help="YYYY-MM-DD"
+                ),
+                "address": st.column_config.TextColumn("住所", width="large"),
+            }
+
+            # データがない場合の空枠作成
+            if df_heirs.empty:
+                df_heirs = pd.DataFrame(
+                    columns=["name", "relationship", "birth_date", "address"]
+                )
+
+            edited_df = st.data_editor(
+                df_heirs,
+                column_config=column_config,
+                num_rows="dynamic",  # 行追加・削除を許可
+                use_container_width=True,
+                key="heir_editor",
+            )
+
+            st.caption("※行を追加・削除・修正できます。")
+
+            st.divider()
+
+            # 3. 保存ボタン
+            if st.button(
+                "💾 データベースに保存・更新", type="primary", use_container_width=True
+            ):
+                try:
+                    # DB保存ロジック
+                    target_case = (
+                        session.query(Case).filter_by(case_id=current_case_id).first()
+                    )
+
+                    # A. 被相続人のUpsert
+                    deceased = target_case.deceased_ref
+                    if not deceased:
+                        deceased = Deceased(case_id=target_case.case_id)
+                        session.add(deceased)
+
+                    deceased.name_last = (
+                        d_name.split(" ")[0] if " " in d_name else d_name
+                    )
+                    deceased.name_first = d_name.split(" ")[1] if " " in d_name else ""
+
+                    # 日付変換トライ
+                    try:
+                        deceased.date_of_death = datetime.strptime(
+                            d_date, "%Y-%m-%d"
+                        ).date()
+                    except:
+                        pass  # エラー時は無視またはNone
+
+                    # 住所登録 (簡易)
+                    if d_addr:
+                        new_addr = Address(prefecture="", street_address=d_addr)
+                        session.add(new_addr)
+                        session.flush()
+                        deceased.last_address_id = new_addr.id
+
+                    # B. 相続人の洗い替え (既存削除 -> 新規登録)
+                    # ※実運用ではID維持のためにUpdateをかけるべきだが、ここでは簡易化のため洗い替え
+                    for h in deceased.heirs:
+                        session.delete(h)
+
+                    for index, row in edited_df.iterrows():
+                        if not row["name"]:
+                            continue
+
+                        full_name = row["name"]
+                        lname = (
+                            full_name.split(" ")[0] if " " in full_name else full_name
+                        )
+                        fname = full_name.split(" ")[1] if " " in full_name else ""
+
+                        b_date = None
+                        try:
+                            b_date = datetime.strptime(
+                                str(row["birth_date"]), "%Y-%m-%d"
+                            ).date()
+                        except:
+                            pass
+
+                        new_heir = Heir(
+                            deceased=deceased,
+                            name_last=lname,
+                            name_first=fname,
+                            relationship_type=row["relationship"],
+                            date_of_birth=b_date,
+                        )
+                        session.add(new_heir)
+
+                        # 住所
+                        if row["address"]:
+                            h_addr = Address(
+                                prefecture="", street_address=row["address"]
+                            )
+                            session.add(h_addr)
+                            session.flush()
+                            # 中間テーブルへの登録が必要だが、models定義に合わせて簡易実装
+                            # 実装済みの H_AddressHistory 等を経由する必要があります
+                            # 今回はHeir作成までとします。
+
+                    session.commit()
+                    st.success(
+                        f"✅ 案件「{target_case.client_name}」のデータを更新しました！"
+                    )
+                    st.balloons()
+
+                except Exception as e:
+                    session.rollback()
+                    st.error(f"保存エラー: {e}")
+
+        else:
+            st.info("👈 左上のボタンから解析を実行してください。")
+
+    session.close()
+
+
+if __name__ == "__main__":
+    main()
+```
+
+## File: src/legal_system/ui/pages/05_顧客紹介連絡表_読取.py
+```python
+# src/legal_system/ui/pages/05_顧客紹介連絡表_読取.py
+
+import os
+import re
+import sys
+from datetime import datetime
+
+import streamlit as st
+from pdf2image import convert_from_bytes
+
+# パス解決
+ROOT_DIR = os.path.dirname(
+    os.path.dirname(
+        os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+    )
+)
+sys.path.append(ROOT_DIR)
+
+from legal_system.core.database_manager import DatabaseManager
+from legal_system.core.ocr_engine import analyze_referral_contact_sheet
+from legal_system.models.tables import Address, Case, CaseContactPoint, Contact
+
+st.set_page_config(page_title="顧客紹介連絡表 読取", page_icon="🤝", layout="wide")
+
+
+def get_next_case_number(session) -> str:
+    cases = session.query(Case.case_number).all()
+    max_num = 0
+    pattern = re.compile(r"^G?(\d{4})$")
+    for (c_num,) in cases:
+        if c_num:
+            match = pattern.match(c_num)
+            if match:
+                num = int(match.group(1))
+                if num > max_num:
+                    max_num = num
+    return f"{max_num + 1:04d}"
+
+
+def split_address(full_address: str):
+    if not full_address:
+        return "", ""
+    match = re.match(r"(...??[都道府県])(.*)", full_address)
+    if match:
+        return match.group(1), match.group(2)
+    return "", full_address
+
+
+def main():
+    st.title("🤝 顧客紹介連絡表 読取・登録")
+
+    db = DatabaseManager()
+    session = db._get_session()
+
+    with st.container(border=True):
+        col_file, col_mode = st.columns([1.5, 1])
+        with col_file:
+            uploaded_file = st.file_uploader(
+                "📂 顧客紹介連絡表(PDF)をアップロード", type=["pdf"]
+            )
+        with col_mode:
+            st.write("⚙️ **登録モード**")
+            mode = st.radio(
+                "登録モード",
+                ["🆕 新規案件登録 (仮)", "📂 既存案件に追加"],
+                label_visibility="collapsed",
+            )
+
+    current_case_id = None
+    next_num_str = None
+
+    if mode == "🆕 新規案件登録 (仮)":
+        next_num_str = get_next_case_number(session)
+        st.info(f"💡 新規案件として登録します。自動採番: **{next_num_str}**")
+    else:
+        cases = session.query(Case).order_by(Case.case_number).all()
+        if not cases:
+            st.warning("登録済みの案件がありません。")
+        else:
+            case_opts = {f"{c.case_number}: {c.client_name}": c.case_id for c in cases}
+            selected_case_label = st.selectbox(
+                "追加する既存案件を選択", list(case_opts.keys())
+            )
+            if selected_case_label:
+                current_case_id = case_opts[selected_case_label]
+
+    if not uploaded_file:
+        session.close()
+        return
+
+    # 画像変換
+    file_bytes = uploaded_file.read()
+    display_img = None
+    try:
+        images = convert_from_bytes(file_bytes, dpi=400, fmt="jpeg")
+        display_img = images[0]
+    except Exception as e:
+        st.error(f"画像変換エラー: {e}")
+        session.close()
+        return
+
+    # --- 解析実行 ---
+    if st.session_state.get("last_uploaded_referral") != uploaded_file.name:
+        st.session_state["referral_ocr_result"] = None
+        st.session_state["last_uploaded_referral"] = uploaded_file.name
+
+    col_btn, _ = st.columns([1, 4])
+    with col_btn:
+        analyze_btn = st.button(
+            "🔍 AI解析実行 (Local)", type="primary", use_container_width=True
+        )
+
+    if analyze_btn:
+        with st.spinner("🤖 ローカルAIが画像を解析中... (Ollama)"):
+            result = analyze_referral_contact_sheet(file_bytes)
+            if "error" in result:
+                st.error(result["error"])
+            else:
+                st.session_state["referral_ocr_result"] = result
+                st.toast("✅ 解析完了！", icon="🎉")
+
+                # ▼▼▼ デバッグ画像表示エリア (更新) ▼▼▼
+                with st.expander("🛠️ 解析デバッグ (AIが見た画像範囲)", expanded=True):
+                    # 画像が戻り値に含まれていれば表示
+                    if "_debug_images" in result:
+                        imgs = result["_debug_images"]
+                        st.caption("📷 **1. 顧客情報エリア (Top 20%〜45%)**")
+                        st.image(imgs["top"], use_container_width=True)
+
+                        st.caption("📷 **2. 担当者・SOLエリア (Bottom Split)**")
+                        d1, d2 = st.columns(2)
+                        d1.image(
+                            imgs["left"],
+                            caption="左下: 担当者/支店",
+                            use_container_width=True,
+                        )
+                        d2.image(
+                            imgs["right"],
+                            caption="右下: SOL番号",
+                            use_container_width=True,
+                        )
+
+                    st.caption("📝 読み取れたテキスト")
+                    st.text_area(
+                        "", value=result.get("_debug_raw_text", ""), height=150
+                    )
+                # ▲▲▲ ここまで ▲▲▲
+
+    st.divider()
+
+    # --- 編集フォーム ---
+    col_img, col_data = st.columns([1, 1.2])
+    with col_img:
+        st.subheader("📄 原本プレビュー")
+        st.image(display_img, use_container_width=True)
+
+    with col_data:
+        st.subheader("📝 データ確認・編集")
+        ocr_data = st.session_state.get("referral_ocr_result", {})
+
+        db_vals = {
+            "name": "",
+            "kana": "",
+            "addr": "",
+            "phone1": "",
+            "phone2": "",
+            "sol": "",
+            "branch": "",
+            "rep": "",
+        }
+        if mode == "📂 既存案件に追加" and current_case_id:
+            ex = session.query(Case).filter_by(case_id=current_case_id).first()
+            if ex:
+                db_vals.update(
+                    {
+                        "name": ex.client_name,
+                        "kana": ex.client_name_kana,
+                        "phone1": ex.client_phone,
+                        "phone2": ex.client_phone_2,
+                        "addr": ex.client_address,
+                        "sol": ex.sol_case_number,
+                        "branch": ex.referral_sec_branch_name,
+                        "rep": ex.referral_sec_rep_name,
+                    }
+                )
+
+        def get_val(ocr_key, db_key=None):
+            if ocr_data and ocr_data.get(ocr_key):
+                return ocr_data[ocr_key]
+            if db_key and db_vals.get(db_key):
+                return str(db_vals[db_key])
+            return ""
+
+        with st.form("referral_reg_form"):
+            st.markdown("##### 👤 顧客情報")
+            if mode == "🆕 新規案件登録 (仮)":
+                st.text_input("案件番号", value=next_num_str, disabled=True)
+
+            c_name, c_kana = st.columns(2)
+            new_name = c_name.text_input(
+                "顧客名 (必須)", value=get_val("client_name", "name")
+            )
+            new_kana = c_kana.text_input(
+                "フリガナ", value=get_val("client_name_kana", "kana")
+            )
+
+            c_ph1, c_ph2 = st.columns(2)
+            new_phone1 = c_ph1.text_input(
+                "電話番号1 (携帯)", value=get_val("client_phone", "phone1")
+            )
+            new_phone2 = c_ph2.text_input(
+                "電話番号2 (固定等)", value=get_val("client_phone_2", "phone2")
+            )
+
+            new_addr = st.text_input("住所", value=get_val("client_address", "addr"))
+
+            st.markdown("---")
+            st.markdown("##### 🏢 紹介元・担当者")
+
+            c1, c2 = st.columns(2)
+            new_sol = c1.text_input(
+                "SOL案件番号", value=get_val("sol_case_number", "sol")
+            )
+            new_intro = c2.text_input(
+                "紹介日", value=get_val("introduction_date"), help="YYYY-MM-DD"
+            )
+
+            c3, c4 = st.columns(2)
+            new_branch = c3.text_input(
+                "支店名", value=get_val("referral_sec_branch_name", "branch")
+            )
+            new_rep = c4.text_input(
+                "担当者名", value=get_val("referral_sec_rep_name", "rep")
+            )
+
+            new_consent = st.text_input("同意書 受領日", value=get_val("consent_date"))
+
+            submitted = st.form_submit_button(
+                "💾 保存する", type="primary", use_container_width=True
+            )
+
+            if submitted:
+                if not new_name:
+                    st.error("❌ 顧客名を入力してください。")
+                elif mode == "📂 既存案件に追加" and not current_case_id:
+                    st.error("❌ 案件を選択してください。")
+                else:
+                    try:
+                        tgt = None
+                        if mode == "🆕 新規案件登録 (仮)":
+                            if (
+                                session.query(Case)
+                                .filter_by(case_number=next_num_str)
+                                .first()
+                            ):
+                                raise Exception("Duplicate")
+                            tgt = Case(
+                                case_number=next_num_str,
+                                client_name=new_name,
+                                created_at=datetime.now(),
+                            )
+                            session.add(tgt)
+                            session.flush()
+                        else:
+                            tgt = (
+                                session.query(Case)
+                                .filter_by(case_id=current_case_id)
+                                .first()
+                            )
+
+                        tgt.client_name = new_name
+                        tgt.client_name_kana = new_kana
+                        tgt.client_address = new_addr
+                        tgt.client_phone = new_phone1
+                        tgt.client_phone_2 = new_phone2
+
+                        tgt.sol_case_number = new_sol
+                        tgt.referral_sec_branch_name = new_branch
+                        tgt.referral_sec_rep_name = new_rep
+
+                        def parse_dt(d):
+                            if not d:
+                                return None
+                            for f in ["%Y-%m-%d", "%Y/%m/%d", "%Y年%m月%d日"]:
+                                try:
+                                    return datetime.strptime(d, f).date()
+                                except:
+                                    continue
+                            return None
+
+                        if new_intro:
+                            tgt.introduction_date = parse_dt(new_intro)
+                        if new_consent:
+                            tgt.consent_date = parse_dt(new_consent)
+
+                        # 正規化同期
+                        cp = None
+                        if tgt.contact_points:
+                            cp = next(
+                                (x for x in tgt.contact_points if x.is_primary_contact),
+                                tgt.contact_points[0],
+                            )
+
+                        if not cp:
+                            cp = CaseContactPoint(
+                                case_id=tgt.case_id, is_primary_contact=True
+                            )
+                            session.add(cp)
+                            session.flush()
+
+                        cp.contact_person_name = new_name
+
+                        if new_addr:
+                            pref, rest = split_address(new_addr)
+                            if cp.address_ref:
+                                cp.address_ref.prefecture = pref
+                                cp.address_ref.street_address = rest
+                            else:
+                                a_obj = Address(prefecture=pref, street_address=rest)
+                                session.add(a_obj)
+                                session.flush()
+                                cp.address_id = a_obj.id
+
+                        if new_phone1:
+                            if cp.contact_ref:
+                                cp.contact_ref.value = new_phone1
+                            else:
+                                c_obj = Contact(type="PHONE", value=new_phone1)
+                                session.add(c_obj)
+                                session.flush()
+                                cp.contact_id = c_obj.id
+
+                        session.commit()
+                        st.success(f"✅ {tgt.client_name} 様の情報を保存しました！")
+                        st.balloons()
+
+                    except Exception as e:
+                        session.rollback()
+                        st.error(f"保存エラー: {e}")
+
     session.close()
 
 
@@ -1286,6 +1993,11 @@ if __name__ == "__main__":
     main()
 ```
 
+## File: .python-version
+```
+3.12.4
+```
+
 ## File: .streamlit/config.toml
 ```toml
 [theme]
@@ -1306,6 +2018,122 @@ textColor = "#262730"
 
 # フォント
 font = "sans serif"
+```
+
+## File: bank_master.json
+```json
+[
+    {
+        "bank_name": "三菱UFJ銀行",
+        "procedure_type": "相続手続（代理人）",
+        "required_documents": [
+            "遺産分割協議書（実印押印）",
+            "相続人全員の印鑑証明書（6ヶ月以内）",
+            "被相続人の出生から死亡までの連続した戸籍謄本",
+            "【代理人】行政書士の印鑑証明書（発行後6ヶ月以内）",
+            "【代理人】行政書士証票のコピー（原本照合済）",
+            "【代理人】委任状（銀行所定様式または実印押印のある任意様式）"
+        ],
+        "notes": "※任意様式の委任状を使用する場合、捨印および『解約金の受領権限』の明記が必須。",
+        "original_return_policy": "戸籍等の原本還付可（要・原本還付請求のゴム印）"
+    },
+    {
+        "bank_name": "ゆうちょ銀行",
+        "procedure_type": "相続手続（代理人）",
+        "required_documents": [
+            "相続確認表（Web入力可）",
+            "貯金等相続手続請求書（代理人による署名・実印）",
+            "【代理人】特定事務任用カード（提示のみ）",
+            "【代理人】委任状（実印押印必須）"
+        ],
+        "notes": "※窓口ではなく相続センターへの郵送対応が基本となるケースが多い。要事前確認。",
+        "original_return_policy": "原則として原本還付可。コピーの提出が必要。"
+    },
+    {
+        "bank_name": "三井住友銀行",
+        "procedure_type": "相続手続（代理人）",
+        "required_documents": [
+            "相続手続依頼書（代理人署名）",
+            "【代理人】実印および印鑑証明書（6ヶ月以内）",
+            "【代理人】行政書士証票または識別カード",
+            "被相続人の全戸籍（出生〜死亡）"
+        ],
+        "notes": "※Web予約をしてからの来店が推奨される。",
+        "original_return_policy": "原本還付可"
+    }
+]
+```
+
+## File: create_rule_master.py
+```python
+import json
+from typing import Any, Dict, List
+
+# プロジェクトルートに作成される手続要件マスタ
+DATA_FILE: str = "bank_master.json"
+
+
+def create_initial_bank_data() -> List[Dict[str, Any]]:
+    """
+    行政書士業務に特化した銀行マスタデータの初期セットを生成する。
+    """
+    banks = [
+        {
+            "bank_name": "三菱UFJ銀行",
+            "procedure_type": "相続手続（代理人）",
+            "required_documents": [
+                "遺産分割協議書（実印押印）",
+                "相続人全員の印鑑証明書（6ヶ月以内）",
+                "被相続人の出生から死亡までの連続した戸籍謄本",
+                "【代理人】行政書士の印鑑証明書（発行後6ヶ月以内）",
+                "【代理人】行政書士証票のコピー（原本照合済）",
+                "【代理人】委任状（銀行所定様式または実印押印のある任意様式）",
+            ],
+            "notes": "※任意様式の委任状を使用する場合、捨印および『解約金の受領権限』の明記が必須。",
+            "original_return_policy": "戸籍等の原本還付可（要・原本還付請求のゴム印）",
+        },
+        {
+            "bank_name": "ゆうちょ銀行",
+            "procedure_type": "相続手続（代理人）",
+            "required_documents": [
+                "相続確認表（Web入力可）",
+                "貯金等相続手続請求書（代理人による署名・実印）",
+                "【代理人】特定事務任用カード（提示のみ）",
+                "【代理人】委任状（実印押印必須）",
+            ],
+            "notes": "※窓口ではなく相続センターへの郵送対応が基本となるケースが多い。要事前確認。",
+            "original_return_policy": "原則として原本還付可。コピーの提出が必要。",
+        },
+        {
+            "bank_name": "三井住友銀行",
+            "procedure_type": "相続手続（代理人）",
+            "required_documents": [
+                "相続手続依頼書（代理人署名）",
+                "【代理人】実印および印鑑証明書（6ヶ月以内）",
+                "【代理人】行政書士証票または識別カード",
+                "被相続人の全戸籍（出生〜死亡）",
+            ],
+            "notes": "※Web予約をしてからの来店が推奨される。",
+            "original_return_policy": "原本還付可",
+        },
+    ]
+    return banks
+
+
+def save_bank_master(data: List[Dict[str, Any]]) -> None:
+    try:
+        # プロジェクトルートに保存
+        with open(DATA_FILE, "w", encoding="utf-8") as f:
+            json.dump(data, f, ensure_ascii=False, indent=4)
+        print(f"✅ 成功: '{DATA_FILE}' を作成しました。")
+        print("   これで『01_銀行手続要件_確認』ページが動作します。")
+    except IOError as e:
+        print(f"❌ エラー: ファイルの書き込みに失敗しました。詳細: {e}")
+
+
+if __name__ == "__main__":
+    bank_data = create_initial_bank_data()
+    save_bank_master(bank_data)
 ```
 
 ## File: data/db/chroma/.keep
@@ -1356,6 +2184,234 @@ font = "sans serif"
 
 ## File: data/templates/.keep
 ```
+
+```
+
+## File: export_code.py
+```python
+import subprocess
+
+
+def run_repomix():
+    print("🚀 ソースコードの集約を開始します...")
+
+    # Repomixを実行するコマンド
+    # --style markdown : Geminiが読みやすいマークダウン形式で出力
+    # --ignore "**/*.json,**/*.lock" : 不要なファイルを除外（必要に応じて追加）
+    command = "npx -y repomix --style markdown"
+
+    try:
+        # コマンドを実行
+        # shell=True はWindows/Mac両対応のため
+        subprocess.run(command, shell=True, check=True)
+
+        print("\n✅ 完了しました！")
+        print("📁 'repomix-output.md' というファイルが作成されています。")
+        print("🤖 これをGeminiにアップロードしてください。")
+
+    except subprocess.CalledProcessError as e:
+        print(f"\n❌ エラーが発生しました: {e}")
+
+
+if __name__ == "__main__":
+    run_repomix()
+```
+
+## File: README.md
+```markdown
+# legal-rag-project
+
+Describe your project here.
+```
+
+## File: register_existing_templates.py
+```python
+import hashlib
+import os
+import sys
+
+# パス解決
+sys.path.append(os.path.join(os.getcwd(), "src"))
+
+from legal_system.core.database_manager import DatabaseManager
+
+
+def calculate_file_hash(file_path: str) -> str:
+    """ファイルのMD5ハッシュを計算"""
+    with open(file_path, "rb") as f:
+        file_bytes = f.read()
+    return hashlib.md5(file_bytes).hexdigest()
+
+
+def main():
+    print("🚀 既存テンプレートのDB登録を開始します...")
+
+    # パス設定
+    base_dir = os.getcwd()
+    template_dir = os.path.join(base_dir, "data", "templates")
+
+    if not os.path.exists(template_dir):
+        print(f"❌ フォルダが見つかりません: {template_dir}")
+        return
+
+    # DB接続
+    db = DatabaseManager()
+
+    # 登録処理
+    files = [f for f in os.listdir(template_dir) if f.lower().endswith(".pdf")]
+    count = 0
+
+    print(f"📂 対象フォルダ: {template_dir}")
+    print(f"📄 PDFファイル数: {len(files)}")
+
+    for filename in files:
+        file_path = os.path.join(template_dir, filename)
+        file_hash = calculate_file_hash(file_path)
+
+        # 既に登録済みかチェック
+        if db.is_file_registered(file_hash):
+            print(f"SKIP (登録済): {filename}")
+            continue
+
+        # 簡易的な種別判定 (ファイル名から推測)
+        doc_type = "その他"
+        if "残高証明" in filename:
+            doc_type = "残高証明"
+        elif "相続届" in filename or "手続" in filename:
+            doc_type = "相続届"
+        elif "委任状" in filename:
+            doc_type = "委任状"
+
+        # DBへ登録
+        db.register_file_hash(file_hash=file_hash, filename=filename, doc_type=doc_type)
+        print(f"✅ REGISTERED: {filename} ({doc_type})")
+        count += 1
+
+    print("------------------------------------------------")
+    print(f"🎉 完了しました。新規登録: {count} 件")
+    print("画面をリロードして確認してください。")
+
+
+if __name__ == "__main__":
+    main()
+```
+
+## File: requirements.txt
+```
+# 📂 遺言・遺産整理業務支援システム 要件定義書 (Ver 1.0)
+
+## 1. プロジェクト概要
+* **目的:** 遺言書作成および遺産整理業務の効率化。
+* **コアコンセプト:** 「個人情報の完全オフライン管理」と「生成AIによる業務支援」のハイブリッド構成。
+* **利用規模:** 本社20名で開始、将来的には全拠点100名以上（年間1000件規模）。
+
+## 2. 技術スタック選定
+以下のライブラリ・ツールを標準とする。
+
+| カテゴリ | 技術名 | 選定理由 |
+| :--- | :--- | :--- |
+| **言語** | **Python 3.10+** | AI/データ処理のエコシステムが最強であるため。 |
+| **アプリFW** | **Streamlit** | 社内Webアプリ化が高速。各PCへのインストール不要。 |
+| **DB** | **PostgreSQL** | 100人規模の同時接続・排他制御に耐える堅牢性（無料）。 |
+| **ORM** | **SQLAlchemy** | DB操作の抽象化。保守性向上のため必須。 |
+| **OCR** | **PaddleOCR** | 金融機関書類（日本語・罫線あり）の認識精度が高いため。 |
+| **生成AI** | **Google Gemini API** | マニュアル検索、文書案作成用。(google-generativeai) |
+| **PDF処理** | **PyMuPDF (fitz)** | PDFの読み込み、加工用。 |
+
+## 3. システムアーキテクチャ
+物理的なデータ保管場所と、外部AIへのデータフローを厳密に分離する。
+
+* **サーバー構成:** オンプレミス（社内）サーバー1台にDockerコンテナ等でDBとアプリをホスト。
+* **クライアント:** 社員PCのブラウザからイントラネット経由でアクセス。
+* **ネットワーク分離:**
+    * **Zone A (Secure/Local):** PostgreSQL, OCR処理, 個人情報（氏名, 口座番号）の保存。インターネットへは出さない。
+    * **Zone B (Cloud/AI):** Gemini API。ここには「匿名化されたテキスト」と「マニュアル」のみ送信する。
+
+## 4. 機能要件
+
+### A. 顧客・案件管理機能
+* 顧客情報（被相続人、相続人）のCRUD処理。
+* PostgreSQLを使用し、排他制御を行う。
+
+### B. 帳票OCR取り込み機能
+* Streamlit画面から画像/PDFをアップロード。
+* PaddleOCRでテキスト化。
+* OCR結果と元画像を並べて表示し、人間が修正してDB保存するUI。
+
+### C. 生成AI支援機能（RAG/Drafting）
+* **マスキング処理:** 相談内容をGeminiに投げる前に、正規表現等で個人情報（氏名、住所、電話番号、口座番号）をプレースホルダ（例: `[NAME_A]`, `[BANK_ID]`）に置換するロジックを実装すること。
+* **マニュアル検索:** 社内規定や金融機関手続きマニュアルをベクトル化、またはコンテキストとして渡し、質問に回答させる。
+
+### D. バックアップ機能
+* `pg_dump` を使用し、毎日深夜にDBのダンプファイルを作成。
+* 外部ストレージ（NAS等）への転送スクリプト。
+
+## 5. データベース設計指針（ER図イメージ）
+* **usersテーブル:** 社員アカウント管理（権限管理用）。
+* **customersテーブル:** 顧客基本情報。
+* **mattersテーブル:** 案件情報（遺言作成、遺産整理など）。
+* **documentsテーブル:** OCR読み取り結果、生成された文書データ。ファイルパス管理。
+
+## 6. セキュリティ・コンプライアンス規定
+* **原則:** 顧客のPII（個人特定情報）は、いかなる場合もGemini APIのエンドポイントへ送信してはならない。
+* **API設定:** Gemini API利用時は、学習データとして利用されない設定（Enterprise利用またはオプトアウト設定）を確認する。
+```
+
+## File: reset_db.py
+```python
+# file: reset_db.py
+import os
+import sys
+
+from sqlalchemy import text
+
+# パスを通す
+sys.path.append(os.path.join(os.getcwd(), "src"))
+
+from legal_system.core.database_manager import DatabaseManager
+from legal_system.models.tables import Base
+
+
+def reset_database():
+    print("🔄 データベースの完全リセットを開始します...")
+
+    db = DatabaseManager()
+    engine = db.engine
+
+    # 1. スキーマごと強制削除 (DROP SCHEMA public CASCADE)
+    # これにより、テーブル間の依存関係を無視して全てを消し去ります。
+    print("💣 既存のスキーマ(public)を破棄中...")
+    with engine.connect() as conn:
+        conn.execute(text("DROP SCHEMA public CASCADE;"))
+        conn.execute(text("CREATE SCHEMA public;"))
+        conn.commit()
+
+    # 2. テーブルを再作成
+    # 最新の tables.py の定義に基づいて作成されます
+    print("🔨 テーブルを再作成中...")
+    Base.metadata.create_all(engine)
+
+    print("✅ 完了しました！")
+    print(
+        "   PostgreSQLは完全に初期化され、最新の定義(client_name含む)と一致しました。"
+    )
+
+
+if __name__ == "__main__":
+    print("⚠️ 【警告】PostgreSQLの全データを物理的に破壊・初期化します。")
+    check = input("実行してよろしいですか？ (y/n): ")
+    if check.lower() == "y":
+        try:
+            reset_database()
+        except Exception as e:
+            print(f"❌ エラーが発生しました: {e}")
+            print("Dockerが起動しているか、.envの設定が正しいか確認してください。")
+    else:
+        print("中止しました。")
+```
+
+## File: src/__init__.py
+```python
 
 ```
 
@@ -1518,6 +2574,11 @@ def create_inheritance_chain(
             return "システムエラーが発生しました。"
 
     return run_chain
+```
+
+## File: src/legal_system/__init__.py
+```python
+
 ```
 
 ## File: src/legal_system/core/__init__.py
@@ -1771,55 +2832,6 @@ class RAGEngine:
                 "question": user_query,
             }
         )
-```
-
-## File: src/legal_system/core/ocr_engine.py
-```python
-import logging
-from io import BytesIO
-from typing import Optional
-
-# 外部ライブラリ
-try:
-    import pytesseract
-    from pdf2image import convert_from_bytes
-except ImportError:
-    # 依存関係が不足している場合のエラーハンドリング用
-    pytesseract = None
-    convert_from_bytes = None
-
-# ロガー設定
-logger = logging.getLogger(__name__)
-
-# Windowsの場合のTesseractパス設定例 (必要に応じてコメントアウトを解除してパスを指定)
-# pytesseract.pytesseract.tesseract_cmd = r'C:\Program Files\Tesseract-OCR\tesseract.exe'
-
-def extract_text_from_scanned_pdf(file_bytes: bytes) -> str:
-    """
-    画像化されたPDF(スキャンデータ)からテキストを抽出する。
-    pdf2image で画像に変換し、pytesseract でOCRを実行する。
-    """
-    if not pytesseract or not convert_from_bytes:
-        return "Error: OCRライブラリ(pytesseract, pdf2image)がインストールされていません。"
-
-    full_text = ""
-    try:
-        # PDFを画像のリストに変換 (dpi=300推奨)
-        # fmt="jpeg" で処理を高速化
-        images = convert_from_bytes(file_bytes, dpi=300, fmt="jpeg")
-        
-        for i, img in enumerate(images):
-            # 日本語(jpn)と英語(eng)のハイブリッドOCR
-            text = pytesseract.image_to_string(img, lang='jpn+eng')
-            
-            # ページ区切りを明確にする
-            full_text += f"\n--- Page {i+1} (OCR Result) ---\n{text}"
-            
-    except Exception as e:
-        logger.error(f"OCR Error: {e}")
-        return f"OCR処理中にエラーが発生しました: {str(e)}"
-        
-    return full_text
 ```
 
 ## File: src/legal_system/core/preload.py
@@ -2418,6 +3430,11 @@ with col_img:
             st.rerun()
 ```
 
+## File: src/legal_system/ui/__init__.py
+```python
+
+```
+
 ## File: src/legal_system/ui/components/admin_tools.py
 ```python
 # src/legal_system/ui/components/admin_tools.py
@@ -2939,11 +3956,6 @@ def render_management_tab(db_manager: DatabaseManager):
             st.rerun()
 ```
 
-## File: src/legal_system/ui/__init__.py
-```python
-
-```
-
 ## File: src/legal_system/ui/excel_generator.py
 ```python
 # components/utils/excel_generator.py
@@ -3029,451 +4041,85 @@ def fill_initial_set_excel(
     return output_buffer
 ```
 
-## File: src/legal_system/__init__.py
-```python
-
-```
-
 ## File: src/legal.egg-info/dependency_links.txt
 ```
 
 ```
 
-## File: src/__init__.py
+## File: run_watcher.py
 ```python
-
-```
-
-## File: .python-version
-```
-3.12.4
-```
-
-## File: bank_master.json
-```json
-[
-    {
-        "bank_name": "三菱UFJ銀行",
-        "procedure_type": "相続手続（代理人）",
-        "required_documents": [
-            "遺産分割協議書（実印押印）",
-            "相続人全員の印鑑証明書（6ヶ月以内）",
-            "被相続人の出生から死亡までの連続した戸籍謄本",
-            "【代理人】行政書士の印鑑証明書（発行後6ヶ月以内）",
-            "【代理人】行政書士証票のコピー（原本照合済）",
-            "【代理人】委任状（銀行所定様式または実印押印のある任意様式）"
-        ],
-        "notes": "※任意様式の委任状を使用する場合、捨印および『解約金の受領権限』の明記が必須。",
-        "original_return_policy": "戸籍等の原本還付可（要・原本還付請求のゴム印）"
-    },
-    {
-        "bank_name": "ゆうちょ銀行",
-        "procedure_type": "相続手続（代理人）",
-        "required_documents": [
-            "相続確認表（Web入力可）",
-            "貯金等相続手続請求書（代理人による署名・実印）",
-            "【代理人】特定事務任用カード（提示のみ）",
-            "【代理人】委任状（実印押印必須）"
-        ],
-        "notes": "※窓口ではなく相続センターへの郵送対応が基本となるケースが多い。要事前確認。",
-        "original_return_policy": "原則として原本還付可。コピーの提出が必要。"
-    },
-    {
-        "bank_name": "三井住友銀行",
-        "procedure_type": "相続手続（代理人）",
-        "required_documents": [
-            "相続手続依頼書（代理人署名）",
-            "【代理人】実印および印鑑証明書（6ヶ月以内）",
-            "【代理人】行政書士証票または識別カード",
-            "被相続人の全戸籍（出生〜死亡）"
-        ],
-        "notes": "※Web予約をしてからの来店が推奨される。",
-        "original_return_policy": "原本還付可"
-    }
-]
-```
-
-## File: create_rule_master.py
-```python
-import json
-from typing import Any, Dict, List
-
-# プロジェクトルートに作成される手続要件マスタ
-DATA_FILE: str = "bank_master.json"
-
-
-def create_initial_bank_data() -> List[Dict[str, Any]]:
-    """
-    行政書士業務に特化した銀行マスタデータの初期セットを生成する。
-    """
-    banks = [
-        {
-            "bank_name": "三菱UFJ銀行",
-            "procedure_type": "相続手続（代理人）",
-            "required_documents": [
-                "遺産分割協議書（実印押印）",
-                "相続人全員の印鑑証明書（6ヶ月以内）",
-                "被相続人の出生から死亡までの連続した戸籍謄本",
-                "【代理人】行政書士の印鑑証明書（発行後6ヶ月以内）",
-                "【代理人】行政書士証票のコピー（原本照合済）",
-                "【代理人】委任状（銀行所定様式または実印押印のある任意様式）",
-            ],
-            "notes": "※任意様式の委任状を使用する場合、捨印および『解約金の受領権限』の明記が必須。",
-            "original_return_policy": "戸籍等の原本還付可（要・原本還付請求のゴム印）",
-        },
-        {
-            "bank_name": "ゆうちょ銀行",
-            "procedure_type": "相続手続（代理人）",
-            "required_documents": [
-                "相続確認表（Web入力可）",
-                "貯金等相続手続請求書（代理人による署名・実印）",
-                "【代理人】特定事務任用カード（提示のみ）",
-                "【代理人】委任状（実印押印必須）",
-            ],
-            "notes": "※窓口ではなく相続センターへの郵送対応が基本となるケースが多い。要事前確認。",
-            "original_return_policy": "原則として原本還付可。コピーの提出が必要。",
-        },
-        {
-            "bank_name": "三井住友銀行",
-            "procedure_type": "相続手続（代理人）",
-            "required_documents": [
-                "相続手続依頼書（代理人署名）",
-                "【代理人】実印および印鑑証明書（6ヶ月以内）",
-                "【代理人】行政書士証票または識別カード",
-                "被相続人の全戸籍（出生〜死亡）",
-            ],
-            "notes": "※Web予約をしてからの来店が推奨される。",
-            "original_return_policy": "原本還付可",
-        },
-    ]
-    return banks
-
-
-def save_bank_master(data: List[Dict[str, Any]]) -> None:
-    try:
-        # プロジェクトルートに保存
-        with open(DATA_FILE, "w", encoding="utf-8") as f:
-            json.dump(data, f, ensure_ascii=False, indent=4)
-        print(f"✅ 成功: '{DATA_FILE}' を作成しました。")
-        print("   これで『01_銀行手続要件_確認』ページが動作します。")
-    except IOError as e:
-        print(f"❌ エラー: ファイルの書き込みに失敗しました。詳細: {e}")
-
-
-if __name__ == "__main__":
-    bank_data = create_initial_bank_data()
-    save_bank_master(bank_data)
-```
-
-## File: export_code.py
-```python
-import subprocess
-
-
-def run_repomix():
-    print("🚀 ソースコードの集約を開始します...")
-
-    # Repomixを実行するコマンド
-    # --style markdown : Geminiが読みやすいマークダウン形式で出力
-    # --ignore "**/*.json,**/*.lock" : 不要なファイルを除外（必要に応じて追加）
-    command = "npx -y repomix --style markdown"
-
-    try:
-        # コマンドを実行
-        # shell=True はWindows/Mac両対応のため
-        subprocess.run(command, shell=True, check=True)
-
-        print("\n✅ 完了しました！")
-        print("📁 'repomix-output.md' というファイルが作成されています。")
-        print("🤖 これをGeminiにアップロードしてください。")
-
-    except subprocess.CalledProcessError as e:
-        print(f"\n❌ エラーが発生しました: {e}")
-
-
-if __name__ == "__main__":
-    run_repomix()
-```
-
-## File: README.md
-```markdown
-# legal-rag-project
-
-Describe your project here.
-```
-
-## File: register_existing_templates.py
-```python
-import hashlib
+# file: run_watcher.py
+import logging
 import os
 import sys
+import time
 
-# パス解決
-sys.path.append(os.path.join(os.getcwd(), "src"))
+# ロギング設定 (Streamlit警告と区別するため)
+logging.basicConfig(
+    level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s"
+)
+logger = logging.getLogger(__name__)
 
-from legal_system.core.database_manager import DatabaseManager
+from watchdog.events import FileSystemEventHandler
+from watchdog.observers import Observer
+
+# パス解決の最適化
+BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+SRC_DIR = os.path.join(BASE_DIR, "src")
+if SRC_DIR not in sys.path:
+    sys.path.append(SRC_DIR)
+
+# WatcherプロセスではStreamlit環境ではないことを明示するためのフラグ
+os.environ["IS_WATCHER_PROCESS"] = "true"
+
+from legal_system.core.data_sync import DataSyncEngine
+
+# Macのダウンロードフォルダを優先
+WATCH_DIR = os.path.expanduser("~/Downloads")
 
 
-def calculate_file_hash(file_path: str) -> str:
-    """ファイルのMD5ハッシュを計算"""
-    with open(file_path, "rb") as f:
-        file_bytes = f.read()
-    return hashlib.md5(file_bytes).hexdigest()
+class JsonHandler(FileSystemEventHandler):
+    def __init__(self):
+        time.sleep(2)
+        # DataSyncEngine内でDB接続が行われる
+        self.syncer = DataSyncEngine()
 
+    def on_created(self, event):
+        if event.is_directory:
+            return
+        filename = os.path.basename(event.src_path)
 
-def main():
-    print("🚀 既存テンプレートのDB登録を開始します...")
-
-    # パス設定
-    base_dir = os.getcwd()
-    template_dir = os.path.join(base_dir, "data", "templates")
-
-    if not os.path.exists(template_dir):
-        print(f"❌ フォルダが見つかりません: {template_dir}")
-        return
-
-    # DB接続
-    db = DatabaseManager()
-
-    # 登録処理
-    files = [f for f in os.listdir(template_dir) if f.lower().endswith(".pdf")]
-    count = 0
-
-    print(f"📂 対象フォルダ: {template_dir}")
-    print(f"📄 PDFファイル数: {len(files)}")
-
-    for filename in files:
-        file_path = os.path.join(template_dir, filename)
-        file_hash = calculate_file_hash(file_path)
-
-        # 既に登録済みかチェック
-        if db.is_file_registered(file_hash):
-            print(f"SKIP (登録済): {filename}")
-            continue
-
-        # 簡易的な種別判定 (ファイル名から推測)
-        doc_type = "その他"
-        if "残高証明" in filename:
-            doc_type = "残高証明"
-        elif "相続届" in filename or "手続" in filename:
-            doc_type = "相続届"
-        elif "委任状" in filename:
-            doc_type = "委任状"
-
-        # DBへ登録
-        db.register_file_hash(file_hash=file_hash, filename=filename, doc_type=doc_type)
-        print(f"✅ REGISTERED: {filename} ({doc_type})")
-        count += 1
-
-    print("------------------------------------------------")
-    print(f"🎉 完了しました。新規登録: {count} 件")
-    print("画面をリロードして確認してください。")
+        if filename.startswith("G") and filename.endswith(".json"):
+            logger.info(f"📥 連携JSONを検知: {filename}")
+            # ファイルの書き込み完了を待機（MacのDL処理は一瞬だが安全のため）
+            time.sleep(1.5)
+            success = self.syncer.sync_from_kintone_json(event.src_path)
+            if success:
+                logger.info(f"✅ DB同期完了: {filename}")
+            else:
+                logger.error(f"❌ 同期失敗: {filename}")
 
 
 if __name__ == "__main__":
-    main()
-```
+    if not os.path.exists(WATCH_DIR):
+        logger.error(f"監視ディレクトリが存在しません: {WATCH_DIR}")
+        sys.exit(1)
 
-## File: requirements.txt
-```
-# 📂 遺言・遺産整理業務支援システム 要件定義書 (Ver 1.0)
+    logger.info(f"🚀 監視開始: {WATCH_DIR}")
+    logger.info("G番号(Gxxxx.json)のファイルを自動でPostgreSQLへ取り込みます。")
 
-## 1. プロジェクト概要
-* **目的:** 遺言書作成および遺産整理業務の効率化。
-* **コアコンセプト:** 「個人情報の完全オフライン管理」と「生成AIによる業務支援」のハイブリッド構成。
-* **利用規模:** 本社20名で開始、将来的には全拠点100名以上（年間1000件規模）。
+    event_handler = JsonHandler()
+    observer = Observer()
+    observer.schedule(event_handler, WATCH_DIR, recursive=False)
+    observer.start()
 
-## 2. 技術スタック選定
-以下のライブラリ・ツールを標準とする。
-
-| カテゴリ | 技術名 | 選定理由 |
-| :--- | :--- | :--- |
-| **言語** | **Python 3.10+** | AI/データ処理のエコシステムが最強であるため。 |
-| **アプリFW** | **Streamlit** | 社内Webアプリ化が高速。各PCへのインストール不要。 |
-| **DB** | **PostgreSQL** | 100人規模の同時接続・排他制御に耐える堅牢性（無料）。 |
-| **ORM** | **SQLAlchemy** | DB操作の抽象化。保守性向上のため必須。 |
-| **OCR** | **PaddleOCR** | 金融機関書類（日本語・罫線あり）の認識精度が高いため。 |
-| **生成AI** | **Google Gemini API** | マニュアル検索、文書案作成用。(google-generativeai) |
-| **PDF処理** | **PyMuPDF (fitz)** | PDFの読み込み、加工用。 |
-
-## 3. システムアーキテクチャ
-物理的なデータ保管場所と、外部AIへのデータフローを厳密に分離する。
-
-* **サーバー構成:** オンプレミス（社内）サーバー1台にDockerコンテナ等でDBとアプリをホスト。
-* **クライアント:** 社員PCのブラウザからイントラネット経由でアクセス。
-* **ネットワーク分離:**
-    * **Zone A (Secure/Local):** PostgreSQL, OCR処理, 個人情報（氏名, 口座番号）の保存。インターネットへは出さない。
-    * **Zone B (Cloud/AI):** Gemini API。ここには「匿名化されたテキスト」と「マニュアル」のみ送信する。
-
-## 4. 機能要件
-
-### A. 顧客・案件管理機能
-* 顧客情報（被相続人、相続人）のCRUD処理。
-* PostgreSQLを使用し、排他制御を行う。
-
-### B. 帳票OCR取り込み機能
-* Streamlit画面から画像/PDFをアップロード。
-* PaddleOCRでテキスト化。
-* OCR結果と元画像を並べて表示し、人間が修正してDB保存するUI。
-
-### C. 生成AI支援機能（RAG/Drafting）
-* **マスキング処理:** 相談内容をGeminiに投げる前に、正規表現等で個人情報（氏名、住所、電話番号、口座番号）をプレースホルダ（例: `[NAME_A]`, `[BANK_ID]`）に置換するロジックを実装すること。
-* **マニュアル検索:** 社内規定や金融機関手続きマニュアルをベクトル化、またはコンテキストとして渡し、質問に回答させる。
-
-### D. バックアップ機能
-* `pg_dump` を使用し、毎日深夜にDBのダンプファイルを作成。
-* 外部ストレージ（NAS等）への転送スクリプト。
-
-## 5. データベース設計指針（ER図イメージ）
-* **usersテーブル:** 社員アカウント管理（権限管理用）。
-* **customersテーブル:** 顧客基本情報。
-* **mattersテーブル:** 案件情報（遺言作成、遺産整理など）。
-* **documentsテーブル:** OCR読み取り結果、生成された文書データ。ファイルパス管理。
-
-## 6. セキュリティ・コンプライアンス規定
-* **原則:** 顧客のPII（個人特定情報）は、いかなる場合もGemini APIのエンドポイントへ送信してはならない。
-* **API設定:** Gemini API利用時は、学習データとして利用されない設定（Enterprise利用またはオプトアウト設定）を確認する。
-```
-
-## File: reset_db.py
-```python
-# file: reset_db.py
-import os
-import sys
-
-from sqlalchemy import text
-
-# パスを通す
-sys.path.append(os.path.join(os.getcwd(), "src"))
-
-from legal_system.core.database_manager import DatabaseManager
-from legal_system.models.tables import Base
-
-
-def reset_database():
-    print("🔄 データベースの完全リセットを開始します...")
-
-    db = DatabaseManager()
-    engine = db.engine
-
-    # 1. スキーマごと強制削除 (DROP SCHEMA public CASCADE)
-    # これにより、テーブル間の依存関係を無視して全てを消し去ります。
-    print("💣 既存のスキーマ(public)を破棄中...")
-    with engine.connect() as conn:
-        conn.execute(text("DROP SCHEMA public CASCADE;"))
-        conn.execute(text("CREATE SCHEMA public;"))
-        conn.commit()
-
-    # 2. テーブルを再作成
-    # 最新の tables.py の定義に基づいて作成されます
-    print("🔨 テーブルを再作成中...")
-    Base.metadata.create_all(engine)
-
-    print("✅ 完了しました！")
-    print(
-        "   PostgreSQLは完全に初期化され、最新の定義(client_name含む)と一致しました。"
-    )
-
-
-if __name__ == "__main__":
-    print("⚠️ 【警告】PostgreSQLの全データを物理的に破壊・初期化します。")
-    check = input("実行してよろしいですか？ (y/n): ")
-    if check.lower() == "y":
-        try:
-            reset_database()
-        except Exception as e:
-            print(f"❌ エラーが発生しました: {e}")
-            print("Dockerが起動しているか、.envの設定が正しいか確認してください。")
-    else:
-        print("中止しました。")
-```
-
-## File: src/legal_system/core/ai_factory.py
-```python
-# src/legal_system/core/ai_factory.py
-
-import os
-import random
-from typing import Any
-
-from langchain_chroma import Chroma
-
-# LangChain / Google Generative AI
-from langchain_google_genai import ChatGoogleGenerativeAI, GoogleGenerativeAIEmbeddings
-
-# ★修正: 変数直接ではなく Config クラスをインポートします
-from .config import Config
-
-
-class AIFactory:
-    """
-    AIモデル（LLM）、Embeddings、VectorStoreのインスタンス生成を一元管理するファクトリークラス。
-    APIキーのローテーション機能を含みます。
-    """
-
-    @staticmethod
-    def _get_api_key() -> str:
-        """
-        利用可能なAPIキーを取得します。
-        Home.py等で既に環境変数がセットされていればそれを使用し、
-        なければConfigリストからランダムに取得してセットします。
-        """
-        # 1. 既に環境変数にセットされている場合（優先）
-        env_key = os.getenv("GOOGLE_API_KEY")
-        if env_key:
-            return env_key
-
-        # 2. 未セットの場合、Configから取得してセットする (ローテーション)
-        if Config.GOOGLE_API_KEYS:
-            selected_key = random.choice(Config.GOOGLE_API_KEYS)
-            os.environ["GOOGLE_API_KEY"] = selected_key
-            return selected_key
-
-        raise ValueError(
-            "❌ 有効な Google API Key が見つかりません。.env を確認してください。"
-        )
-
-    @classmethod
-    def get_llm(cls, mode: str = "cloud") -> Any:
-        """
-        指定されたモードに応じたLLMインスタンスを返します。
-        """
-        api_key = cls._get_api_key()
-
-        # ★修正: Config.GOOGLE_MODEL_NAME としてクラス変数にアクセス
-        return ChatGoogleGenerativeAI(
-            model=Config.GOOGLE_MODEL_NAME,
-            google_api_key=api_key,
-            temperature=Config.TEMPERATURE,
-            convert_system_message_to_human=True,
-        )
-
-    @classmethod
-    def get_embeddings(cls) -> Any:
-        """
-        埋め込みモデル（Embeddings）を返します。
-        """
-        api_key = cls._get_api_key()
-        # ★修正: Config.EMBEDDING_MODEL を使用
-        return GoogleGenerativeAIEmbeddings(
-            model=Config.EMBEDDING_MODEL, google_api_key=api_key
-        )
-
-    @classmethod
-    def get_vector_store(cls) -> Chroma:
-        """
-        永続化されたChromaベクトルストアのインスタンスを返します。
-        """
-        embeddings = cls.get_embeddings()
-
-        # ディレクトリ作成 (念のため)
-        if not Config.VECTOR_STORE_PATH.exists():
-            os.makedirs(Config.VECTOR_STORE_PATH, exist_ok=True)
-
-        return Chroma(
-            persist_directory=str(Config.VECTOR_STORE_PATH),
-            embedding_function=embeddings,
-        )
+    try:
+        while True:
+            time.sleep(1)
+    except KeyboardInterrupt:
+        logger.info("🛑 監視を停止します。")
+        observer.stop()
+    observer.join()
 ```
 
 ## File: src/legal_system/core/data_sync.py
@@ -3584,6 +4230,185 @@ class DataSyncEngine:
                 status="新規取込",
             )
             session.add(new_asset)
+```
+
+## File: src/legal_system/core/ocr_engine.py
+```python
+"""
+OCR処理エンジン・モジュール
+[cite_start]PaddleOCRおよびPyMuPDFを使用してPDFからテキストを抽出します。 [cite: 4, 5]
+"""
+
+import logging
+import numpy as np
+import os
+from typing import List, Dict, Any, Optional
+
+# [cite_start]PyMuPDF (fitz) のインポート [cite: 5]
+import fitz
+
+# [cite_start]PaddleOCR のインポート [cite: 4]
+try:
+    from paddleocr import PaddleOCR
+except ImportError:
+    PaddleOCR = None
+
+# OpenCV (cv2) のインポートガード
+# コンテナ環境でのインストール漏れに対応
+try:
+    import cv2
+except ImportError:
+    cv2 = None
+
+logger = logging.getLogger(__name__)
+
+class OCREngine:
+    """
+    [cite_start]PaddleOCRを使用した帳票OCR取り込み機能を提供するクラス。 [cite: 4]
+    """
+
+    def __init__(self, lang: str = "japan"):
+        """
+        OCRエンジンの初期化。
+        
+        Args:
+            lang (str): 言語設定（デフォルトは日本語 'japan'）。
+        """
+        if cv2 is None:
+            logger.error("OpenCV (cv2) がインストールされていません。")
+        
+        if PaddleOCR is None:
+            logger.error("PaddleOCR がインストールされていません。")
+            self.ocr = None
+        else:
+            # [cite_start]PaddleOCRの初期化 (GUIがない環境を想定して use_angle_cls=True) [cite: 4]
+            self.ocr = PaddleOCR(use_angle_cls=True, lang=lang, show_log=False)
+
+    def process_pdf(self, pdf_path: str) -> List[Dict[str, Any]]:
+        """
+        PDFファイルからテキストと座標情報を抽出する。
+        
+        Args:
+            pdf_path (str): PDFファイルのフルパス。
+            
+        Returns:
+            List[Dict[str, Any]]: 認識結果のリスト。
+        """
+        if cv2 is None or self.ocr is None:
+            raise RuntimeError("OCRエンジンの依存ライブラリ (OpenCV または PaddleOCR) が不足しています。")
+
+        results = []
+        doc = None
+        try:
+            [cite_start]doc = fitz.open(pdf_path) [cite: 5]
+            for page_index in range(len(doc)):
+                page = doc.load_page(page_index)
+                pix = page.get_pixmap()
+                
+                # [cite_start]PyMuPDFの画像をNumPy配列(OpenCV形式)に変換 [cite: 5]
+                img_array = np.frombuffer(pix.samples, dtype=np.uint8)
+                
+                # 画像のチャンネル数に合わせてリサイズ/変換
+                if pix.n == 4:  # RGBA
+                    img = img_array.reshape(pix.height, pix.width, 4)
+                    img = cv2.cvtColor(img, cv2.COLOR_RGBA2RGB)
+                elif pix.n == 3:  # RGB
+                    img = img_array.reshape(pix.height, pix.width, 3)
+                    img = cv2.cvtColor(img, cv2.COLOR_RGB2BGR)
+                else:
+                    img = img_array.reshape(pix.height, pix.width, pix.n)
+
+                # [cite_start]PaddleOCRで解析 [cite: 4]
+                page_result = self.ocr.ocr(img, cls=True)
+                
+                if not page_result:
+                    continue
+
+                for line in page_result:
+                    if not line:
+                        continue
+                    for res in line:
+                        results.append({
+                            "page": page_index + 1,
+                            "coords": res[0],
+                            "text": res[1][0],
+                            "confidence": res[1][1]
+                        })
+        except Exception as e:
+            logger.error(f"OCR処理中に予期せぬエラーが発生しました: {e}")
+            raise e
+        finally:
+            if doc:
+                doc.close()
+            
+        return results
+
+# -----------------------------------------------------------------------------
+# 重要: 外部(admin_tools.py)から関数として呼び出すためのエクスポート
+# -----------------------------------------------------------------------------
+def extract_text_from_scanned_pdf(file_path: str) -> List[Dict[str, Any]]:
+    """
+    既存のUIコンポーネントとの互換性を維持するためのラッパー関数。
+    """
+    engine = OCREngine()
+    return engine.process_pdf(file_path)
+```
+
+## File: src/legal_system/main.py
+```python
+# ファイルパス: src/legal_system/main.py
+
+import subprocess
+import sys
+from pathlib import Path
+
+
+def main():
+    """
+    Streamlitアプリとフォルダ監視(Watcher)を同時に起動するランチャー
+    """
+    current_dir = Path(__file__).parent.absolute()
+    app_path = current_dir / "ui" / "Home.py"
+
+    # プロジェクトルートにある run_watcher.py のパス
+    # src/legal_system/main.py -> src/legal_system -> src -> root
+    root_dir = current_dir.parent.parent
+    watcher_path = root_dir / "run_watcher.py"
+
+    print("🚀 Legal RAG System を起動します...")
+
+    # 1. 監視プロセスをバックグラウンドで起動
+    watcher_process = None
+    if watcher_path.exists():
+        print("👀 フォルダ監視(Watcher)を開始します...")
+        watcher_process = subprocess.Popen([sys.executable, str(watcher_path)])
+    else:
+        print("⚠️ run_watcher.py が見つからないため、監視機能はスキップします。")
+
+    # 2. Streamlitをメインプロセスとして起動 (これが終わるまで待機)
+    print(f"📂 UI起動: {app_path}")
+    cmd = [sys.executable, "-m", "streamlit", "run", str(app_path)]
+
+    if len(sys.argv) > 1:
+        cmd.extend(sys.argv[1:])
+
+    try:
+        subprocess.run(cmd, check=True)
+    except KeyboardInterrupt:
+        print("\n🛑 システムを終了します。")
+    except Exception as e:
+        print(f"❌ エラーが発生しました: {e}")
+    finally:
+        # アプリが終了したら、監視プロセスも終了させる
+        if watcher_process:
+            print("🛑 監視プロセスを停止中...")
+            watcher_process.terminate()
+            watcher_process.wait()
+            print("✅ 完了")
+
+
+if __name__ == "__main__":
+    main()
 ```
 
 ## File: src/legal_system/models/tables.py
@@ -4326,138 +5151,6 @@ class WillAllocation(Base):
     will_case = relationship("WillCase", back_populates="allocations")
 ```
 
-## File: src/legal_system/main.py
-```python
-# ファイルパス: src/legal_system/main.py
-
-import subprocess
-import sys
-from pathlib import Path
-
-
-def main():
-    """
-    Streamlitアプリとフォルダ監視(Watcher)を同時に起動するランチャー
-    """
-    current_dir = Path(__file__).parent.absolute()
-    app_path = current_dir / "ui" / "Home.py"
-
-    # プロジェクトルートにある run_watcher.py のパス
-    # src/legal_system/main.py -> src/legal_system -> src -> root
-    root_dir = current_dir.parent.parent
-    watcher_path = root_dir / "run_watcher.py"
-
-    print("🚀 Legal RAG System を起動します...")
-
-    # 1. 監視プロセスをバックグラウンドで起動
-    watcher_process = None
-    if watcher_path.exists():
-        print("👀 フォルダ監視(Watcher)を開始します...")
-        watcher_process = subprocess.Popen([sys.executable, str(watcher_path)])
-    else:
-        print("⚠️ run_watcher.py が見つからないため、監視機能はスキップします。")
-
-    # 2. Streamlitをメインプロセスとして起動 (これが終わるまで待機)
-    print(f"📂 UI起動: {app_path}")
-    cmd = [sys.executable, "-m", "streamlit", "run", str(app_path)]
-
-    if len(sys.argv) > 1:
-        cmd.extend(sys.argv[1:])
-
-    try:
-        subprocess.run(cmd, check=True)
-    except KeyboardInterrupt:
-        print("\n🛑 システムを終了します。")
-    except Exception as e:
-        print(f"❌ エラーが発生しました: {e}")
-    finally:
-        # アプリが終了したら、監視プロセスも終了させる
-        if watcher_process:
-            print("🛑 監視プロセスを停止中...")
-            watcher_process.terminate()
-            watcher_process.wait()
-            print("✅ 完了")
-
-
-if __name__ == "__main__":
-    main()
-```
-
-## File: run_watcher.py
-```python
-# file: run_watcher.py
-import logging
-import os
-import sys
-import time
-
-# ロギング設定 (Streamlit警告と区別するため)
-logging.basicConfig(
-    level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s"
-)
-logger = logging.getLogger(__name__)
-
-from watchdog.events import FileSystemEventHandler
-from watchdog.observers import Observer
-
-# パス解決の最適化
-BASE_DIR = os.path.dirname(os.path.abspath(__file__))
-SRC_DIR = os.path.join(BASE_DIR, "src")
-if SRC_DIR not in sys.path:
-    sys.path.append(SRC_DIR)
-
-# WatcherプロセスではStreamlit環境ではないことを明示するためのフラグ
-os.environ["IS_WATCHER_PROCESS"] = "true"
-
-from legal_system.core.data_sync import DataSyncEngine
-
-# Macのダウンロードフォルダを優先
-WATCH_DIR = os.path.expanduser("~/Downloads")
-
-
-class JsonHandler(FileSystemEventHandler):
-    def __init__(self):
-        # DataSyncEngine内でDB接続が行われる
-        self.syncer = DataSyncEngine()
-
-    def on_created(self, event):
-        if event.is_directory:
-            return
-        filename = os.path.basename(event.src_path)
-
-        if filename.startswith("G") and filename.endswith(".json"):
-            logger.info(f"📥 連携JSONを検知: {filename}")
-            # ファイルの書き込み完了を待機（MacのDL処理は一瞬だが安全のため）
-            time.sleep(1.5)
-            success = self.syncer.sync_from_kintone_json(event.src_path)
-            if success:
-                logger.info(f"✅ DB同期完了: {filename}")
-            else:
-                logger.error(f"❌ 同期失敗: {filename}")
-
-
-if __name__ == "__main__":
-    if not os.path.exists(WATCH_DIR):
-        logger.error(f"監視ディレクトリが存在しません: {WATCH_DIR}")
-        sys.exit(1)
-
-    logger.info(f"🚀 監視開始: {WATCH_DIR}")
-    logger.info("G番号(Gxxxx.json)のファイルを自動でPostgreSQLへ取り込みます。")
-
-    event_handler = JsonHandler()
-    observer = Observer()
-    observer.schedule(event_handler, WATCH_DIR, recursive=False)
-    observer.start()
-
-    try:
-        while True:
-            time.sleep(1)
-    except KeyboardInterrupt:
-        logger.info("🛑 監視を停止します。")
-        observer.stop()
-    observer.join()
-```
-
 ## File: update_bank_master.py
 ```python
 # File: update_bank_master.py
@@ -4591,6 +5284,119 @@ if __name__ == "__main__":
     download_data()
 ```
 
+## File: src/legal_system/core/ai_factory.py
+```python
+# src/legal_system/core/ai_factory.py
+
+import os
+import platform
+import random
+import requests
+from typing import Any
+
+from langchain_chroma import Chroma
+
+# LangChain Community (Ollama用)
+from langchain_community.chat_models import ChatOllama
+
+# Google Generative AI
+from langchain_google_genai import ChatGoogleGenerativeAI, GoogleGenerativeAIEmbeddings
+
+from .config import Config
+
+
+class AIFactory:
+    """
+    AIモデル（LLM）、Embeddings、VectorStoreのインスタンス生成を一元管理するファクトリークラス。
+    APIキーのローテーション機能およびOllamaの接続チェックを含みます。
+    """
+
+    @staticmethod
+    def _get_api_key() -> str:
+        """利用可能なAPIキーを取得します。"""
+        # 1. 環境変数から優先取得
+        env_key = os.getenv("GOOGLE_API_KEY")
+        if env_key:
+            return env_key
+
+        # 2. Configからローテーション取得
+        if Config.GOOGLE_API_KEYS:
+            selected_key = random.choice(Config.GOOGLE_API_KEYS)
+            os.environ["GOOGLE_API_KEY"] = selected_key
+            return selected_key
+
+        raise ValueError(
+            "❌ 有効な Google API Key が見つかりません。.env を確認してください。"
+        )
+
+    @staticmethod
+    def _check_ollama_server(base_url: str) -> bool:
+        """
+        Ollamaサーバーが起動しているか、指定されたURLで疎通確認を行う。
+        """
+        try:
+            # タグ一覧取得APIを叩いて生存確認 (タイムアウト2秒)
+            response = requests.get(f"{base_url}/api/tags", timeout=2.0)
+            return response.status_code == 200
+        except requests.exceptions.RequestException:
+            return False
+
+    @classmethod
+    def get_llm(cls, mode: str = "cloud") -> Any:
+        if mode == "local":
+            base_url = "http://host.docker.internal:11434"
+
+            if not cls._check_ollama_server(base_url):
+                raise ConnectionError(f"❌ Ollamaサーバーに接続できません。")
+
+            # 【修正】メモリ不足を回避するため、軽量な 1b モデルに固定
+            # ※ Llama 3.1:8b は約 5GB のメモリを消費しますが、3.2:1b は約 1.5GB で動きます。
+            model_name = "llama3.2:1b" 
+            
+            print(f"🤖 メモリ節約モード: {model_name} を使用します。")
+
+            return ChatOllama(
+                base_url=base_url,
+                model=model_name,
+                temperature=0.0,
+                format="json",
+                timeout=120,
+            )
+        
+        else:
+            # --- クラウドLLM (Google Gemini) の設定 ---
+            api_key = cls._get_api_key()
+
+            return ChatGoogleGenerativeAI(
+                model=Config.GOOGLE_MODEL_NAME,
+                google_api_key=api_key,
+                temperature=Config.TEMPERATURE,
+                convert_system_message_to_human=True,
+            )
+
+    @classmethod
+    def get_embeddings(cls) -> Any:
+        """埋め込みモデル（Embeddings）を返します。"""
+        api_key = cls._get_api_key()
+        return GoogleGenerativeAIEmbeddings(
+            model=Config.EMBEDDING_MODEL, google_api_key=api_key
+        )
+
+    @classmethod
+    def get_vector_store(cls) -> Chroma:
+        """永続化されたChromaベクトルストアのインスタンスを返します。"""
+        embeddings = cls.get_embeddings()
+
+        # ディレクトリ作成 (念のため)
+        if not Config.VECTOR_STORE_PATH.exists():
+            os.makedirs(Config.VECTOR_STORE_PATH, exist_ok=True)
+
+        return Chroma(
+            persist_directory=str(Config.VECTOR_STORE_PATH),
+            embedding_function=embeddings,
+        )
+```
+
 ## File: src/legal_system/ui/Home.py
 ```python
 # src/legal_system/ui/Home.py
@@ -4603,10 +5409,16 @@ import streamlit as st
 from dotenv import load_dotenv
 
 # パス解決
-ROOT_DIR = os.path.dirname(
-    os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-)
-sys.path.append(ROOT_DIR)
+current_dir = os.path.dirname(os.path.abspath(__file__))
+
+# Home.py から見て3つ上がプロジェクトのルート(ROOT)になります
+# ui -> legal_system -> src -> ROOT
+ROOT_DIR = os.path.abspath(os.path.join(current_dir, "../../../"))
+
+# Pythonにプログラムの場所を教える(srcフォルダを追加)
+src_path = os.path.abspath(os.path.join(current_dir, "../../"))
+if src_path not in sys.path:
+    sys.path.append(src_path)
 
 from legal_system.core.database_manager import DatabaseManager
 
@@ -4689,7 +5501,6 @@ def check_update_status():
 
 def load_company_rules():
     """社内規定ファイルを読み込む"""
-    # 拡張子を .md に修正
     path = os.path.join(ROOT_DIR, "data", "rules", "company_rules.md")
     if os.path.exists(path):
         with open(path, "r", encoding="utf-8") as f:
@@ -4723,8 +5534,33 @@ def main():
     # --- サイドバー ---
     with st.sidebar:
         st.title("⚖️ 業務メニュー")
+        
+        # ユーザー情報の表示
         st.info(f"👤 **{current_user['name']}**")
-        st.caption(f"所属: {current_user['dept']}")
+        st.caption(f"所属: {current_user['dept']} | Tel: {current_user['phone']}")
+
+        # ▼▼▼ ユーザー編集機能 (追加) ▼▼▼
+        with st.expander("⚙️ プロフィール編集"):
+            with st.form("user_profile_form"):
+                new_name = st.text_input("表示名", value=current_user["name"])
+                new_dept = st.text_input("所属部署", value=current_user["dept"])
+                new_phone = st.text_input("内線/直通", value=current_user["phone"])
+                
+                submitted = st.form_submit_button("更新する")
+                if submitted:
+                    try:
+                        db_manager.register_user(
+                            windows_id=current_user["id"],
+                            display_name=new_name,
+                            department=new_dept,
+                            phone=new_phone
+                        )
+                        st.success("更新しました！")
+                        time.sleep(0.5)
+                        st.rerun()
+                    except Exception as e:
+                        st.error(f"更新エラー: {e}")
+        # ▲▲▲ ここまで ▲▲▲
 
         st.divider()
 
@@ -4801,6 +5637,56 @@ chains
 legal_system
 ```
 
+## File: .gitignore
+```
+# --- Python & Rye ---
+__pycache__/
+*.pyc
+.venv/
+.rye/
+
+# --- 環境変数 & 機密情報 (絶対にGitにあげない) ---
+.env
+.streamlit/secrets.toml
+
+# --- データベース & ログ ---
+# 監査ログやベクターDBはローカルで生成されるため除外
+db/sql/*.db
+db/chroma/
+*.log
+
+# --- 生成されたファイル・アップロードデータ ---
+# テンプレートPDFやアップロードされた一時ファイル
+data/templates/*.pdf
+data/uploads/
+data/generated/
+data/zengin
+
+# ※フォントファイル(ipaexg.ttf)などはアプリの動作に必要なので
+#   除外せず、Gitに含めるのが一般的です
+
+# --- AI Context / Repomix ---
+# ソースコードをまとめたファイルは除外
+repomix-output.*
+all_code_context.txt
+
+# --- IDE / エディタ ---
+.vscode/
+.idea/
+
+# --- Python Testing / Caching ---
+.pytest_cache/
+.mypy_cache/
+htmlcov/
+.coverage
+
+# --- OS ---
+.DS_Store
+Thumbs.db
+
+bootstrap.py
+```
+
 ## File: src/legal_system/core/config.py
 ```python
 # file: src/legal_system/core/config.py
@@ -4857,7 +5743,8 @@ class Config:
     # .env から取得、なければデフォルト値 (Docker開発用など)
     POSTGRES_USER = os.getenv("POSTGRES_USER", "postgres")
     POSTGRES_PASSWORD = os.getenv("POSTGRES_PASSWORD", "password")
-    POSTGRES_HOST = os.getenv("POSTGRES_HOST", "localhost")
+    # POSTGRES_HOST = os.getenv("POSTGRES_HOST", "localhost")
+    POSTGRES_HOST = os.getenv("POSTGRES_HOST", "127.0.0.1")
     POSTGRES_PORT = os.getenv("POSTGRES_PORT", "5432")
     POSTGRES_DB = os.getenv("POSTGRES_DB", "legal_db")
 
@@ -4940,11 +5827,14 @@ def _create_new_engine() -> Engine:
     SQLAlchemyエンジンを新規作成する内部関数。
     Streamlitへの依存を含みません。
     """
+    # 【修正ポイント】 Windows環境での文字コードエラー(0x83)を防ぐため
+    # client_encoding='utf8' を明示的に指定します。
     engine = create_engine(
         Config.DATABASE_URL,
         pool_size=20,
         max_overflow=10,
         pool_pre_ping=True,
+        connect_args={"client_encoding": "utf8"}  # Windows対策: 文字化けクラッシュ防止
     )
 
     # テーブル作成 (初回のみ)
@@ -4953,6 +5843,7 @@ def _create_new_engine() -> Engine:
     except Exception as e:
         # Streamlit環境下であればエラー表示、そうでなければ標準出力へ
         msg = f"❌ データベース接続エラー: {e}"
+        # Watcherプロセスかどうかの判定
         if os.environ.get("IS_WATCHER_PROCESS") != "true":
             st.error(msg)
             st.info("PostgreSQLサーバー設定(.env)を確認してください。")
@@ -5315,6 +6206,8 @@ Requires-Dist: streamlit-image-coordinates>=0.4.0
 Requires-Dist: reportlab>=4.4.7
 Requires-Dist: watchdog>=6.0.0
 Requires-Dist: psycopg2-binary>=2.9.11
+Requires-Dist: opencv-python<4.9
+Requires-Dist: opencv-python-headless<4.9
 
 # legal-rag-project
 
@@ -5343,56 +6236,8 @@ streamlit-image-coordinates>=0.4.0
 reportlab>=4.4.7
 watchdog>=6.0.0
 psycopg2-binary>=2.9.11
-```
-
-## File: .gitignore
-```
-# --- Python & Rye ---
-__pycache__/
-*.pyc
-.venv/
-.rye/
-
-# --- 環境変数 & 機密情報 (絶対にGitにあげない) ---
-.env
-.streamlit/secrets.toml
-
-# --- データベース & ログ ---
-# 監査ログやベクターDBはローカルで生成されるため除外
-db/sql/*.db
-db/chroma/
-*.log
-
-# --- 生成されたファイル・アップロードデータ ---
-# テンプレートPDFやアップロードされた一時ファイル
-data/templates/*.pdf
-data/uploads/
-data/generated/
-data/zengin
-
-# ※フォントファイル(ipaexg.ttf)などはアプリの動作に必要なので
-#   除外せず、Gitに含めるのが一般的です
-
-# --- AI Context / Repomix ---
-# ソースコードをまとめたファイルは除外
-repomix-output.*
-all_code_context.txt
-
-# --- IDE / エディタ ---
-.vscode/
-.idea/
-
-# --- Python Testing / Caching ---
-.pytest_cache/
-.mypy_cache/
-htmlcov/
-.coverage
-
-# --- OS ---
-.DS_Store
-Thumbs.db
-
-bootstrap.py
+opencv-python<4.9
+opencv-python-headless<4.9
 ```
 
 ## File: src/legal.egg-info/SOURCES.txt
@@ -5415,6 +6260,7 @@ src/legal_system/core/data_sync.py
 src/legal_system/core/database_manager.py
 src/legal_system/core/engines.py
 src/legal_system/core/ocr_engine.py
+src/legal_system/core/preload.py
 src/legal_system/models/__init__.py
 src/legal_system/models/base.py
 src/legal_system/models/tables.py
@@ -5423,9 +6269,13 @@ src/legal_system/tools/coord_tool.py
 src/legal_system/ui/Home.py
 src/legal_system/ui/__init__.py
 src/legal_system/ui/excel_generator.py
+src/legal_system/ui/components/admin_tools.py
 src/legal_system/ui/pages/01_Kintoneデータ_エクセル入力フォーム.py
-src/legal_system/ui/pages/02_相続書類_作成フォーム.py
-src/legal_system/ui/pages/99_預貯金口座入力フォーム.py
+src/legal_system/ui/pages/02_預貯金口座入力フォーム.py
+src/legal_system/ui/pages/03_相続書類_作成フォーム.py
+src/legal_system/ui/pages/04_法定相続情報_読取.py
+src/legal_system/ui/pages/05_顧客紹介連絡表_読取.py
+src/legal_system/ui/pages/99_書式座標登録ツール.py
 ```
 
 ## File: pyproject.toml
@@ -5458,6 +6308,8 @@ dependencies = [
     "reportlab>=4.4.7",
     "watchdog>=6.0.0",
     "psycopg2-binary>=2.9.11",
+    "opencv-python<4.9",
+    "opencv-python-headless<4.9",
 ]
 readme = "README.md"
 requires-python = ">= 3.12"
@@ -5530,6 +6382,11 @@ click==8.3.1
     # via streamlit
     # via typer
     # via uvicorn
+colorama==0.4.6
+    # via build
+    # via click
+    # via tqdm
+    # via uvicorn
 coloredlogs==15.0.1
     # via onnxruntime
 dataclasses-json==0.6.7
@@ -5574,8 +6431,6 @@ grpcio==1.76.0
 h11==0.16.0
     # via httpcore
     # via uvicorn
-hf-xet==1.2.0
-    # via huggingface-hub
 httpcore==1.0.9
     # via httpx
 httptools==0.7.1
@@ -5686,6 +6541,8 @@ numpy==1.26.4
     # via langchain-community
     # via legal
     # via onnxruntime
+    # via opencv-python
+    # via opencv-python-headless
     # via pandas
     # via pydeck
     # via scikit-learn
@@ -5696,6 +6553,10 @@ oauthlib==3.3.1
     # via requests-oauthlib
 onnxruntime==1.23.2
     # via chromadb
+opencv-python==4.8.1.78
+    # via legal
+opencv-python-headless==4.8.1.78
+    # via legal
 openpyxl==3.1.5
     # via legal
 opentelemetry-api==1.39.1
@@ -5789,6 +6650,8 @@ pypika==0.48.9
     # via chromadb
 pyproject-hooks==1.2.0
     # via build
+pyreadline3==3.5.4
+    # via humanfriendly
 pytesseract==0.3.13
     # via legal
 python-dateutil==2.9.0.post0
@@ -5937,10 +6800,9 @@ uuid-utils==0.12.0
     # via langsmith
 uvicorn==0.40.0
     # via chromadb
-uvloop==0.22.1
-    # via uvicorn
 watchdog==6.0.0
     # via legal
+    # via streamlit
 watchfiles==1.1.1
     # via uvicorn
 websocket-client==1.9.0
@@ -6016,6 +6878,11 @@ click==8.3.1
     # via streamlit
     # via typer
     # via uvicorn
+colorama==0.4.6
+    # via build
+    # via click
+    # via tqdm
+    # via uvicorn
 coloredlogs==15.0.1
     # via onnxruntime
 dataclasses-json==0.6.7
@@ -6060,8 +6927,6 @@ grpcio==1.76.0
 h11==0.16.0
     # via httpcore
     # via uvicorn
-hf-xet==1.2.0
-    # via huggingface-hub
 httpcore==1.0.9
     # via httpx
 httptools==0.7.1
@@ -6172,6 +7037,8 @@ numpy==1.26.4
     # via langchain-community
     # via legal
     # via onnxruntime
+    # via opencv-python
+    # via opencv-python-headless
     # via pandas
     # via pydeck
     # via scikit-learn
@@ -6182,6 +7049,10 @@ oauthlib==3.3.1
     # via requests-oauthlib
 onnxruntime==1.23.2
     # via chromadb
+opencv-python==4.8.1.78
+    # via legal
+opencv-python-headless==4.8.1.78
+    # via legal
 openpyxl==3.1.5
     # via legal
 opentelemetry-api==1.39.1
@@ -6275,6 +7146,8 @@ pypika==0.48.9
     # via chromadb
 pyproject-hooks==1.2.0
     # via build
+pyreadline3==3.5.4
+    # via humanfriendly
 pytesseract==0.3.13
     # via legal
 python-dateutil==2.9.0.post0
@@ -6423,10 +7296,9 @@ uuid-utils==0.12.0
     # via langsmith
 uvicorn==0.40.0
     # via chromadb
-uvloop==0.22.1
-    # via uvicorn
 watchdog==6.0.0
     # via legal
+    # via streamlit
 watchfiles==1.1.1
     # via uvicorn
 websocket-client==1.9.0

@@ -8,10 +8,16 @@ import streamlit as st
 from dotenv import load_dotenv
 
 # パス解決
-ROOT_DIR = os.path.dirname(
-    os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-)
-sys.path.append(ROOT_DIR)
+current_dir = os.path.dirname(os.path.abspath(__file__))
+
+# Home.py から見て3つ上がプロジェクトのルート(ROOT)になります
+# ui -> legal_system -> src -> ROOT
+ROOT_DIR = os.path.abspath(os.path.join(current_dir, "../../../"))
+
+# Pythonにプログラムの場所を教える(srcフォルダを追加)
+src_path = os.path.abspath(os.path.join(current_dir, "../../"))
+if src_path not in sys.path:
+    sys.path.append(src_path)
 
 from legal_system.core.database_manager import DatabaseManager
 
@@ -94,7 +100,6 @@ def check_update_status():
 
 def load_company_rules():
     """社内規定ファイルを読み込む"""
-    # 拡張子を .md に修正
     path = os.path.join(ROOT_DIR, "data", "rules", "company_rules.md")
     if os.path.exists(path):
         with open(path, "r", encoding="utf-8") as f:
@@ -128,8 +133,33 @@ def main():
     # --- サイドバー ---
     with st.sidebar:
         st.title("⚖️ 業務メニュー")
+        
+        # ユーザー情報の表示
         st.info(f"👤 **{current_user['name']}**")
-        st.caption(f"所属: {current_user['dept']}")
+        st.caption(f"所属: {current_user['dept']} | Tel: {current_user['phone']}")
+
+        # ▼▼▼ ユーザー編集機能 (追加) ▼▼▼
+        with st.expander("⚙️ プロフィール編集"):
+            with st.form("user_profile_form"):
+                new_name = st.text_input("表示名", value=current_user["name"])
+                new_dept = st.text_input("所属部署", value=current_user["dept"])
+                new_phone = st.text_input("内線/直通", value=current_user["phone"])
+                
+                submitted = st.form_submit_button("更新する")
+                if submitted:
+                    try:
+                        db_manager.register_user(
+                            windows_id=current_user["id"],
+                            display_name=new_name,
+                            department=new_dept,
+                            phone=new_phone
+                        )
+                        st.success("更新しました！")
+                        time.sleep(0.5)
+                        st.rerun()
+                    except Exception as e:
+                        st.error(f"更新エラー: {e}")
+        # ▲▲▲ ここまで ▲▲▲
 
         st.divider()
 

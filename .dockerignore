@@ -1,0 +1,10 @@
+.git
+.venv
+.rye
+__pycache__
+*.pyc
+.env
+.DS_Store
+data/db/chroma  # ローカルDBはホスト側からマウントするためコピー不要
+data/db/sql
+repomix-output.md

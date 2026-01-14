@@ -52,7 +52,8 @@ class Config:
     # .env から取得、なければデフォルト値 (Docker開発用など)
     POSTGRES_USER = os.getenv("POSTGRES_USER", "postgres")
     POSTGRES_PASSWORD = os.getenv("POSTGRES_PASSWORD", "password")
-    POSTGRES_HOST = os.getenv("POSTGRES_HOST", "localhost")
+    # POSTGRES_HOST = os.getenv("POSTGRES_HOST", "localhost")
+    POSTGRES_HOST = os.getenv("POSTGRES_HOST", "127.0.0.1")
     POSTGRES_PORT = os.getenv("POSTGRES_PORT", "5432")
     POSTGRES_DB = os.getenv("POSTGRES_DB", "legal_db")
 

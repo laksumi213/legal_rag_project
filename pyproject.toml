@@ -1,6 +1,6 @@
 [project]
 name = "legal"
-version = "0.1.0"
+version = "0.1.1"
 description = "Administrative Scrivener RAG System"
 authors = [
     { name = "Admin", email = "admin@example.com" }
@@ -11,6 +11,10 @@ dependencies = [
     "langchain-community>=0.0.20",
     "langchain-core>=0.1.25",
     "langchain-google-genai>=0.0.9",
+    "langchain-google-vertexai>=0.0.5",
+    # Added for Vertex AI
+    "google-cloud-aiplatform>=1.38.0",
+    # Added for Vertex AI
     "langchain-huggingface>=0.0.1",
     "langchain-chroma>=0.1.0",
     "chromadb>=0.4.24",
@@ -30,9 +34,10 @@ dependencies = [
     "opencv-python-headless<4.9",
     "pymupdf>=1.26.7",
     "streamlit-drawable-canvas>=0.9.3",
+    "pyperclip>=1.11.0",
 ]
 readme = "README.md"
-requires-python = ">= 3.12"
+requires-python = ">= 3.10"
 
 [tool.rye]
 managed = true

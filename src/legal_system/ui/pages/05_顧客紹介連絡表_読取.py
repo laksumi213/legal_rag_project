@@ -53,7 +53,6 @@ def get_next_provisional_number(session) -> str:
     return f"{max_num + 1:04d}"
 
 def analyze_image_with_ai(image_bytes: bytes) -> dict:
-    # ... (前回のanalyze_image_with_aiと同じ) ...
     try:
         img_str = base64.b64encode(image_bytes).decode("utf-8")
         llm = AIFactory.get_llm(mode="cloud", temperature=0.0)
@@ -68,10 +67,9 @@ def analyze_image_with_ai(image_bytes: bytes) -> dict:
           例: "山田　太郎" (OK), "山田 太郎" (NG), "山田太郎" (NG), "山 田　太 郎" (NG),, "山田　太 郎" (NG), "山 田　太郎" (NG)
 
         【重要：電話番号の抽出ルール】
-        1. **禁止事項**: 帳票の下部にある「SMBC日興証券」「担当者」「紹介元」欄に記載されている電話番号は、**絶対に**顧客の電話番号として抽出しないでください。
-           これは紹介元の連絡先であり、顧客の連絡先ではありません。
-        2. 顧客情報欄（上部または中部）にある電話番号のみを抽出してください。
-        3. 携帯電話（090/080/070等）の記載がない場合は、無理に他の番号を入れず、空文字 "" にしてください。
+        1. client_phone: 顧客情報欄（上部または中部）にある電話番号。
+        2. referral_sec_phone: 帳票の下部にある「SMBC日興証券」「担当者」「紹介元」欄の電話番号。
+           ※以前は禁止していましたが、今回は**「紹介元電話番号」として抽出**してください。
 
         【重要：住所の抽出ルール】
         - 住所は可能な限り以下の要素に分割して出力してください。
@@ -101,7 +99,8 @@ def analyze_image_with_ai(image_bytes: bytes) -> dict:
             "introduction_date": "紹介日(YYYY-MM-DD形式に補正)",
             "referral_sec_branch_name": "紹介元支店名",
             "referral_sec_rep_name": "紹介元担当者名",
-            "consent_date": "同意書取得日(YYYY-MM-DD形式)"
+            "consent_date": "同意書取得日(YYYY-MM-DD形式)",
+            "referral_sec_phone": "紹介元電話番号"
         }
         """
         # ... (LLM呼び出し部分は同じ) ...
@@ -192,6 +191,7 @@ def main():
             c_br, c_rep = st.columns(2)
             branch = c_br.text_input("紹介元支店", value=ocr_data.get("referral_sec_branch_name", ""))
             rep = c_rep.text_input("紹介元担当者", value=ocr_data.get("referral_sec_rep_name", ""))
+            ref_phone = st.text_input("紹介元電話番号", value=ocr_data.get("referral_sec_phone", ""))
 
             submitted = st.form_submit_button("💾 データベースに保存", type="primary")
 
@@ -216,6 +216,7 @@ def main():
                     sol_case_number=sol,
                     referral_sec_branch_name=branch,
                     referral_sec_rep_name=rep,
+                    referral_sec_phone=ref_phone,
                     introduction_date=i_dt,
                     consent_date=c_dt, # ★保存
                     created_at=datetime.now()

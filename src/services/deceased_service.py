@@ -296,9 +296,9 @@ def get_address_info(target_type: str, target_id: int) -> dict:
             return {
                 "zip_code": addr.zip_code,
                 "prefecture": addr.prefecture,
-                "city_ward_town": addr.city_ward_town,
-                "street_address": addr.street_address,
-                "building_name": addr.building_name
+                "city_ward_town": addr.city_ward_town or "",  # Noneなら空文字にする
+                "street_address": addr.street_address or "",  # 念のためこちらも
+                "building_name": addr.building_name or ""
             }
         return {}
     finally:

@@ -188,6 +188,8 @@ def import_kintone_json(json_data: Dict[str, Any], target_case_id: Optional[int]
     
     try:
         # 1. データの正規化
+        k_rec_id_raw = json_data.get("$id") or json_data.get("record_id")
+        k_record_id = int(k_rec_id_raw) if k_rec_id_raw else None
         case_num = json_data.get("顧客コード", "").strip() or json_data.get("顧客コード_2", "").strip()
         
         client_name_raw = json_data.get("顧客名", "").replace("　", " ").strip()
@@ -222,6 +224,10 @@ def import_kintone_json(json_data: Dict[str, Any], target_case_id: Optional[int]
             session.flush()
         
         # 3. 案件情報の更新 (上書き)
+        # ★追加: レコード番号の保存
+        if k_record_id:
+            case.kintone_record_id = k_record_id
+
         case.client_name = client_name_raw
         case.client_name_kana = client_kana_raw
         case.sol_case_number = sol_no

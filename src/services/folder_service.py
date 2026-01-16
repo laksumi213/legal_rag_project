@@ -1,31 +1,27 @@
 # src/services/folder_service.py
+
 import os
 import platform
 import subprocess
 from pathlib import Path
 from typing import Optional
 
-# サーバーの基準パス (Windowsのネットワークパス形式)
+# サーバーの基準パス
 SERVER_BASE_PATH = r"\\192.168.11.20\行政書士法人チェスター\01.個別ＪＯＢ"
 
 def find_case_folder(search_term: str) -> Optional[str]:
     """
-    基準パス配下から、search_term (顧客名など) を含むフォルダを検索してパスを返す。
+    基準パス配下からフォルダを検索してパスを返す。
     """
     if not search_term:
         return None
 
     target_path = Path(SERVER_BASE_PATH)
-    
     if not target_path.exists():
-        # ローカルテスト用に一時フォルダをフォールバックとして設定する場合の例
-        # target_path = Path(r"C:\TestFolder") 
         return None
 
     try:
-        # 空白除去
         query = search_term.replace(" ", "").replace("　", "")
-        # 直下のフォルダを走査
         for item in target_path.iterdir():
             if item.is_dir():
                 folder_name = item.name.replace(" ", "").replace("　", "")
@@ -35,20 +31,39 @@ def find_case_folder(search_term: str) -> Optional[str]:
         print(f"Folder search error: {e}")
         return None
 
-def open_local_folder(path: str):
+def open_local_folder(path: str) -> bool:
     """
-    サーバー側(Streamlit実行環境)でフォルダを開く試み。
-    クライアントPCで開くわけではない点に注意が必要ですが、社内LAN(オンプレ)なら機能する場合が多いです。
+    指定されたパスをエクスプローラーで開き、かつ最前面に表示させる。
     """
     if not path or not os.path.exists(path):
         return False
+
     try:
         if platform.system() == "Windows":
+            # --- Windows向けの最強最前面表示ロジック ---
+            # 1. まず普通にエクスプローラーで開く
             os.startfile(path)
-        elif platform.system() == "Darwin":
+            
+            # 2. PowerShellを使って、今開いたフォルダウィンドウを特定し、最前面(SetForegroundWindow)に持ってくる
+            # ウィンドウ名の一部にパスが含まれることを利用して特定します
+            folder_name = os.path.basename(path)
+            ps_script = f"""
+            $shell = New-Object -ComObject WScript.Shell
+            $window = Get-Process explorer | Where-Object {{ $_.MainWindowTitle -like '*{folder_name}*' }} | Select-Object -First 1
+            if ($window) {{
+                $shell.AppActivate($window.Id)
+            }}
+            """
+            # PowerShellをバックグラウンドで実行
+            subprocess.run(["powershell", "-Command", ps_script], capture_output=True)
+            
+        elif platform.system() == "Darwin": # Mac用
             subprocess.Popen(["open", path])
-        else:
+            subprocess.run(["osascript", "-e", f'tell application "Finder" to activate'])
+        else: # Linux用
             subprocess.Popen(["xdg-open", path])
+            
         return True
-    except Exception:
+    except Exception as e:
+        print(f"Error opening folder: {e}")
         return False

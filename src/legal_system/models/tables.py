@@ -372,6 +372,7 @@ class Case(Base):
     manager_id = Column(Integer, ForeignKey("users.id"))
     operator_id = Column(Integer, ForeignKey("users.id"))
     current_status_id = Column(Integer, ForeignKey("case_statuses.id"))
+    kintone_record_id = Column(Integer, nullable=True, comment="Kintoneレコード番号")
 
     # 金額・契約情報
     fee_contract_amount = Column(Float, default=0.0)
@@ -394,6 +395,7 @@ class Case(Base):
     referral_sec_branch_name = Column(String, nullable=True, comment="証券会社支店名")
     referral_sec_rep_name = Column(String, nullable=True, comment="証券会社担当者名")
     consent_date = Column(Date, nullable=True, comment="同意書日付")
+    referral_sec_phone = Column(String, nullable=True, comment="証券会社電話番号")
 
     # リレーション定義
     manager = relationship("User", foreign_keys=[manager_id])

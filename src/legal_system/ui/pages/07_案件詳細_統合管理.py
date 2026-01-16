@@ -138,9 +138,13 @@ def main():
                 new_intro = c_sol2.date_input("紹介日", value=curr_intro if curr_intro else None)
                 new_cons = c_sol1.date_input("同意書日付", value=curr_cons if curr_cons else None)
                 
-                c_br, c_rep = st.columns(2)
+                st.markdown("---")
+                c_br, c_rep, c_ph = st.columns(3)
                 new_branch = c_br.text_input("紹介元支店", value=current_case.referral_sec_branch_name or "")
                 new_rep = c_rep.text_input("紹介元担当者", value=current_case.referral_sec_rep_name or "")
+                
+                # ★追加
+                new_ref_phone = c_ph.text_input("紹介元電話番号", value=current_case.referral_sec_phone or "")
                 
                 if st.form_submit_button("連携情報を更新"):
                     current_case.sol_case_number = new_sol_no
@@ -148,6 +152,8 @@ def main():
                     current_case.consent_date = new_cons
                     current_case.referral_sec_branch_name = new_branch
                     current_case.referral_sec_rep_name = new_rep
+                    current_case.referral_sec_phone = new_ref_phone # ★更新
+                    
                     session.commit()
                     st.toast("更新しました", icon="✅")
                     time.sleep(0.5); st.rerun()
@@ -231,6 +237,28 @@ def main():
                     st.toast("サーバー側でフォルダを開きました", icon="🖥️")
                 else:
                     st.error("フォルダを開けませんでした。パスを確認してください。")
+
+            # --- Kintoneリンクボタン (レコード番号指定版) ---
+            KINTONE_DOMAIN = "chester-tax.cybozu.com"  # 貴社ドメイン
+            APP_ID = "242"  # 貴社アプリID
+            
+            # DBに保存されたレコード番号を使用
+            rec_id = current_case.kintone_record_id
+
+            if rec_id:
+                # 成功パターン: 直接レコードを開くURL
+                kintone_url = f"https://{KINTONE_DOMAIN}/k/{APP_ID}/show#record={rec_id}"
+                
+                st.link_button(
+                    "🔗 Kintoneで開く", 
+                    kintone_url, 
+                    use_container_width=True,
+                    help=f"レコード番号 {rec_id} を開きます"
+                )
+            else:
+                # 失敗パターン: レコード番号がない場合（手動登録など）
+                # アプリのトップを開くか、ボタンを無効化する
+                st.button("🔗 Kintone連携なし", disabled=True, use_container_width=True, help="Kintoneから取り込まれていない案件です")
             
             # ★修正: G番号優先の自動検索
             if st.button("🔍 フォルダ自動検索", use_container_width=True):
@@ -344,7 +372,9 @@ def main():
                         az, ap = st.columns(2)
                         h_zip = az.text_input("郵便番号", value=h_addr.get("zip_code",""))
                         h_pref = ap.text_input("都道府県", value=h_addr.get("prefecture",""))
-                        h_city = st.text_input("市区町村・番地", value=f"{h_addr.get('city_ward_town','')}{h_addr.get('street_address','')}")
+                        city_val = h_addr.get('city_ward_town') or ""
+                        street_val = h_addr.get('street_address') or ""
+                        h_city = st.text_input("市区町村・番地", value=f"{city_val}{street_val}")
                         h_bldg = st.text_input("建物名", value=h_addr.get("building_name",""))
                         h_tel = st.text_input("電話番号", value=h_phone)
 

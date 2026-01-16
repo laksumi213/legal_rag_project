@@ -1,4 +1,4 @@
-# src/legal_system/ui/pages/99_書式座標登録ツール.py
+# src/legal_system/ui/pages/08_書式座標登録ツール.py
 
 import hashlib
 import os

@@ -1,149 +1,167 @@
 # src/legal_system/ui/pages/06_案件登録_手動.py
 
+import json
 import os
 import sys
 import time
 from datetime import datetime
-import json
 
+import pandas as pd
 import streamlit as st
 
 # パス解決
 current_dir = os.path.dirname(os.path.abspath(__file__))
-src_dir = os.path.dirname(os.path.dirname(os.path.dirname(os.path.dirname(current_dir))))
-if src_dir not in sys.path:
-    sys.path.append(src_dir)
+# pages -> ui -> legal_system -> src -> ROOT
+ROOT_DIR = os.path.dirname(
+    os.path.dirname(os.path.dirname(os.path.dirname(current_dir)))
+)
+if ROOT_DIR not in sys.path:
+    sys.path.append(ROOT_DIR)
 
 from legal_system.core.database_manager import DatabaseManager
 from legal_system.models.tables import Case, User
-from services.folder_service import find_case_folder
 from services.deceased_service import get_next_case_number_service
 from services.kintone_sync_service import import_kintone_json
 
-st.set_page_config(page_title="新規案件 手動登録", page_icon="✍️", layout="wide")
 
 def main():
-    st.title("✍️ 新規案件 手動登録")
-    
-    # Kintone取込エリア
-    with st.expander("📂 Kintone JSONデータから取り込む (任意)", expanded=False):
-        st.caption("KintoneからコピーしたJSONデータを貼り付けると、自動で登録・入力補助を行います。")
-        json_text = st.text_area("JSONデータ", height=150)
-        if st.button("JSONを取り込んで登録"):
-            if not json_text.strip():
-                st.error("データが空です")
-            else:
-                try:
-                    data = json.loads(json_text)
-                    case_id = import_kintone_json(data)
-                    if case_id > 0:
-                        st.success(f"取込成功！ 案件ID: {case_id}")
-                        time.sleep(1)
-                    else:
-                        st.error("取込に失敗しました。")
-                except json.JSONDecodeError:
-                    st.error("JSON形式として正しくありません。")
-                except Exception as e:
-                    st.error(f"エラー: {e}")
+    st.set_page_config(page_title="新規案件 手動登録", page_icon="✍️", layout="wide")
+    st.title("✍️ 新規案件 登録センター")
 
-    st.caption("紹介連絡票を使わず、手動で案件を作成します。")
     db = DatabaseManager()
     session = db._get_session()
 
-    users = session.query(User).all()
-    user_options = {"未定": None}
-    for u in users:
-        user_options[u.name] = u.id
+    # --- 1. Kintone取込エリア (デモの主役) ---
+    st.markdown("### 📥 Kintoneデータ取込 (推奨)")
+    st.info("Kintoneの「案件詳細画面」でブックマークレットを実行し、コピーされたJSONをここに貼り付けてください。")
 
-    st.subheader("1. 案件基本情報")
-    c1, c2, c3 = st.columns(3)
-    default_case_num = get_next_case_number_service()
-    case_num = c1.text_input("案件番号 (仮4桁 or G番号)", value=default_case_num)
-    manager_name = c2.selectbox("担当者1 (進捗)", list(user_options.keys()), index=0)
-    operator_name = c3.selectbox("担当者2 (実務)", list(user_options.keys()), index=0)
+    # レイアウト分割: 左(入力) / 右(結果プレビュー)
+    col_json, col_preview = st.columns([1, 1], gap="medium")
 
-    st.subheader("2. 契約者（顧客）情報")
-    col_name1, col_name2 = st.columns(2)
-    name_last = col_name1.text_input("氏名 (姓)")
-    name_first = col_name2.text_input("氏名 (名)")
-    col_kana1, col_kana2 = st.columns(2)
-    kana_last = col_kana1.text_input("フリガナ (姓)")
-    kana_first = col_kana2.text_input("フリガナ (名)")
+    with col_json:
+        with st.container(border=True):
+            st.subheader("1. JSON貼り付け")
+            json_text = st.text_area(
+                "JSONデータ",
+                height=250,
+                placeholder='{"顧客コード": "Gxxxx", ...}',
+                help="KintoneからコピーしたJSONをそのまま貼り付けてください"
+            )
 
-    # フォルダ検索
-    st.subheader("3. サーバーフォルダ")
-    if "auto_found_path" not in st.session_state:
-        st.session_state["auto_found_path"] = ""
-
-    col_path, col_btn = st.columns([3, 1])
-    
-    def on_search_click():
-        # ★修正: G番号優先ロジック
-        search_query = ""
-        if case_num and case_num.startswith("G"):
-            search_query = case_num
-        else:
-            search_query = f"{name_last}{name_first}".replace(" ", "").replace("　", "")
-        
-        if not search_query:
-            st.toast("⚠️ 検索するキーワード（G番号または氏名）がありません", icon="⚠️")
-            return
-        
-        with st.spinner(f"サーバー内を「{search_query}」で検索中..."):
-            found = find_case_folder(search_query)
-            if found:
-                st.session_state["auto_found_path"] = found
-                st.toast("✅ フォルダが見つかりました", icon="📂")
-            else:
-                st.toast("❌ フォルダが見つかりませんでした", icon="🤷‍♂️")
-
-    col_btn.write(""); col_btn.write("") 
-    if col_btn.button("🔍 自動検索", use_container_width=True):
-        on_search_click()
-
-    folder_path_input = col_path.text_input(
-        "フォルダパス", 
-        value=st.session_state["auto_found_path"],
-        placeholder="\\192.168.11.20\..."
-    )
-
-    st.markdown("---")
-    _, col_submit = st.columns([3, 1])
-    
-    if col_submit.button("💾 案件を登録する", type="primary", use_container_width=True):
-        if not case_num or not name_last:
-            st.error("「案件番号」と「氏名(姓)」は必須です。")
-        else:
-            try:
-                existing = session.query(Case).filter_by(case_number=case_num).first()
-                if existing:
-                    st.error(f"案件番号 {case_num} は既に登録されています。")
+            if st.button("🚀 取り込んで登録・更新", type="primary", use_container_width=True):
+                if not json_text.strip():
+                    st.error("⚠️ データが空です")
                 else:
-                    client_name = f"{name_last} {name_first}".strip()
-                    client_kana = f"{kana_last} {kana_first}".strip()
+                    try:
+                        # 1. JSONパース
+                        data = json.loads(json_text)
+
+                        # 2. 取込実行
+                        with st.spinner("データベースに登録中..."):
+                            case_id = import_kintone_json(data)
+
+                        if case_id > 0:
+                            # 3. 成功フラグを立ててリロード
+                            st.session_state["last_imported_case_id"] = case_id
+                            st.session_state["import_success_msg"] = f"✅ 取込成功！ 案件ID: {case_id}"
+                            st.rerun()
+                        else:
+                            st.error("❌ 取込に失敗しました。必須項目(顧客コード等)を確認してください。")
+
+                    except json.JSONDecodeError:
+                        st.error("❌ JSON形式として正しくありません。")
+                    except Exception as e:
+                        st.error(f"❌ システムエラー: {e}")
+
+    # --- 結果プレビュー表示 (右カラム) ---
+    with col_preview:
+        # セッションにIDがあれば表示する
+        if "last_imported_case_id" in st.session_state:
+            cid = st.session_state["last_imported_case_id"]
+            
+            # 成功メッセージがあれば表示して消す（1回だけ表示）
+            if "import_success_msg" in st.session_state:
+                st.toast(st.session_state["import_success_msg"], icon="🎉")
+                st.success(st.session_state["import_success_msg"])
+                del st.session_state["import_success_msg"]
+
+            # DBから再取得して表示
+            case = session.query(Case).get(cid)
+            if case:
+                with st.container(border=True):
+                    st.subheader(f"🎉 登録完了: {case.client_name} 様")
                     
-                    new_case = Case(
-                        case_number=case_num,
-                        client_name=client_name,
-                        client_name_kana=client_kana,
-                        folder_path=folder_path_input,
-                        manager_id=user_options[manager_name],
-                        operator_id=user_options[operator_name],
-                        created_at=datetime.now()
-                    )
-                    session.add(new_case)
-                    session.commit()
+                    # 基本情報
+                    st.markdown(f"**案件番号:** `{case.case_number}`")
                     
-                    st.success(f"案件 {case_num} ({client_name}様) を登録しました！")
-                    time.sleep(1.5)
-                    st.session_state["auto_found_path"] = ""
-                    st.rerun()
+                    if case.deceased_ref:
+                        d_name = f"{case.deceased_ref.name_last} {case.deceased_ref.name_first}"
+                        st.markdown(f"**被相続人:** {d_name}")
                     
-            except Exception as e:
-                session.rollback()
-                st.error(f"登録エラー: {e}")
-            finally:
-                session.close()
+                    st.divider()
+
+                    # 家族構成（相続人）テーブル
+                    st.markdown("###### 📋 登録された関係者リスト")
+                    
+                    if case.deceased_ref and case.deceased_ref.heirs:
+                        heirs_data = []
+                        for h in case.deceased_ref.heirs:
+                            heirs_data.append({
+                                "氏名": f"{h.name_last} {h.name_first}",
+                                "続柄": h.relationship_type,
+                                "契約者": "〇" if h.is_contracting_party else "-"
+                            })
+                        
+                        df = pd.DataFrame(heirs_data)
+                        st.dataframe(
+                            df, 
+                            use_container_width=True, 
+                            hide_index=True,
+                            column_config={
+                                "氏名": st.column_config.TextColumn("氏名", width="medium"),
+                                "続柄": st.column_config.TextColumn("続柄", width="small"),
+                                "契約者": st.column_config.TextColumn("契約者", width="small")
+                            }
+                        )
+                    else:
+                        st.warning("⚠️ 相続人データが登録されていません")
+            else:
+                st.error("⚠️ 登録されたはずのデータが見つかりません。")
+        else:
+            # 待機中の表示
+            with st.container(border=True):
+                st.info("👈 左側にJSONを貼り付けて登録すると、ここに結果が表示されます。")
+                st.caption("デモ用: 準備されたJSONを貼り付けてボタンを押してください。")
+
+    st.divider()
+
+    # --- 2. 手動入力フォーム (バックアップ用) ---
+    with st.expander("手動でゼロから入力する場合"):
+        users = session.query(User).all()
+        user_options = {"未定": None}
+        for u in users:
+            user_options[u.name] = u.id
+
+        c1, c2, c3 = st.columns(3)
+        default_case_num = get_next_case_number_service()
+        case_num = c1.text_input("案件番号 (仮4桁 or G番号)", value=default_case_num)
+        
+        # ユーザー選択（KeyError対策）
+        mgr_idx = 0
+        opr_idx = 0
+        
+        manager_name = c2.selectbox("担当者1 (進捗)", list(user_options.keys()), index=mgr_idx)
+        operator_name = c3.selectbox("担当者2 (実務)", list(user_options.keys()), index=opr_idx)
+
+        col_name1, col_name2 = st.columns(2)
+        name_last = col_name1.text_input("氏名 (姓)")
+        name_first = col_name2.text_input("氏名 (名)")
+
+        # (中略: 手動登録のロジックは必要に応じて維持)
+        if st.button("手動登録を実行"):
+            st.warning("JSON取込を推奨します。手動登録ロジックはデモ範囲外です。")
+
+    session.close()
 
 if __name__ == "__main__":
     main()

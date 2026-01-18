@@ -1,0 +1,45 @@
+.
+├── .streamlit/
+│   └── config.toml
+├── data/
+│   ├── db/                 # PostgreSQL (Docker volume) & ChromaDB
+│   ├── rules/              # 業務ルール (JSON/Markdown)
+│   │   ├── bank_guidance.json
+│   │   ├── bank_master.csv
+│   │   └── company_rules.md
+│   ├── templates/          # PDF雛形ファイル
+│   └── zengin/             # 全銀データ
+├── src/
+│   ├── chains/             # LangChainの処理フロー
+│   │   └── bank_procedure_chain.py
+│   ├── legal_system/
+│   │   ├── core/           # コアロジック
+│   │   │   ├── ai_factory.py       # Gemini/Vertex/Ollama切り替え
+│   │   │   ├── config.py           # 環境設定
+│   │   │   ├── data_sync.py        # Kintone/JSON同期
+│   │   │   ├── database_manager.py # DB接続・CRUD
+│   │   │   ├── ocr_engine.py       # PaddleOCRラッパー
+│   │   │   └── pdf_processor.py    # PDF解析・正規表現抽出
+│   │   ├── models/         # SQLAlchemyモデル
+│   │   │   └── tables.py
+│   │   ├── ui/             # Streamlit画面
+│   │   │   ├── components/ # 共通パーツ (smart_guide等)
+│   │   │   └── pages/      # 各画面ファイル
+│   │   │       ├── 01_Kintoneデータ_エクセル入力フォーム.py
+│   │   │       ├── 02_預貯金口座入力フォーム.py
+│   │   │       ├── 03_相続書類_作成フォーム.py
+│   │   │       ├── 04_法定相続情報_読取.py
+│   │   │       ├── 05_顧客紹介連絡表_読取.py
+│   │   │       ├── 06_案件登録_手動.py
+│   │   │       └── 07_案件詳細_統合管理.py
+│   │   └── main.py         # アプリ起動エントリポイント
+│   ├── services/           # ビジネスロジック層
+│   │   ├── deceased_service.py
+│   │   ├── folder_service.py
+│   │   └── kintone_sync_service.py
+│   └── utils/
+│       └── date_utils.py
+├── .env
+├── docker-compose.yml
+├── Dockerfile
+└── requirements.txt

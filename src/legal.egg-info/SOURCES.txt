@@ -11,6 +11,7 @@ src/legal_system/__init__.py
 src/legal_system/main.py
 src/legal_system/core/__init__.py
 src/legal_system/core/ai_factory.py
+src/legal_system/core/ai_processor.py
 src/legal_system/core/config.py
 src/legal_system/core/data_sync.py
 src/legal_system/core/database_manager.py
@@ -18,6 +19,7 @@ src/legal_system/core/engines.py
 src/legal_system/core/ocr_engine.py
 src/legal_system/core/pdf_processor.py
 src/legal_system/core/preload.py
+src/legal_system/core/schemas.py
 src/legal_system/models/__init__.py
 src/legal_system/models/base.py
 src/legal_system/models/tables.py
@@ -27,6 +29,7 @@ src/legal_system/ui/Home.py
 src/legal_system/ui/__init__.py
 src/legal_system/ui/excel_generator.py
 src/legal_system/ui/components/admin_tools.py
+src/legal_system/ui/components/smart_guide.py
 src/legal_system/ui/pages/01_Kintoneデータ_エクセル入力フォーム.py
 src/legal_system/ui/pages/02_預貯金口座入力フォーム.py
 src/legal_system/ui/pages/03_相続書類_作成フォーム.py
@@ -34,7 +37,8 @@ src/legal_system/ui/pages/04_法定相続情報_読取.py
 src/legal_system/ui/pages/05_顧客紹介連絡表_読取.py
 src/legal_system/ui/pages/06_案件登録_手動.py
 src/legal_system/ui/pages/07_案件詳細_統合管理.py
-src/legal_system/ui/pages/99_書式座標登録ツール.py
+src/legal_system/ui/pages/08_書式座標登録ツール.py
+src/legal_system/ui/pages/99_マスタ管理.py
 src/legal_system/ui/pages/backup/98_Llama実験室.py
 src/legal_system/ui/pages/backup/99_Gemini実験室.py
 src/services/__init__.py

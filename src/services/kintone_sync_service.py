@@ -93,162 +93,7 @@ def format_name_full_width(last: str, first: str) -> str:
 
 
 # ---------------------------------------------------------
-# データ取得 (DB -> Kintone)
-# ---------------------------------------------------------
-def get_kintone_data_as_dict(case_id: int) -> Optional[Dict[str, Any]]:
-    """
-    Kintoneブックマークレット（書き込み用）が期待する形式の辞書を作成する
-    """
-    db = DatabaseManager()
-    session = db._get_session()
-
-    try:
-        case = session.query(Case).filter_by(case_id=case_id).first()
-        if not case:
-            return None
-
-        deceased = case.deceased_ref
-
-        # --- 1. 基本情報の加工 ---
-        out_case_number = ""
-        if case.case_number and case.case_number.startswith("G"):
-            out_case_number = case.case_number
-
-        manager_name = ""
-        if case.manager_id:
-            m_user = session.query(User).get(case.manager_id)
-            if m_user:
-                manager_name = m_user.name
-
-        operator_name = ""
-        if case.operator_id:
-            o_user = session.query(User).get(case.operator_id)
-            if o_user:
-                operator_name = o_user.name
-
-        # --- 2. 被相続人情報 ---
-        d_name = ""
-        d_kana = ""
-        start_date = ""
-
-        if deceased:
-            d_name = format_name_full_width(deceased.name_last, deceased.name_first)
-
-            dk_last = katakana_to_hiragana(deceased.name_last_kana)
-            dk_first = katakana_to_hiragana(deceased.name_first_kana)
-            d_kana = format_name_full_width(dk_last, dk_first)
-
-            if deceased.date_of_death:
-                start_date = deceased.date_of_death.strftime("%Y-%m-%d")
-
-        # --- 3. 依頼者（相続人）情報 ---
-        heir_name = case.client_name
-        heir_kana = katakana_to_hiragana(case.client_name_kana)
-        heir_zip = ""
-        heir_address = ""
-        heir_tel = ""
-        heir_mail = ""
-
-        contractor = None
-        if deceased and deceased.heirs:
-            contractor = next(
-                (h for h in deceased.heirs if h.is_contracting_party), None
-            )
-            if not contractor and deceased.heirs:
-                contractor = deceased.heirs[0]
-
-        if contractor:
-            heir_name = format_name_full_width(
-                contractor.name_last, contractor.name_first
-            )
-
-            hk_last = katakana_to_hiragana(contractor.name_last_kana)
-            hk_first = katakana_to_hiragana(contractor.name_first_kana)
-            heir_kana = format_name_full_width(hk_last, hk_first)
-
-            addr_link = (
-                session.query(H_AddressHistory)
-                .filter(
-                    H_AddressHistory.heir_id == contractor.id,
-                    H_AddressHistory.is_current_address == True,
-                )
-                .first()
-            )
-            if addr_link:
-                addr = session.query(Address).get(addr_link.address_id)
-                if addr:
-                    heir_zip = addr.zip_code or ""
-                    heir_address = f"{addr.prefecture}{addr.city_ward_town}{addr.street_address} {addr.building_name or ''}".strip()
-
-            links = (
-                session.query(H_ContactLink)
-                .filter(H_ContactLink.heir_id == contractor.id)
-                .all()
-            )
-            for l in links:
-                c = session.query(Contact).get(l.contact_id)
-                if c:
-                    if c.type == "PHONE" and not heir_tel:
-                        heir_tel = c.value
-                    if c.type == "EMAIL" and not heir_mail:
-                        heir_mail = c.value
-
-        # --- 4. SOL連携情報 ---
-        route_val = ""
-        nikko_branch = ""
-        nikko_rep = ""
-        nikko_sol_no = ""
-        nikko_consent_date = ""
-
-        if case.sol_case_number:
-            route_val = "日興証券"
-            nikko_branch = case.referral_sec_branch_name or ""
-            nikko_rep = case.referral_sec_rep_name or ""
-            nikko_sol_no = case.sol_case_number
-            if case.consent_date:
-                nikko_consent_date = case.consent_date.strftime("%Y-%m-%d")
-
-        return {
-            "case_number": out_case_number,
-            "branch": "東京",
-            "team": "東京1部",
-            "manager": manager_name,
-            "operator": operator_name,
-            "interviewer": "",
-            "notification_dest": "",
-            "heir_name": heir_name,
-            "heir_kana": heir_kana,
-            "heir_zip": heir_zip,
-            "heir_tel": heir_tel,
-            "heir_mail": heir_mail,
-            "heir_address": heir_address,
-            "deceased_name": d_name,
-            "deceased_kana": d_kana,
-            "start_date": start_date,
-            "intro_date": str(case.introduction_date) if case.introduction_date else "",
-            "interview_date": "",
-            "interview_place": "",
-            "route": route_val,
-            "nikko_branch": nikko_branch,
-            "nikko_rep": nikko_rep,
-            "nikko_sol_no": nikko_sol_no,
-            "nikko_consent_date": nikko_consent_date,
-        }
-
-    except Exception as e:
-        logger.error(f"Kintone data fetch error: {e}")
-        return None
-    finally:
-        session.close()
-
-
-def copy_kintone_data_to_clipboard(case_id: int) -> bool:
-    data = get_kintone_data_as_dict(case_id)
-    return data is not None
-
-
-# ---------------------------------------------------------
-# データ取込 (Kintone -> DB) ★この関数が不足していました
+# データ取込 (Kintone -> DB)
 # ---------------------------------------------------------
 def import_kintone_json(
     json_data: Dict[str, Any], target_case_id: Optional[int] = None
@@ -304,7 +149,7 @@ def import_kintone_json(
             session.flush()
 
         # 3. 案件情報の更新 (上書き)
-        # ★追加: レコード番号の保存
+        # レコード番号の保存
         if k_record_id:
             case.kintone_record_id = k_record_id
 
@@ -418,29 +263,52 @@ def import_kintone_json(
                 )
             )
 
-        # 7. 電話番号
+        # 7. 電話番号 (TEL) の取込
+        # JSONの "TEL" キーから取得し、カンマ区切りなどで複数ある場合は分割して登録
         tel_str = json_data.get("TEL", "")
         if tel_str:
-            session.query(H_ContactLink).filter(
+            # 既存の電話番号を一度クリアしてから再登録（完全同期）
+            # H_ContactLink経由で紐付いているPHONEタイプのContactを削除
+            existing_links = session.query(H_ContactLink).filter(
                 H_ContactLink.heir_id == contractor.id
-            ).delete()
+            ).all()
+            
+            for link in existing_links:
+                contact = session.query(Contact).get(link.contact_id)
+                if contact and contact.type == "PHONE":
+                    session.delete(contact)
+                    session.delete(link)
+            
+            # 新規登録
+            # 全角数字やハイフンのゆらぎはそのまま保存するか、正規化するかは要件次第だが、
+            # ここではカンマ区切りでの複数登録に対応
             tels = tel_str.replace("、", ",").split(",")
             for i, t in enumerate(tels):
-                c = Contact(
-                    value=t.strip(),
-                    type="PHONE",
-                    sub_type="Primary" if i == 0 else "Secondary",
-                )
-                session.add(c)
-                session.flush()
-                session.add(H_ContactLink(heir_id=contractor.id, contact_id=c.id))
+                clean_tel = t.strip()
+                if clean_tel:
+                    c = Contact(
+                        value=clean_tel,
+                        type="PHONE",
+                        sub_type="Primary" if i == 0 else "Secondary",
+                    )
+                    session.add(c)
+                    session.flush()
+                    session.add(H_ContactLink(heir_id=contractor.id, contact_id=c.id))
 
         # 8. メールアドレス
         mail_str = json_data.get("メールアドレス", "")
         if mail_str:
-            # 既存メール削除 (簡易)
-            # 本来はタイプ指定で削除すべきだが、ここではContactLink経由で全削除済みと仮定または追加のみ
-            # 上記でH_ContactLinkを全削除しているので追加でOK
+             # 既存メール削除 (簡易)
+            existing_links = session.query(H_ContactLink).filter(
+                H_ContactLink.heir_id == contractor.id
+            ).all()
+            
+            for link in existing_links:
+                contact = session.query(Contact).get(link.contact_id)
+                if contact and contact.type == "EMAIL":
+                    session.delete(contact)
+                    session.delete(link)
+
             c = Contact(value=mail_str.strip(), type="EMAIL", sub_type="Primary")
             session.add(c)
             session.flush()

@@ -5,6 +5,7 @@ import platform
 import subprocess
 from pathlib import Path
 from typing import Optional
+import pyautogui
 
 # サーバーの基準パス
 SERVER_BASE_PATH = r"\\192.168.11.20\行政書士法人チェスター\01.個別ＪＯＢ"
@@ -43,19 +44,11 @@ def open_local_folder(path: str) -> bool:
             # --- Windows向けの最強最前面表示ロジック ---
             # 1. まず普通にエクスプローラーで開く
             os.startfile(path)
-            
-            # 2. PowerShellを使って、今開いたフォルダウィンドウを特定し、最前面(SetForegroundWindow)に持ってくる
-            # ウィンドウ名の一部にパスが含まれることを利用して特定します
-            folder_name = os.path.basename(path)
-            ps_script = f"""
-            $shell = New-Object -ComObject WScript.Shell
-            $window = Get-Process explorer | Where-Object {{ $_.MainWindowTitle -like '*{folder_name}*' }} | Select-Object -First 1
-            if ($window) {{
-                $shell.AppActivate($window.Id)
-            }}
-            """
-            # PowerShellをバックグラウンドで実行
-            subprocess.run(["powershell", "-Command", ps_script], capture_output=True)
+    
+            # ウィンドウが開くまでの猶予（環境によるが0.5~1秒程度）
+            # time.sleep(1) 
+
+            pyautogui.hotkey('alt', 'tab')
             
         elif platform.system() == "Darwin": # Mac用
             subprocess.Popen(["open", path])

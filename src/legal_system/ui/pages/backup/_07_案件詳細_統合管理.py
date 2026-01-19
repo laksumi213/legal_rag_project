@@ -11,14 +11,30 @@ import streamlit as st
 # ==========================================
 # 1. パス解決 & インポート
 # ==========================================
-# pages -> ui -> legal_system -> src
+# 現在のファイル: src/legal_system/ui/pages/07_案件詳細_統合管理.py
 current_dir = os.path.dirname(os.path.abspath(__file__))
-src_dir = os.path.dirname(os.path.dirname(os.path.dirname(os.path.dirname(current_dir))))
+
+# プロジェクトルートを算出 (pages -> ui -> legal_system -> src -> ROOT)
+ROOT_DIR = os.path.dirname(os.path.dirname(os.path.dirname(os.path.dirname(current_dir))))
+
+# srcディレクトリをパスに追加
+src_dir = os.path.join(ROOT_DIR, "src")
 if src_dir not in sys.path:
     sys.path.append(src_dir)
 
 from legal_system.core.database_manager import DatabaseManager
-from legal_system.models.tables import Case, Deceased, Heir, User, FinancialAsset, Address
+from legal_system.models.tables import (
+    Case, 
+    Deceased, 
+    Heir, 
+    User, 
+    FinancialAsset, 
+    Address, 
+    H_AddressHistory
+)
+
+# ★修正: 関数名を新しいものに変更
+from legal_system.ui.label_generator import generate_advanced_label, get_branch_address
 
 # サービス層からのインポート
 from services.folder_service import open_local_folder, find_case_folder
@@ -80,9 +96,18 @@ def main():
     current_case = session.query(Case).filter_by(case_id=case_id).first()
 
     st.sidebar.divider()
+    
+    # メニュー定義 (ラベル作成を追加)
     menu = st.sidebar.radio(
         "メニュー",
-        ["🏠 案件概要・基本情報", "🏦 銀行口座 登録", "📈 証券・その他資産", "🏘️ 不動産 登録", "✅ タスク管理"],
+        [
+            "🏠 案件概要・基本情報", 
+            "🏦 銀行口座 登録", 
+            "📈 証券・その他資産", 
+            "🏘️ 不動産 登録", 
+            "🖨️ 宛名ラベル作成",  # ★追加
+            "✅ タスク管理"
+        ],
     )
 
     if not current_case:
@@ -142,8 +167,6 @@ def main():
                 c_br, c_rep, c_ph = st.columns(3)
                 new_branch = c_br.text_input("紹介元支店", value=current_case.referral_sec_branch_name or "")
                 new_rep = c_rep.text_input("紹介元担当者", value=current_case.referral_sec_rep_name or "")
-                
-                # ★追加
                 new_ref_phone = c_ph.text_input("紹介元電話番号", value=current_case.referral_sec_phone or "")
                 
                 if st.form_submit_button("連携情報を更新"):
@@ -152,7 +175,7 @@ def main():
                     current_case.consent_date = new_cons
                     current_case.referral_sec_branch_name = new_branch
                     current_case.referral_sec_rep_name = new_rep
-                    current_case.referral_sec_phone = new_ref_phone # ★更新
+                    current_case.referral_sec_phone = new_ref_phone
                     
                     session.commit()
                     st.toast("更新しました", icon="✅")
@@ -238,17 +261,12 @@ def main():
                 else:
                     st.error("フォルダを開けませんでした。パスを確認してください。")
 
-            # --- Kintoneリンクボタン (レコード番号指定版) ---
-            KINTONE_DOMAIN = "chester-tax.cybozu.com"  # 貴社ドメイン
-            APP_ID = "242"  # 貴社アプリID
-            
-            # DBに保存されたレコード番号を使用
+            KINTONE_DOMAIN = "chester-tax.cybozu.com"
+            APP_ID = "242"
             rec_id = current_case.kintone_record_id
 
             if rec_id:
-                # 成功パターン: 直接レコードを開くURL
                 kintone_url = f"https://{KINTONE_DOMAIN}/k/{APP_ID}/show#record={rec_id}"
-                
                 st.link_button(
                     "🔗 Kintoneで開く", 
                     kintone_url, 
@@ -256,18 +274,13 @@ def main():
                     help=f"レコード番号 {rec_id} を開きます"
                 )
             else:
-                # 失敗パターン: レコード番号がない場合（手動登録など）
-                # アプリのトップを開くか、ボタンを無効化する
-                st.button("🔗 Kintone連携なし", disabled=True, use_container_width=True, help="Kintoneから取り込まれていない案件です")
+                st.button("🔗 Kintone連携なし", disabled=True, use_container_width=True)
             
-            # ★修正: G番号優先の自動検索
             if st.button("🔍 フォルダ自動検索", use_container_width=True):
                 search_query = ""
-                # G番号があればそれを優先
                 if current_case.case_number and current_case.case_number.startswith("G"):
                     search_query = current_case.case_number
                 else:
-                    # なければ氏名 (スペース除去)
                     search_query = current_case.client_name.replace(" ", "").replace("　", "")
                 
                 with st.spinner(f"「{search_query}」で検索中..."):
@@ -311,7 +324,6 @@ def main():
             
             if is_edit_deceased and d:
                 with st.form("edit_deceased_form"):
-                    # (フォーム内容は既存と同様なので省略せず記述)
                     cd1, cd2 = st.columns(2)
                     d_lname = cd1.text_input("氏 (姓)", value=d.name_last)
                     d_fname = cd2.text_input("名", value=d.name_first)
@@ -438,6 +450,164 @@ def main():
         else:
             st.info("登録なし")
         st.info("※ 新規登録はサイドバーの「02_預貯金口座入力フォーム」をご利用ください")
+
+    # ==========================================
+    # D. 宛名ラベル作成 (高機能版)
+    # ==========================================
+    elif menu == "🖨️ 宛名ラベル作成":
+        st.subheader("🖨️ 宛名ラベル出力")
+        
+        # 0. ユーザー情報の取得（DBマネージャ経由）
+        current_user_info = db.get_current_user_info()
+
+        # 1. データの準備（契約者情報を取得）
+        contractor = None
+        c_address = None
+        
+        if current_case.deceased_ref and current_case.deceased_ref.heirs:
+            contractor = next((h for h in current_case.deceased_ref.heirs if h.is_contracting_party), None)
+            if not contractor:
+                contractor = current_case.deceased_ref.heirs[0]
+                
+            if contractor:
+                addr_link = session.query(H_AddressHistory).filter(
+                    H_AddressHistory.heir_id == contractor.id,
+                    H_AddressHistory.is_current_address == True
+                ).first()
+                if addr_link:
+                    c_address = session.query(Address).get(addr_link.address_id)
+
+        # ------------------------------------------------
+        # 設定フォーム (2カラムレイアウト)
+        # ------------------------------------------------
+        c_left, c_right = st.columns([1, 1.2])
+
+        # --- 左カラム: 宛先（お客様）情報 ---
+        with c_left:
+            st.markdown("##### 👤 宛先 (お客様)")
+            with st.container(border=True):
+                # デフォルト値
+                def_name = f"{contractor.name_last} {contractor.name_first}" if contractor else ""
+                def_zip = c_address.zip_code if c_address else ""
+                def_addr = ""
+                if c_address:
+                    def_addr = f"{c_address.prefecture}{c_address.city_ward_town}{c_address.street_address} {c_address.building_name or ''}"
+                
+                cli_name = st.text_input("氏名", value=def_name, key="lbl_c_name")
+                cli_honor = st.selectbox("敬称", ["様", "殿", "御中", "先生"], key="lbl_c_hon")
+                cli_zip = st.text_input("郵便番号", value=def_zip, key="lbl_c_zip")
+                cli_addr = st.text_area("住所", value=def_addr, height=80, key="lbl_c_addr")
+                
+                include_client = st.checkbox("✅ お客様のラベルを印刷する", value=True)
+
+        # --- 右カラム: 差出人（担当者）情報 & 印刷設定 ---
+        with c_right:
+            st.markdown("##### 🏢 差出人 (担当者)")
+            with st.container(border=True):
+                include_sender = st.checkbox("差出人(自分)も印刷する", value=True, help="チェックすると、お客様ラベルの隣(または次)に自分のラベルを出力します")
+                
+                if include_sender:
+                    # 拠点自動判定ロジック (現在のロジックでは東京固定だが、関数化してあるので拡張可)
+                    my_branch = "東京"
+                    if "横浜" in current_user_info.get("dept", ""):
+                        my_branch = "横浜"
+                    
+                    # 自動セット
+                    my_addr_full = get_branch_address(my_branch)
+                    
+                    # フォーム
+                    snd_name = st.text_input("担当者名", value=current_user_info["name"], key="lbl_s_name")
+                    snd_tel = st.text_input("電話番号", value=current_user_info["phone"], key="lbl_s_tel")
+                    snd_addr_block = st.text_area("差出人住所 (郵便番号含む)", value=my_addr_full, height=80, key="lbl_s_addr")
+                
+            st.markdown("##### ⚙️ 印刷設定")
+            with st.container(border=True):
+                col_p1, col_p2 = st.columns(2)
+                start_pos = col_p1.number_input("開始位置 (何マス目から)", min_value=1, max_value=30, value=1, help="使いかけのシートを使う場合に指定")
+                copies = col_p2.number_input("枚数 (セット数)", min_value=1, value=1, help="2を指定すると、同じラベルを2枚ずつ出力します")
+
+        # ------------------------------------------------
+        # 実行ボタンエリア
+        # ------------------------------------------------
+        st.divider()
+        
+        # テンプレート設定
+        # サーバー上の固定パス
+        default_tpl_path = os.path.join(ROOT_DIR, "data", "templates", "ラベルシート -貼り付け用.docx")
+        
+        # 任意でアップロードも可能
+        uploaded_template = st.file_uploader("テンプレートを一時的に変更する場合のみアップロード", type=["docx"])
+        
+        target_path_str = "アップロードされたファイル" if uploaded_template else f"サーバー保存ファイル ({os.path.basename(default_tpl_path)})"
+        st.caption(f"使用テンプレート: **{target_path_str}**")
+
+        if st.button("🚀 ラベル作成・ダウンロード", type="primary"):
+            # 1. テンプレートのバイト列取得
+            tpl_bytes = None
+            if uploaded_template:
+                tpl_bytes = uploaded_template.read()
+            elif os.path.exists(default_tpl_path):
+                with open(default_tpl_path, "rb") as f:
+                    tpl_bytes = f.read()
+            else:
+                st.error(f"テンプレートファイルが見つかりません: {default_tpl_path}")
+                st.stop()
+                
+            # 2. 印刷データリストの構築
+            print_items = []
+            
+            # お客様データ
+            client_data = {
+                "type": "client",
+                "name": cli_name,
+                "honorific": cli_honor,
+                "zip_code": cli_zip,
+                "address": cli_addr,
+                "tel": ""
+            }
+            
+            # 差出人データ
+            sender_data = {}
+            if include_sender:
+                # 住所ブロックから郵便番号と住所を分離（簡易的）
+                lines = snd_addr_block.split("\n")
+                s_zip = lines[0].replace("〒", "") if lines else ""
+                s_addr = "\n".join(lines[1:]) if len(lines) > 1 else ""
+                
+                sender_data = {
+                    "type": "sender",
+                    "name": f"行政書士法人チェスター\n{snd_name}",
+                    "honorific": "",
+                    "zip_code": s_zip,
+                    "address": s_addr,
+                    "tel": snd_tel
+                }
+
+            # リスト生成
+            for _ in range(copies):
+                if include_client:
+                    print_items.append(client_data)
+                if include_sender:
+                    print_items.append(sender_data)
+            
+            if not print_items:
+                st.warning("印刷対象が選択されていません。")
+                st.stop()
+
+            # 3. 生成実行
+            try:
+                word_io = generate_advanced_label(tpl_bytes, print_items, start_position=start_pos)
+                
+                st.download_button(
+                    label="📥 Wordファイルをダウンロード",
+                    data=word_io,
+                    file_name=f"宛名ラベル_{cli_name.replace(' ', '')}様.docx",
+                    mime="application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+                )
+                st.success(f"作成完了！ ({len(print_items)}枚分)")
+                
+            except Exception as e:
+                st.error(f"エラーが発生しました: {e}")
 
     # ==========================================
     # C. その他

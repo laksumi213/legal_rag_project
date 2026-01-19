@@ -5,10 +5,9 @@ import logging
 from typing import Any, Dict, List, Optional
 
 import requests
-from sqlalchemy import or_
+from sqlalchemy import or_, func  # ★funcを追加
 from sqlalchemy.orm import joinedload
 
-# --- 新しいシステム基盤のインポート ---
 from legal_system.core.database_manager import DatabaseManager
 from legal_system.models.tables import (
     Address,
@@ -113,53 +112,71 @@ def promote_to_formal_case_number(case_id: int) -> bool:
 # 2. 案件 (Case) 操作 & 検索
 # ==========================================
 def find_cases_by_attributes(
-    client_name: Optional[str] = None, deceased_name: Optional[str] = None
+    client_name: Optional[str] = None, 
+    deceased_name: Optional[str] = None,
+    case_number: Optional[str] = None
 ) -> List[Dict[str, Any]]:
-    """属性検索（名寄せ）"""
+    """属性検索（名寄せ）: 案件番号、依頼者名、被相続人名で検索"""
     session = get_db_session()
     results = []
     try:
-        query = session.query(Case).join(Case.deceased_ref)
+        query = session.query(Case).outerjoin(Case.deceased_ref)
         conditions = []
 
+        # 1. 案件番号検索 (G番号など)
+        if case_number:
+            c_num = case_number.strip()
+            conditions.append(Case.case_number.ilike(f"%{c_num}%"))
+
+        # 2. 依頼者名検索 (DB側のスペースを除去して比較)
         if client_name:
             clean_c = client_name.replace(" ", "").replace("　", "")
-            if len(clean_c) >= 2:
-                conditions.append(
-                    Case.client_name.replace(" ", "")
-                    .replace("　", "")
-                    .contains(clean_c)
-                )
+            if len(clean_c) >= 1:
+                # DBのカラム値から全角/半角スペースを除去したもので比較
+                db_client_clean = func.replace(func.replace(Case.client_name, ' ', ''), '　', '')
+                conditions.append(db_client_clean.contains(clean_c))
 
+        # 3. 被相続人名検索 (★強化: 姓+名を結合し、さらにスペースを除去して比較)
         if deceased_name:
             clean_d = deceased_name.replace(" ", "").replace("　", "")
-            if len(clean_d) >= 2:
-                conditions.append(Deceased.name_last.contains(clean_d))
-                conditions.append(Deceased.name_first.contains(clean_d))
+            if len(clean_d) >= 1:
+                # DB上で 姓+名 を結合
+                full_name_db = Deceased.name_last + Deceased.name_first
+                
+                # 結合結果からスペースを全削除
+                full_name_clean = func.replace(func.replace(full_name_db, ' ', ''), '　', '')
+                
+                conditions.append(or_(
+                    Deceased.name_last.contains(clean_d),   # 念のため単独一致も残す
+                    Deceased.name_first.contains(clean_d),
+                    full_name_clean.contains(clean_d)       # ★ここが最強の検索条件
+                ))
 
         if not conditions:
             return []
 
-        cases = query.filter(or_(*conditions)).limit(5).all()
+        # いずれかの条件にヒットするものを取得
+        cases = query.filter(or_(*conditions)).limit(20).all()
+        
         for c in cases:
-            d_name = (
-                f"{c.deceased_ref.name_last} {c.deceased_ref.name_first}"
-                if c.deceased_ref
-                else "未登録"
-            )
+            d_name = "未登録"
+            d_date = None
+            if c.deceased_ref:
+                d_name = f"{c.deceased_ref.name_last} {c.deceased_ref.name_first}"
+                d_date = c.deceased_ref.date_of_death
+
             results.append(
                 {
                     "case_id": c.case_id,
                     "case_number": c.case_number,
                     "client_name": c.client_name,
                     "deceased_name": d_name,
-                    "date_of_death": c.deceased_ref.date_of_death
-                    if c.deceased_ref
-                    else None,
+                    "date_of_death": d_date,
                 }
             )
         return results
-    except:
+    except Exception as e:
+        logger.error(f"Search Error: {e}")
         return []
     finally:
         session.close()
@@ -598,17 +615,28 @@ def update_heir(heir_id: int, name: str, rel: str, **kwargs) -> bool:
                     )
                 )
 
-        if "phone_contacts" in kwargs:
+        if "phone_contacts" in kwargs or "email_contacts" in kwargs:
             session.query(H_ContactLink).filter(
                 H_ContactLink.heir_id == heir_id
             ).delete()
-            for c_data in kwargs["phone_contacts"]:
-                val = c_data.get("value")
-                if val:
-                    nc = Contact(value=val, type="PHONE", sub_type="Primary")
-                    session.add(nc)
-                    session.flush()
-                    session.add(H_ContactLink(heir_id=heir.id, contact_id=nc.id))
+            
+            if "phone_contacts" in kwargs:
+                for c_data in kwargs["phone_contacts"]:
+                    val = c_data.get("value")
+                    if val:
+                        nc = Contact(value=val, type="PHONE", sub_type="Primary")
+                        session.add(nc)
+                        session.flush()
+                        session.add(H_ContactLink(heir_id=heir.id, contact_id=nc.id))
+            
+            if "email_contacts" in kwargs:
+                for c_data in kwargs["email_contacts"]:
+                    val = c_data.get("value")
+                    if val:
+                        nc = Contact(value=val, type="EMAIL", sub_type="Primary")
+                        session.add(nc)
+                        session.flush()
+                        session.add(H_ContactLink(heir_id=heir.id, contact_id=nc.id))
 
         session.commit()
         return True

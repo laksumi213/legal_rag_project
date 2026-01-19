@@ -33,6 +33,11 @@ Requires-Dist: pymupdf>=1.26.7
 Requires-Dist: streamlit-drawable-canvas>=0.9.3
 Requires-Dist: pyperclip>=1.11.0
 Requires-Dist: google-genai>=1.59.0
+Requires-Dist: pyautogui>=0.9.54
+Requires-Dist: python-docx>=1.2.0
+Requires-Dist: streamlit-keyup>=0.3.0
+Requires-Dist: selenium>=4.40.0
+Requires-Dist: webdriver-manager>=4.0.2
 
 # legal-rag-project
 

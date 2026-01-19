@@ -1,4 +1,4 @@
-# src/legal_system/ui/pages/06_案件登録_手動.py
+# src/legal_system/ui/pages/01_案件登録_手動.py
 
 import json
 import os

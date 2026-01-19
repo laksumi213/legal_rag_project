@@ -1,4 +1,4 @@
-# src/legal_system/ui/pages/05_顧客紹介連絡表_読取.py
+# src/legal_system/ui/pages/02_顧客紹介連絡表_読取.py
 
 import base64
 import json

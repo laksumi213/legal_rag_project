@@ -1,4 +1,4 @@
-# components/pages/01_Kintoneデータ_エクセル入力フォーム.py
+# components/pages/03_Kintoneデータ_エクセル入力フォーム.py
 
 import streamlit as st
 import json

@@ -6,12 +6,12 @@ from pydantic import BaseModel, Field
 class WillArticle(BaseModel):
     """遺言書の個別の条文"""
     article_number: str = Field(..., description="条数表記（例: 第１条）")
-    title: Optional[str] = Field(None, description="条文の見出し（例: 相続、遺贈、祭祀の主宰）")
+    title: Optional[str] = Field(None, description="条文の見出し（例: 不動産の遺贈）")
     content: str = Field(..., description="条文の本文")
 
 class WillDraftStructure(BaseModel):
     """遺言書全体の構成データ"""
-    preamble: Optional[str] = Field(None, description="前文（遺言者は...）")
+    testator_name: str = Field(..., description="遺言者（依頼主）の氏名")
     articles: List[WillArticle] = Field(..., description="条文のリスト")
     supplementary_provisions: Optional[str] = Field(None, description="付言事項")
 

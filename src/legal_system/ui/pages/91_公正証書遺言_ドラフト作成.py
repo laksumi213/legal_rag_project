@@ -19,6 +19,10 @@ def main():
     st.set_page_config(page_title="遺言ドラフト作成", page_icon="📜", layout="wide")
     st.title("📜 公正証書遺言 自動起案システム")
 
+    # --- セッションステート初期化 ---
+    if "generated_data" not in st.session_state:
+        st.session_state["generated_data"] = None
+
     col_input, col_action = st.columns([1, 1])
     
     with col_input:
@@ -37,7 +41,7 @@ def main():
                 "③ 不動産登記情報 (PDF/画像) ※任意", 
                 type=["png", "jpg", "jpeg", "pdf"], 
                 accept_multiple_files=True,
-                help="PDFは自動で画像化・テキスト抽出され、余白をカットしてWordに貼られます。"
+                help="PDFは自動で画像化され、「別冊」として出力されます。"
             )
 
     with col_action:
@@ -60,8 +64,9 @@ def main():
                 st.error(f"プレビューエラー: {e}")
 
             st.markdown("---")
+            
+            # --- 生成ボタン処理 ---
             if st.button("🚀 AIドラフト生成を開始", type="primary", use_container_width=True):
-                # テンプレート準備
                 template_source = None
                 if use_default:
                     default_path = os.path.join(ROOT_DIR, "data", "templates", "遺言公正証書文案テンプレート.docx")
@@ -77,39 +82,66 @@ def main():
                     st.error("テンプレートを指定してください")
                     st.stop()
 
-                # ファイルリスト作成（生のまま渡す）
-                registry_files = []
-                if uploaded_images:
-                    registry_files = uploaded_images
+                registry_files = uploaded_images if uploaded_images else []
 
-                # 生成実行
                 generator = WillDraftGenerator()
                 with st.spinner("🤖 AI思考 & 文書作成中..."):
                     try:
                         uploaded_excel.seek(0)
                         if hasattr(template_source, 'seek'): template_source.seek(0)
                         
-                        doc_io, ai_data, csv_debug = generator.generate_draft(uploaded_excel, template_source, registry_files)
+                        # 生成実行
+                        doc_io, reg_io, ai_data, csv_debug = generator.generate_draft(uploaded_excel, template_source, registry_files)
+                        
+                        # ★結果をセッションステートに保存（これでボタンを押しても消えなくなる）
+                        st.session_state["generated_data"] = {
+                            "doc_io": doc_io,
+                            "reg_io": reg_io,
+                            "ai_data": ai_data,
+                            "timestamp": pd.Timestamp.now().strftime('%Y%m%d')
+                        }
                         
                         st.success("✅ 生成完了！")
                         st.balloons()
                         
-                        # --- デバッグ情報の表示 ---
-                        with st.expander("🔍 生成結果の詳細を確認", expanded=True):
-                            st.markdown("#### 生成された条文データ")
-                            st.json(ai_data.model_dump())
-
-                        st.download_button(
-                            label="📥 Wordファイルをダウンロード",
-                            data=doc_io,
-                            file_name=f"遺言書ドラフト_{pd.Timestamp.now().strftime('%Y%m%d')}.docx",
-                            mime="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
-                            type="primary"
-                        )
-                        
                     except Exception as e:
                         st.error(f"エラー: {e}")
                         st.exception(e)
+
+        # --- ダウンロードエリア（セッションにデータがあれば常に表示） ---
+        if st.session_state["generated_data"]:
+            data = st.session_state["generated_data"]
+            
+            st.divider()
+            st.markdown("### 📥 ダウンロード")
+            
+            # デバッグ情報
+            with st.expander("🔍 生成結果の詳細を確認", expanded=False):
+                st.json(data["ai_data"].model_dump())
+
+            c_dl1, c_dl2 = st.columns(2)
+            
+            # 1. 遺言書本体
+            c_dl1.download_button(
+                label="📥 遺言書ドラフト (本体)",
+                data=data["doc_io"],
+                file_name=f"遺言書ドラフト_{data['timestamp']}.docx",
+                mime="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+                type="primary",
+                use_container_width=True,
+                key="dl_btn_main" # キーを指定して競合回避
+            )
+            
+            # 2. 登記情報別冊 (ある場合のみ)
+            if data["reg_io"]:
+                c_dl2.download_button(
+                    label="📥 登記情報 (別冊)",
+                    data=data["reg_io"],
+                    file_name=f"登記情報別冊_{data['timestamp']}.docx",
+                    mime="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+                    use_container_width=True,
+                    key="dl_btn_reg"
+                )
 
 if __name__ == "__main__":
     main()

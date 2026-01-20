@@ -2302,6 +2302,10 @@ def main():
     st.set_page_config(page_title="遺言ドラフト作成", page_icon="📜", layout="wide")
     st.title("📜 公正証書遺言 自動起案システム")
 
+    # --- セッションステート初期化 ---
+    if "generated_data" not in st.session_state:
+        st.session_state["generated_data"] = None
+
     col_input, col_action = st.columns([1, 1])
     
     with col_input:
@@ -2320,7 +2324,7 @@ def main():
                 "③ 不動産登記情報 (PDF/画像) ※任意", 
                 type=["png", "jpg", "jpeg", "pdf"], 
                 accept_multiple_files=True,
-                help="PDFは自動で画像化・テキスト抽出され、余白をカットしてWordに貼られます。"
+                help="PDFは自動で画像化され、「別冊」として出力されます。"
             )
 
     with col_action:
@@ -2343,8 +2347,9 @@ def main():
                 st.error(f"プレビューエラー: {e}")
 
             st.markdown("---")
+            
+            # --- 生成ボタン処理 ---
             if st.button("🚀 AIドラフト生成を開始", type="primary", use_container_width=True):
-                # テンプレート準備
                 template_source = None
                 if use_default:
                     default_path = os.path.join(ROOT_DIR, "data", "templates", "遺言公正証書文案テンプレート.docx")
@@ -2360,39 +2365,66 @@ def main():
                     st.error("テンプレートを指定してください")
                     st.stop()
 
-                # ファイルリスト作成（生のまま渡す）
-                registry_files = []
-                if uploaded_images:
-                    registry_files = uploaded_images
+                registry_files = uploaded_images if uploaded_images else []
 
-                # 生成実行
                 generator = WillDraftGenerator()
                 with st.spinner("🤖 AI思考 & 文書作成中..."):
                     try:
                         uploaded_excel.seek(0)
                         if hasattr(template_source, 'seek'): template_source.seek(0)
                         
-                        doc_io, ai_data, csv_debug = generator.generate_draft(uploaded_excel, template_source, registry_files)
+                        # 生成実行
+                        doc_io, reg_io, ai_data, csv_debug = generator.generate_draft(uploaded_excel, template_source, registry_files)
+                        
+                        # ★結果をセッションステートに保存（これでボタンを押しても消えなくなる）
+                        st.session_state["generated_data"] = {
+                            "doc_io": doc_io,
+                            "reg_io": reg_io,
+                            "ai_data": ai_data,
+                            "timestamp": pd.Timestamp.now().strftime('%Y%m%d')
+                        }
                         
                         st.success("✅ 生成完了！")
                         st.balloons()
                         
-                        # --- デバッグ情報の表示 ---
-                        with st.expander("🔍 生成結果の詳細を確認", expanded=True):
-                            st.markdown("#### 生成された条文データ")
-                            st.json(ai_data.model_dump())
-
-                        st.download_button(
-                            label="📥 Wordファイルをダウンロード",
-                            data=doc_io,
-                            file_name=f"遺言書ドラフト_{pd.Timestamp.now().strftime('%Y%m%d')}.docx",
-                            mime="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
-                            type="primary"
-                        )
-                        
                     except Exception as e:
                         st.error(f"エラー: {e}")
                         st.exception(e)
+
+        # --- ダウンロードエリア（セッションにデータがあれば常に表示） ---
+        if st.session_state["generated_data"]:
+            data = st.session_state["generated_data"]
+            
+            st.divider()
+            st.markdown("### 📥 ダウンロード")
+            
+            # デバッグ情報
+            with st.expander("🔍 生成結果の詳細を確認", expanded=False):
+                st.json(data["ai_data"].model_dump())
+
+            c_dl1, c_dl2 = st.columns(2)
+            
+            # 1. 遺言書本体
+            c_dl1.download_button(
+                label="📥 遺言書ドラフト (本体)",
+                data=data["doc_io"],
+                file_name=f"遺言書ドラフト_{data['timestamp']}.docx",
+                mime="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+                type="primary",
+                use_container_width=True,
+                key="dl_btn_main" # キーを指定して競合回避
+            )
+            
+            # 2. 登記情報別冊 (ある場合のみ)
+            if data["reg_io"]:
+                c_dl2.download_button(
+                    label="📥 登記情報 (別冊)",
+                    data=data["reg_io"],
+                    file_name=f"登記情報別冊_{data['timestamp']}.docx",
+                    mime="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+                    use_container_width=True,
+                    key="dl_btn_reg"
+                )
 
 if __name__ == "__main__":
     main()
@@ -3646,291 +3678,6 @@ def main():
 
 if __name__ == "__main__":
     main()
-````
-
-## File: src/services/automation/will_generator.py
-````python
-# src/services/automation/will_generator.py
-
-import pandas as pd
-import numpy as np
-from io import BytesIO
-from typing import List, Tuple, Dict, Any
-from datetime import datetime
-from docx import Document
-from docx.shared import Pt, Mm, RGBColor
-from docx.enum.text import WD_ALIGN_PARAGRAPH
-from docx.oxml.ns import qn
-from langchain_core.messages import SystemMessage
-from langchain_core.prompts import ChatPromptTemplate, HumanMessagePromptTemplate
-from langchain_core.output_parsers import PydanticOutputParser
-from PIL import Image, ImageOps, ImageChops
-from pypdf import PdfReader
-from pdf2image import convert_from_bytes
-
-from src.legal_system.core.ai_factory import AIFactory
-from src.legal_system.core.schemas import WillDraftStructure
-
-class WillDraftGenerator:
-    def __init__(self):
-        self.llm = AIFactory.get_llm(mode="cloud", temperature=0.0)
-
-    def generate_draft(self, excel_file: BytesIO, template_file: BytesIO, registry_files: List[Any] = None) -> Tuple[BytesIO, WillDraftStructure, str]:
-        """
-        遺言書生成のメイン処理
-        Args:
-            registry_files: StreamlitのUploadedFileオブジェクトのリスト
-        """
-        # 1. Excel解析
-        excel_file.seek(0)
-        if hasattr(excel_file, 'name') and excel_file.name.endswith('.xlsx'):
-            df = pd.read_excel(excel_file)
-        else:
-            df = pd.read_csv(excel_file)
-
-        # データ補完（結合セル対策）
-        df = df.replace(r'^\s*$', np.nan, regex=True).ffill()
-        if 'No' in df.columns:
-            df = df.dropna(subset=['No'])
-
-        if df.empty:
-            raise ValueError("有効なデータ行がありません。")
-
-        csv_text = df.fillna("").to_csv(index=False)
-
-        # 2. 登記情報の処理 (画像化 + テキスト抽出)
-        registry_data = self._process_registry_files(registry_files)
-
-        # 3. AI推論
-        draft_data = self._invoke_ai_reasoning(csv_text)
-
-        # 4. Word生成
-        template_file.seek(0)
-        safe_template = BytesIO(template_file.read())
-        output_doc = self._create_word_document_clean(safe_template, draft_data, registry_data)
-        
-        output_stream = BytesIO()
-        output_doc.save(output_stream)
-        output_stream.seek(0)
-        
-        return output_stream, draft_data, csv_text
-
-    def _process_registry_files(self, files: List[Any]) -> Dict[str, Any]:
-        """
-        アップロードされた登記情報(PDF/画像)を処理する
-        - 画像への変換 & 余白トリミング
-        - PDFからのテキスト抽出
-        """
-        processed = {"images": [], "text": ""}
-        if not files:
-            return processed
-
-        full_text = []
-        
-        for f in files:
-            f.seek(0)
-            file_bytes = f.read()
-            file_name = getattr(f, "name", "unknown")
-
-            # PDFの場合
-            if file_name.lower().endswith(".pdf") or f.type == "application/pdf":
-                # 1. テキスト抽出
-                try:
-                    reader = PdfReader(BytesIO(file_bytes))
-                    text = ""
-                    for page in reader.pages:
-                        text += page.extract_text()
-                    if text.strip():
-                        full_text.append(f"【ファイル名: {file_name}】\n{text}\n")
-                except Exception as e:
-                    print(f"Text extract error: {e}")
-
-                # 2. 画像変換
-                try:
-                    # dpiを上げて鮮明に
-                    pil_images = convert_from_bytes(file_bytes, dpi=200)
-                    for img in pil_images:
-                        trimmed = self._trim_whitespace(img)
-                        buf = BytesIO()
-                        trimmed.save(buf, format="JPEG")
-                        processed["images"].append(BytesIO(buf.getvalue()))
-                except Exception as e:
-                    print(f"Image convert error: {e}")
-
-            # 画像の場合
-            else:
-                try:
-                    img = Image.open(BytesIO(file_bytes))
-                    trimmed = self._trim_whitespace(img)
-                    buf = BytesIO()
-                    trimmed.save(buf, format="JPEG")
-                    processed["images"].append(BytesIO(buf.getvalue()))
-                except Exception as e:
-                    print(f"Image load error: {e}")
-
-        processed["text"] = "\n--------------------------------------------------\n".join(full_text)
-        return processed
-
-    def _trim_whitespace(self, img: Image.Image) -> Image.Image:
-        """画像の白い余白を自動で削除する"""
-        try:
-            bg = Image.new(img.mode, img.size, (255, 255, 255))
-            diff = ImageChops.difference(img, bg)
-            diff = ImageChops.add(diff, diff, 2.0, -100)
-            bbox = diff.getbbox()
-            if bbox:
-                return img.crop(bbox)
-        except Exception:
-            pass
-        return img
-
-    def _invoke_ai_reasoning(self, input_text: str) -> WillDraftStructure:
-        system_content = """
-        あなたは熟練した行政書士です。提供された「遺産整理要旨」に基づき、公正証書遺言の条文案を作成してください。
-
-        # 入力データについて
-        - CSV形式のデータを入力します。結合セルは補完済みです。
-
-        # 【重要】条文作成ルール
-        1. **予備的遺言の扱い**:
-           - **Excelデータに「予備的条項」等の記載がある場合のみ**作成してください。
-           - AIが勝手に予備的遺言を創作・提案することは**禁止**します。
-
-        2. **孫への継承（相続 vs 遺贈）**:
-           - 受取人が「孫」であり、かつ「相続させる」という指示がある場合は、条文自体は指示通り作成しつつ、**条文の末尾に『（※要確認：孫への承継は通常「遺贈」となります。養子縁組等がないか確認してください）』という注記を必ず追記してください。**
-
-        3. **遺言執行者の指定**:
-           - 指定がある場合は、「行政書士法人チェスター（所在：東京都中央区八重洲一丁目7番20号）」を指定してください。
-           - **代表者名は記載しないでください**（法人名と所在地のみ）。
-
-        4. **祭祀主宰・付言事項**:
-           - Excelデータに具体的な内容（特定の人物名やメッセージ）が記載されている場合のみ作成してください。
-           - 空欄の場合や、単に「チェスター」とだけ書かれている場合は、条文を作成しないでください（出力しないでください）。
-
-        5. **不動産の記載**:
-           - 所在、地番、家屋番号などは要旨の通り正確に記載すること。
-
-        出力は指定されたJSONスキーマに厳密に従ってください。
-        """
-        
-        parser = PydanticOutputParser(pydantic_object=WillDraftStructure)
-        
-        prompt = ChatPromptTemplate.from_messages([
-            SystemMessage(content=system_content),
-            HumanMessagePromptTemplate.from_template(
-                "以下の要旨データに基づき、遺言書ドラフトを作成してください。\n\n【要旨データ】\n{input_text}\n\n【出力形式】\n{format_instructions}"
-            )
-        ])
-        
-        chain = prompt | self.llm | parser
-        
-        return chain.invoke({
-            "input_text": input_text,
-            "format_instructions": parser.get_format_instructions()
-        })
-
-    def _set_jp_font(self, run, size_pt=12, is_bold=False):
-        try:
-            run.font.name = "MS Mincho"
-            run.font.size = Pt(size_pt)
-            run.font.bold = is_bold
-            run._element.rPr.rFonts.set(qn('w:eastAsia'), 'ＭＳ 明朝')
-            run._element.rPr.rFonts.set(qn('w:ascii'), 'MS Mincho')
-            run._element.rPr.rFonts.set(qn('w:hAnsi'), 'MS Mincho')
-        except Exception:
-            pass
-
-    def _create_word_document_clean(self, template_file: BytesIO, data: WillDraftStructure, registry_data: Dict[str, Any]) -> Document:
-        try:
-            doc = Document(template_file)
-            if doc._body:
-                doc._body.clear_content()
-        except Exception:
-            doc = Document()
-
-        # タイトル
-        p_main = doc.add_paragraph()
-        p_main.alignment = WD_ALIGN_PARAGRAPH.CENTER
-        self._set_jp_font(p_main.add_run("遺言公正証書（案）"), size_pt=18, is_bold=True)
-        doc.add_paragraph("")
-
-        # 作成日時
-        p_date = doc.add_paragraph()
-        p_date.alignment = WD_ALIGN_PARAGRAPH.RIGHT
-        timestamp = datetime.now().strftime('%Y年%m月%d日 作成')
-        self._set_jp_font(p_date.add_run(timestamp), size_pt=10.5)
-        doc.add_paragraph("") 
-
-        if not data.articles:
-            doc.add_paragraph("※ 生成された条文データがありません。要旨の内容を確認してください。")
-            return doc
-
-        # 条文書き込み
-        for article in data.articles:
-            p_title = doc.add_paragraph()
-            self._set_jp_font(p_title.add_run(f"{article.article_number}"), size_pt=12, is_bold=True)
-            if article.title:
-                self._set_jp_font(p_title.add_run(f"　（{article.title}）"), size_pt=12, is_bold=True)
-            
-            p_content = doc.add_paragraph()
-            p_content.paragraph_format.first_line_indent = Mm(5)
-            
-            content_text = article.content if article.content else ""
-            
-            # 注記（孫への確認等）が含まれる場合、赤字にする処理
-            if "※要確認" in content_text:
-                parts = content_text.split("（※要確認")
-                # 通常部分
-                self._set_jp_font(p_content.add_run(parts[0]), size_pt=12)
-                # 注記部分
-                if len(parts) > 1:
-                    run_alert = p_content.add_run(f"（※要確認{parts[1]}")
-                    self._set_jp_font(run_alert, size_pt=12, is_bold=True)
-                    run_alert.font.color.rgb = RGBColor(255, 0, 0) # 赤色
-            else:
-                self._set_jp_font(p_content.add_run(content_text), size_pt=12)
-            
-            doc.add_paragraph("")
-
-        # 付言事項
-        if data.supplementary_provisions:
-            p_head = doc.add_paragraph()
-            self._set_jp_font(p_head.add_run("（付言事項）"), size_pt=12, is_bold=True)
-            p_body = doc.add_paragraph()
-            p_body.paragraph_format.first_line_indent = Mm(5)
-            self._set_jp_font(p_body.add_run(data.supplementary_provisions), size_pt=12)
-
-        # --- 【別紙】登記情報 (画像) ---
-        images = registry_data.get("images", [])
-        if images:
-            doc.add_page_break()
-            p_h = doc.add_paragraph()
-            p_h.alignment = WD_ALIGN_PARAGRAPH.CENTER
-            self._set_jp_font(p_h.add_run("【別紙】不動産登記情報（画像）"), size_pt=14, is_bold=True)
-            doc.add_paragraph("") 
-
-            for img_data in images:
-                try:
-                    img_data.seek(0)
-                    doc.add_picture(img_data, width=Mm(170))
-                    # 余白削除により詰まっているので、最低限の改行のみ
-                    doc.add_paragraph("") 
-                except Exception as e:
-                    doc.add_paragraph(f"※画像エラー: {e}")
-
-        # --- 【参考】登記情報 (テキスト) ---
-        text_data = registry_data.get("text", "")
-        if text_data:
-            doc.add_page_break()
-            p_ht = doc.add_paragraph()
-            p_ht.alignment = WD_ALIGN_PARAGRAPH.CENTER
-            self._set_jp_font(p_ht.add_run("【参考】不動産登記情報（テキストデータ）"), size_pt=14, is_bold=True)
-            doc.add_paragraph("※公証人作成用の参考テキストです。\n")
-            
-            p_txt = doc.add_paragraph(text_data)
-            self._set_jp_font(p_txt.runs[0], size_pt=10.5)
-
-        return doc
 ````
 
 ## File: .dockerignore
@@ -5576,88 +5323,6 @@ def warm_up_modules():
     return True
 ````
 
-## File: src/legal_system/core/schemas.py
-````python
-# src/legal_system/core/schemas.py
-
-from typing import List, Literal, Optional
-from pydantic import BaseModel, Field
-
-class WillArticle(BaseModel):
-    """遺言書の個別の条文"""
-    article_number: str = Field(..., description="条数表記（例: 第１条）")
-    title: Optional[str] = Field(None, description="条文の見出し（例: 相続、遺贈、祭祀の主宰）")
-    content: str = Field(..., description="条文の本文")
-
-class WillDraftStructure(BaseModel):
-    """遺言書全体の構成データ"""
-    preamble: Optional[str] = Field(None, description="前文（遺言者は...）")
-    articles: List[WillArticle] = Field(..., description="条文のリスト")
-    supplementary_provisions: Optional[str] = Field(None, description="付言事項")
-
-
-# --- 追加: 案件検索用の軽量モデル ---
-class CaseSearchKeys(BaseModel):
-    """
-    案件特定のために書類から抽出するキー情報。
-    """
-
-    client_name: Optional[str] = Field(
-        None, description="依頼者（相続人代表）と思われる氏名"
-    )
-    deceased_name: Optional[str] = Field(
-        None, description="被相続人（亡くなった方）と思われる氏名"
-    )
-    date_hint: Optional[str] = Field(
-        None, description="書類に記載されている日付（死亡日や発行日など）"
-    )
-    summary_for_search: str = Field(..., description="検索のヒントになる短い要約")
-
-
-# --- 以下、既存の検証用モデル (変更なし) ---
-class VerificationField(BaseModel):
-    field_label: str = Field(..., description="項目名（例: 被相続人氏名）")
-    expected_value: Optional[str] = Field(None, description="Kintone上の値（期待値）")
-    actual_value: Optional[str] = Field(
-        None, description="書類から読み取った値（実測値）"
-    )
-    is_consistent: bool = Field(
-        ..., description="矛盾がないか (True: 一致/許容範囲, False: 不一致)"
-    )
-    reasoning: str = Field(
-        ..., description="判定の理由（例: '表記揺れ（斎藤/斉藤）だが同一人物と判断'）"
-    )
-    confidence_score: float = Field(..., description="AIの自信度 (0.0 - 1.0)")
-
-
-class MissingDocAlert(BaseModel):
-    doc_name: str = Field(..., description="不足している、または不備がある書類名")
-    issue_type: Literal["MISSING", "EXPIRED", "INVALID_SEAL", "OTHER"] = Field(
-        ..., description="不備の種類"
-    )
-    description: str = Field(..., description="詳細な指摘内容")
-
-
-class DocumentAnalysisResult(BaseModel):
-    summary: str = Field(..., description="解析全体の要約（監査ログ用）")
-    document_type: str = Field(
-        ..., description="書類種別（例: '残高証明書', '戸籍謄本'）"
-    )
-    verifications: List[VerificationField] = Field(
-        default_factory=list, description="各項目の照合結果リスト"
-    )
-    alerts: List[MissingDocAlert] = Field(
-        default_factory=list, description="検出された不備・不足"
-    )
-    extracted_data: dict = Field(
-        default_factory=dict, description="DB保存用の正規化済みデータ(JSON)"
-    )
-    overall_status: Literal["APPROVED", "WARNING", "REJECTED"] = Field(
-        ...,
-        description="AIによる一次判定。不整合がなければAPPROVED、要確認はWARNING。",
-    )
-````
-
 ## File: src/legal_system/models/__init__.py
 ````python
 
@@ -7192,270 +6857,380 @@ def generate_advanced_label(
 
 ````
 
-## File: src/services/automation/touki_service.py
+## File: src/services/automation/will_generator.py
 ````python
-# src/services/automation/touki_service.py
+# src/services/automation/will_generator.py
 
-import os
-import re
-import time
-import logging
-import platform
-from typing import Optional, Tuple
+import pandas as pd
+import numpy as np
+import base64
+from io import BytesIO
+from typing import List, Tuple, Dict, Any, Optional
+from datetime import datetime
+from docx import Document
+from docx.shared import Pt, Mm, RGBColor
+from docx.enum.text import WD_ALIGN_PARAGRAPH
+from docx.oxml.ns import qn
+from langchain_core.messages import SystemMessage, HumanMessage
+from langchain_core.prompts import ChatPromptTemplate, HumanMessagePromptTemplate
+from langchain_core.output_parsers import PydanticOutputParser
+from PIL import Image, ImageOps, ImageChops
+from pypdf import PdfReader
+from pdf2image import convert_from_bytes
 
-# Selenium 関連
-from selenium import webdriver
-from selenium.webdriver.chrome.options import Options
-from selenium.webdriver.chrome.service import Service as ChromeService
-from selenium.webdriver.common.by import By
-from selenium.webdriver.support.ui import WebDriverWait, Select
-from selenium.webdriver.support import expected_conditions as EC
-from selenium.common.exceptions import TimeoutException, WebDriverException
+from src.legal_system.core.ai_factory import AIFactory
+from src.legal_system.core.schemas import WillDraftStructure
 
-# Webdriver Manager (ドライバ自動更新)
-try:
-    from webdriver_manager.chrome import ChromeDriverManager
-except ImportError:
-    ChromeDriverManager = None
+class WillDraftGenerator:
+    def __init__(self):
+        self.llm = AIFactory.get_llm(mode="cloud", temperature=0.0)
 
-# ロガー設定
-logging.basicConfig(level=logging.INFO)
-logger = logging.getLogger(__name__)
-
-# 定数定義
-LOGIN_URL = 'https://www.touki.or.jp/TeikyoUketsuke/'
-
-class ToukiService:
-    """
-    登記情報提供サービスの自動操作を行うサービスクラス (完全運用版)
-    """
-    def __init__(self) -> None:
-        self.user_id = os.getenv("TOUKI_USER_ID", "dummy_user") 
-        self.password = os.getenv("TOUKI_PASSWORD", "dummy_pass")
-        
-        # 環境判定: Docker内かどうか
-        self.is_docker = os.path.exists("/.dockerenv") or os.environ.get("IS_DOCKER")
-        
-        # Dockerならヘッドレス必須、ローカルならGUI強制
-        self.headless = True if self.is_docker else False
-        
-        logger.info(f"🚀 ToukiService Initialized. Headless: {self.headless}")
-
-    def _get_driver(self):
-        """Chrome WebDriverの初期化と設定"""
-        options = Options()
-        
-        if self.headless:
-            options.add_argument("--headless")
-            options.add_argument("--no-sandbox")
-            options.add_argument("--disable-dev-shm-usage")
-            options.add_argument("--disable-gpu")
-            options.add_argument("--window-size=1920,1080")
+    def generate_draft(self, excel_file: BytesIO, template_file: BytesIO, registry_files: List[Any] = None) -> Tuple[BytesIO, Optional[BytesIO], WillDraftStructure, str]:
+        """
+        遺言書生成のメイン処理
+        """
+        # 1. Excel解析
+        excel_file.seek(0)
+        if hasattr(excel_file, 'name') and excel_file.name.endswith('.xlsx'):
+            df = pd.read_excel(excel_file)
         else:
-            # GUI表示を強制
-            options.add_experimental_option("detach", True)
-            options.add_argument("--window-position=0,0")
-            options.add_argument("--window-size=1280,800")
+            df = pd.read_csv(excel_file)
 
-        options.add_argument("--user-agent=Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36")
-        options.add_experimental_option("excludeSwitches", ["enable-automation"])
-        options.add_experimental_option('useAutomationExtension', False)
+        # データ補完
+        df = df.replace(r'^\s*$', np.nan, regex=True).ffill()
+        if 'No' in df.columns:
+            df = df.dropna(subset=['No'])
 
-        try:
-            if ChromeDriverManager:
-                service = ChromeService(ChromeDriverManager().install())
+        if df.empty:
+            raise ValueError("有効なデータ行がありません。")
+
+        csv_text = df.fillna("").to_csv(index=False)
+
+        # 2. 登記情報の処理 (AIによるフォーマット変換)
+        registry_data = self._process_registry_files(registry_files)
+
+        # 3. AI推論 (条文構成)
+        draft_data = self._invoke_ai_reasoning(csv_text)
+
+        # 4. 遺言書Word生成 (本体 + テキストデータ)
+        template_file.seek(0)
+        safe_template = BytesIO(template_file.read())
+        # ここで登記情報のテキストを渡す
+        will_doc = self._create_will_document(safe_template, draft_data, registry_data.get("text", ""))
+        
+        will_stream = BytesIO()
+        will_doc.save(will_stream)
+        will_stream.seek(0)
+
+        # 5. 登記情報Word生成 (別冊・画像のみ)
+        registry_stream = None
+        if registry_data.get("images"):
+            reg_doc = self._create_registry_document(registry_data)
+            registry_stream = BytesIO()
+            reg_doc.save(registry_stream)
+            registry_stream.seek(0)
+        
+        return will_stream, registry_stream, draft_data, csv_text
+
+    def _process_registry_files(self, files: List[Any]) -> Dict[str, Any]:
+        """
+        登記情報(PDF/画像)を処理する
+        - 画像への変換 & 余白トリミング
+        - Gemini Visionによる指定フォーマットでのテキスト化
+        """
+        processed = {"images": [], "text": ""}
+        if not files:
+            return processed
+
+        all_images_for_ai = [] # テキスト解析用に全ての画像をリスト化
+        
+        for f in files:
+            f.seek(0)
+            file_bytes = f.read()
+            file_name = getattr(f, "name", "unknown")
+
+            # PDFの場合
+            if file_name.lower().endswith(".pdf") or f.type == "application/pdf":
+                try:
+                    # 画像変換 (200dpi)
+                    pil_images = convert_from_bytes(file_bytes, dpi=200)
+                    for img in pil_images:
+                        # 1. 別冊用画像 (トリミング済)
+                        trimmed = self._trim_whitespace(img)
+                        buf = BytesIO()
+                        trimmed.save(buf, format="JPEG")
+                        processed["images"].append(BytesIO(buf.getvalue()))
+                        
+                        # 2. AI解析用画像 (トリミング前の方が文字認識に強い場合もあるが、ここではそのまま使用)
+                        # AIにはBytesIOではなくBase64を送るため、ここではPILのまま保持するかバッファを別にする
+                        # ここではAI用にリサイズした軽量JPEGを作成
+                        ai_buf = BytesIO()
+                        img.convert("RGB").save(ai_buf, format="JPEG")
+                        all_images_for_ai.append(BytesIO(ai_buf.getvalue()))
+
+                except Exception as e:
+                    print(f"PDF process error: {e}")
+
+            # 画像の場合
             else:
-                service = ChromeService()
-            
-            driver = webdriver.Chrome(service=service, options=options)
-            if not self.headless:
-                driver.maximize_window()
-            return driver
-        except Exception as e:
-            logger.error(f"❌ WebDriverの起動に失敗しました: {e}")
-            raise Exception(f"ブラウザ起動エラー: {e}")
+                try:
+                    img = Image.open(BytesIO(file_bytes))
+                    
+                    # 1. 別冊用
+                    trimmed = self._trim_whitespace(img)
+                    buf = BytesIO()
+                    trimmed.save(buf, format="JPEG")
+                    processed["images"].append(BytesIO(buf.getvalue()))
 
-    def _wait_and_click(self, driver, by, value, timeout=10):
-        """指定した要素が表示されクリック可能になるまで待機してクリックするヘルパー"""
+                    # 2. AI解析用
+                    ai_buf = BytesIO()
+                    img.convert("RGB").save(ai_buf, format="JPEG")
+                    all_images_for_ai.append(BytesIO(ai_buf.getvalue()))
+
+                except Exception as e:
+                    print(f"Image load error: {e}")
+
+        # --- AIによるテキスト化 (Gemini Vision) ---
+        if all_images_for_ai:
+            processed["text"] = self._analyze_registry_images_with_ai(all_images_for_ai)
+        
+        return processed
+
+    def _analyze_registry_images_with_ai(self, image_buffers: List[BytesIO]) -> str:
+        """登記情報の画像をAIに読み取らせて、指定フォーマットのテキストに変換する"""
+        prompt = """
+        提供された不動産登記情報の画像を読み取り、以下のフォーマットに従ってテキスト化してください。
+        
+        # 出力フォーマット（厳守）
+        以下の種別（土地、建物、マンション）を自動判定し、該当する形式で出力してください。
+        「■」の部分には読み取った実際の値を記入してください。該当する項目がない場合はその行を省略せず空欄にしてください。
+        
+        **土地の場合
+        所在　■市■区■■■丁目
+        　地番　■番■
+        　地目　■■
+        　地積　■.■㎡
+        　持分　■分の■（※共有の場合のみ）
+
+        **建物の場合
+        　所在　■市■区■■■丁目
+        　家屋番号　■番■
+        　種類　■■
+        　構造　■■
+        　床面積　1階　■.■㎡　2階　■.■㎡
+        　持分　■分の■（※共有の場合のみ）
+
+        **マンションの場合
+        （一棟の建物の表示）
+        所在　■市■区■■■丁目　■番地■
+        建物の名称　■■■■■■
+        （敷地権の目的である土地の表示）
+        土地の符号　1
+        所在及び地番　■市■区■■■丁目
+        地目　■■
+        地積　■■■.■■㎡
+        （専有部分の建物の表示）
+        家屋番号　■■■丁目　■番■■■
+        建物の名称　■■■
+        種類　■■
+        構造　■■
+        床面積　■階部分　■■■. ■■㎡
+        （敷地権の表示）
+        土地の符号　1
+        敷地権の種類　■■
+        敷地権の割合　■■■■分の■■■■
+
+        # 注意点
+        - 複数の物件がある場合は、物件ごとに改行を2つ入れて列記してください。
+        - 余計な挨拶や説明は一切不要です。テキストデータのみ出力してください。
+        """
+        
+        content = [{"type": "text", "text": prompt}]
+        
+        # 画像をBase64エンコードしてメッセージに追加
+        for img_buf in image_buffers:
+            img_buf.seek(0)
+            b64_data = base64.b64encode(img_buf.read()).decode("utf-8")
+            content.append({
+                "type": "image_url",
+                "image_url": f"data:image/jpeg;base64,{b64_data}"
+            })
+            
+        msg = HumanMessage(content=content)
+        
         try:
-            element = WebDriverWait(driver, timeout).until(
-                EC.element_to_be_clickable((by, value))
+            res = self.llm.invoke([msg])
+            return res.content
+        except Exception as e:
+            return f"※AI解析エラー: {e}"
+
+    def _trim_whitespace(self, img: Image.Image) -> Image.Image:
+        try:
+            bg = Image.new(img.mode, img.size, (255, 255, 255))
+            diff = ImageChops.difference(img, bg)
+            diff = ImageChops.add(diff, diff, 2.0, -100)
+            bbox = diff.getbbox()
+            if bbox:
+                return img.crop(bbox)
+        except: pass
+        return img
+
+    def _invoke_ai_reasoning(self, input_text: str) -> WillDraftStructure:
+        system_content = """
+        あなたは熟練した行政書士です。提供された「遺産整理要旨」に基づき、公正証書遺言の条文案を作成してください。
+
+        # 入力データ
+        - CSV形式（結合セル補完済み）
+
+        # 【最重要】条文作成ルール（省略禁止）
+        1. **財産の網羅性**:
+           - CSVに記載されている財産は、**一つ残らず全て**条文に記載してください。
+           - 勝手に「その他預貯金」や「一切の財産」としてまとめたり、省略することは**厳禁**です。
+           - 例えば、A銀行、B銀行、C証券とあれば、それぞれの銀行名・支店名・証券会社名を具体的に列挙した条文を作成するか、あるいは包括的に記載する場合でも「別紙財産目録記載の～」のように明確に特定できるようにしてください。ただし、基本は**フルセンテンスで具体的に記載**することを優先します。
+
+        2. **予備的遺言**:
+           - Excelデータに「予備的条項」等の記載がある場合のみ作成してください。
+           - AIによる勝手な創作は禁止です。
+
+        3. **孫への継承**:
+           - 受取人が「孫」で「相続させる」とある場合、条文末尾に『（※要確認：孫への承継は通常「遺贈」となります。養子縁組等がないか確認してください）』と注記してください。
+
+        4. **遺言執行者の指定**:
+           - 指定がある場合は、「行政書士法人チェスター（所在：東京都中央区八重洲一丁目7番20号）」を指定してください。代表者名は記載しないでください。
+
+        5. **祭祀主宰・付言事項**:
+           - Excelに具体的な内容がある場合のみ作成してください。空欄の場合は出力しないでください。
+
+        出力は指定されたJSONスキーマに厳密に従ってください。
+        """
+        
+        parser = PydanticOutputParser(pydantic_object=WillDraftStructure)
+        
+        prompt = ChatPromptTemplate.from_messages([
+            SystemMessage(content=system_content),
+            HumanMessagePromptTemplate.from_template(
+                "以下の要旨データに基づき、遺言書ドラフトを作成してください。\n\n【要旨データ】\n{input_text}\n\n【出力形式】\n{format_instructions}"
             )
-            element.click()
-            logger.info(f"Clicked element: {value}")
-        except Exception as e:
-            logger.error(f"Click failed for {value}: {e}")
-            raise
+        ])
+        
+        chain = prompt | self.llm | parser
+        return chain.invoke({
+            "input_text": input_text,
+            "format_instructions": parser.get_format_instructions()
+        })
 
-    def _to_zenkaku(self, text: str) -> str:
-        if not text: return ""
-        return text.translate(str.maketrans(
-            '0123456789abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ!"#$%&\'()*+,-./:;<=>?@[\\]^_`{|}~ ',
-            '０１２３４５６７８９ａｂｃｄｅｆｇｈｉｊｋｌｍｎｏｐｑｒｓｔｕｖｗｘｙｚＡＢＣＤＥＦＧＨＩＪＫＬＭＮＯＰＱＲＳＴＵＶＷＸＹＺ！”＃＄％＆’（）＊＋，－．／：；＜＝＞？＠［￥］＾＿｀｛｜｝～　'
-        ))
-
-    def _process_address_efficiently(self, address_string: str) -> Tuple[Optional[str], Optional[str], Optional[str]]:
-        if not address_string: return None, None, None
-        pref_pattern = r'(東京都|北海道|(?:京都|大阪)府|.{2,3}県)'
-        match = re.match(pref_pattern + r'(.+)', address_string)
-        if not match: return None, None, None
-        prefectures = match.group(1)
-        buf = match.group(2).strip()
-        buf_match = re.match(r'(.*丁目)(.*)', buf)
-        if buf_match:
-            town_name_raw = buf_match.group(1)
-            block_raw = buf_match.group(2)
-        else:
-            split_match = re.search(r'\d', buf)
-            if split_match:
-                idx = split_match.start()
-                town_name_raw = buf[:idx]
-                block_raw = buf[idx:]
-            else:
-                town_name_raw = buf
-                block_raw = ''
-        town_name = self._to_zenkaku(town_name_raw.strip())
-        block = self._to_zenkaku(block_raw.strip())
-        return prefectures, town_name, block
-
-    def _extract_municipality(self, address_without_pref: str) -> str:
-        match = re.match(r'^(.+?[郡市区町村])', address_without_pref)
-        if match: return match.group(1)
-        return address_without_pref
-
-    def _login(self, driver) -> bool:
+    def _set_jp_font(self, run, size_pt=12, is_bold=False):
         try:
-            driver.get(LOGIN_URL)
-            if "TeikyoUketsuke" in driver.current_url and "Menu" in driver.title:
-                return True
-            WebDriverWait(driver, 10).until(EC.presence_of_element_located((By.ID, "userId")))
-            driver.find_element(By.ID, 'userId').send_keys(self.user_id)
-            driver.find_element(By.ID, 'password').send_keys(self.password)
-            driver.find_element(By.XPATH, "//button[contains(@class, 'CForwardLong')]").click()
-            try:
-                force_btn = WebDriverWait(driver, 3).until(EC.element_to_be_clickable((By.XPATH, "//span[contains(text(), '強制ログイン')]")))
-                force_btn.click()
-            except TimeoutException: pass 
-            WebDriverWait(driver, 15).until(EC.url_contains("TeikyoUketsuke"))
-            time.sleep(1) 
-            return True
-        except Exception as e:
-            logger.error(f"❌ Login Error: {e}")
-            return False
+            run.font.name = "MS Mincho"
+            run.font.size = Pt(size_pt)
+            run.font.bold = is_bold
+            run._element.rPr.rFonts.set(qn('w:eastAsia'), 'ＭＳ 明朝')
+            run._element.rPr.rFonts.set(qn('w:ascii'), 'MS Mincho')
+            run._element.rPr.rFonts.set(qn('w:hAnsi'), 'MS Mincho')
+        except Exception:
+            pass
 
-    def request_real_estate(self, address: str, target_type: str = '土地') -> str:
-        """不動産請求を実行し、確定ボタンをクリックする"""
-        driver = None
+    def _create_will_document(self, template_file: BytesIO, data: WillDraftStructure, registry_text: str = "") -> Document:
+        """遺言書本体の作成（登記情報テキストを含む）"""
         try:
-            driver = self._get_driver()
-            if not self._login(driver):
-                return "❌ ログインに失敗しました。"
+            doc = Document(template_file)
+            if doc._body:
+                doc._body.clear_content()
+        except Exception:
+            doc = Document()
 
-            # 不動産請求メニューへ遷移
-            self._wait_and_click(driver, By.PARTIAL_LINK_TEXT, "不動産請求")
+        # タイトル
+        p_main = doc.add_paragraph()
+        p_main.alignment = WD_ALIGN_PARAGRAPH.CENTER
+        self._set_jp_font(p_main.add_run("遺言公正証書（案）"), size_pt=18, is_bold=True)
+        doc.add_paragraph("")
+
+        # 前文
+        testator = data.testator_name if data.testator_name else "　　　"
+        preamble_text = f"本職は、遺言者 {testator} の嘱託により、後記証人２名の立会いをもって、遺言者から次の遺言の趣旨の口授を受け、その口述を録取してこの証書を作成する。"
+        p_pre = doc.add_paragraph()
+        p_pre.paragraph_format.first_line_indent = Mm(5)
+        self._set_jp_font(p_pre.add_run(preamble_text), size_pt=12)
+        doc.add_paragraph("")
+
+        # 作成日時
+        p_date = doc.add_paragraph()
+        p_date.alignment = WD_ALIGN_PARAGRAPH.RIGHT
+        timestamp = datetime.now().strftime('%Y年%m月%d日 作成')
+        self._set_jp_font(p_date.add_run(timestamp), size_pt=10.5)
+        doc.add_paragraph("") 
+
+        if not data.articles:
+            doc.add_paragraph("※ 生成された条文データがありません。")
+            return doc
+
+        # 条文
+        for article in data.articles:
+            p_title = doc.add_paragraph()
+            self._set_jp_font(p_title.add_run(f"{article.article_number}"), size_pt=12, is_bold=True)
+            if article.title:
+                self._set_jp_font(p_title.add_run(f"　（{article.title}）"), size_pt=12, is_bold=True)
             
-            # 住所解析
-            pref, town, blk = self._process_address_efficiently(address)
-            if not pref: return f"❌ 住所の解析に失敗しました: {address}"
-
-            # 種別選択
-            WebDriverWait(driver, 10).until(EC.presence_of_element_located((By.ID, "fuShozaiTypeTOCHI")))
-            if target_type == '建物':
-                driver.find_element(By.ID, "fuShozaiTypeTATEMONO").click()
+            p_content = doc.add_paragraph()
+            p_content.paragraph_format.first_line_indent = Mm(5)
+            
+            content_text = article.content if article.content else ""
+            if "※要確認" in content_text:
+                parts = content_text.split("（※要確認")
+                self._set_jp_font(p_content.add_run(parts[0]), size_pt=12)
+                if len(parts) > 1:
+                    run_alert = p_content.add_run(f"（※要確認{parts[1]}")
+                    self._set_jp_font(run_alert, size_pt=12, is_bold=True)
+                    run_alert.font.color.rgb = RGBColor(255, 0, 0)
             else:
-                driver.find_element(By.ID, "fuShozaiTypeTOCHI").click()
-
-            # 都道府県選択
-            Select(driver.find_element(By.NAME, "todofukenShozai")).select_by_visible_text(pref)
-            time.sleep(0.5)
+                self._set_jp_font(p_content.add_run(content_text), size_pt=12)
             
-            # 直接入力タブへ切り替え
-            driver.find_element(By.NAME, "fuShozaiChokusetuNyuryoku").click()
-            WebDriverWait(driver, 5).until(EC.visibility_of_element_located((By.NAME, "chibanKuiki")))
+            doc.add_paragraph("")
+
+        # 付言事項
+        if data.supplementary_provisions:
+            p_head = doc.add_paragraph()
+            self._set_jp_font(p_head.add_run("（付言事項）"), size_pt=12, is_bold=True)
+            p_body = doc.add_paragraph()
+            p_body.paragraph_format.first_line_indent = Mm(5)
+            self._set_jp_font(p_body.add_run(data.supplementary_provisions), size_pt=12)
+
+        # ★修正: 登記情報のテキストデータを本文末尾に追加
+        if registry_text:
+            doc.add_page_break()
+            p_ht = doc.add_paragraph()
+            p_ht.alignment = WD_ALIGN_PARAGRAPH.CENTER
+            self._set_jp_font(p_ht.add_run("【参考】不動産登記情報（テキストデータ）"), size_pt=14, is_bold=True)
+            doc.add_paragraph("※公証人作成用の参考テキストです。\n")
             
-            # 市区町村・町域の入力 (入力漏れ対策として明示的にsend_keys)
-            kuiki_input = driver.find_element(By.NAME, 'chibanKuiki')
-            kuiki_input.clear()
-            kuiki_input.send_keys(town) # ここで「市区町村」も含んだ文字列を入力
-            
-            # 地番・家屋番号の入力
-            kaoku_input = driver.find_element(By.NAME, 'chibanKaoku')
-            kaoku_input.clear()
-            kaoku_input.send_keys(blk)
-
-            # 共同担保目録のチェック
-            try:
-                kyotan = driver.find_element(By.ID, "fuKyodoTanpoYES")
-                if kyotan.is_displayed(): kyotan.click()
-            except: pass
-
-            # ★修正点: 確定ボタンのクリック処理 (XPath変更 & wait_and_click使用)
-            # 理由: ボタン要素自体にはテキストがなく、子要素のspanにテキストが含まれているため、
-            # contains(text(), '確定') をspanに対して行う必要があります。
-            confirm_xpath = "//button[contains(@class, 'CForward')]/span[contains(text(), '確定')]"
-            self._wait_and_click(driver, By.XPATH, confirm_xpath)
-            
-            logger.info("✅ 確定ボタンをクリックしました。")
-
-            time.sleep(3)
-            return f"✅ 「{address}」({target_type}) の請求を確定しました。"
-
-        except Exception as e:
-            logger.error(f"❌ Automation Error: {e}")
-            return f"エラーが発生しました: {e}"
-
-    def request_commercial(self, name: str, address: str) -> str:
-        """商業・法人請求を実行し、確定ボタンをクリックする"""
-        driver = None
-        try:
-            # 1. メニュー遷移
-            self._wait_and_click(By.PARTIAL_LINK_TEXT, "不動産請求")
-            
-            # 2. 住所解析
-            pref, town, blk = self._process_address_efficiently(address)
-            if not pref:
-                raise ValueError(f"住所の解析に失敗しました: {address}")
-
-            # 3. 入力画面表示待機
-            WebDriverWait(driver, 10).until(EC.presence_of_element_located((By.ID, "fuShozaiTypeTOCHI")))
-            
-            if target_type == '建物':
-                self._wait_and_click(By.ID, "fuShozaiTypeTATEMONO")
+            p_txt = doc.add_paragraph(registry_text)
+            if p_txt.runs:
+                self._set_jp_font(p_txt.runs[0], size_pt=10.5)
             else:
-                self._wait_and_click(By.ID, "fuShozaiTypeTOCHI")
+                self._set_jp_font(p_txt.add_run(registry_text), size_pt=10.5)
 
-            # 4. 住所入力
-            pref_select = WebDriverWait(driver, 10).until(EC.visibility_of_element_located((By.NAME, "todofukenShozai")))
-            Select(pref_select).select_by_visible_text(pref)
-            
-            self._wait_and_click(By.NAME, "fuShozaiChokusetuNyuryoku")
-            
-            # 直接入力フィールドが表示されるのを待機
-            WebDriverWait(driver, 5).until(EC.visibility_of_element_located((By.NAME, "chibanKuiki")))
+        return doc
 
-            self._wait_and_send_keys(By.NAME, 'chibanKuiki', town)
-            self._wait_and_send_keys(By.NAME, 'chibanKaoku', blk)
-
-            # 5. 共同担保目録: 有
-            try:
-                self._wait_and_click(By.ID, "fuKyodoTanpoYES", timeout=2)
-            except:
-                pass
-
-            # 6. 確定
-            confirm_xpath = "//button[contains(@class, 'CForward')]/span[contains(text(), '確定')]"
-            self._wait_and_click(By.XPATH, confirm_xpath)
-            
-            # logger.info("✅ 法人請求の確定ボタンをクリックしました。")
-
-            time.sleep(3)
-            return f"✅ 法人「{name}」の請求直前まで画面を作成しました。"
-
-        except Exception as e:
-            logger.error(f"❌ Automation Error: {e}")
-            return f"エラー: {e}"
-
-touki_service = ToukiService()
+    def _create_registry_document(self, registry_data: Dict[str, Any]) -> Document:
+        """登記情報（別冊・画像のみ）の作成"""
+        doc = Document()
+        
+        p_main = doc.add_paragraph()
+        p_main.alignment = WD_ALIGN_PARAGRAPH.CENTER
+        self._set_jp_font(p_main.add_run("【別冊】不動産登記情報"), size_pt=20, is_bold=True)
+        doc.add_paragraph("\n")
+        
+        images = registry_data.get("images", [])
+        if images:
+            for img_data in images:
+                try:
+                    img_data.seek(0)
+                    doc.add_picture(img_data, width=Mm(170))
+                    doc.add_paragraph("") 
+                except Exception as e:
+                    doc.add_paragraph(f"※画像エラー: {e}")
+        
+        return doc
 ````
 
 ## File: src/services/dispatch_service.py
@@ -7853,45 +7628,6 @@ if __name__ == "__main__":
     main()
 ````
 
-## File: add_column_migration.py
-````python
-# migrate_add_assessed_value.py
-import os
-import sys
-from sqlalchemy import text
-
-# パス解決
-sys.path.append(os.path.join(os.getcwd(), "src"))
-
-from legal_system.core.database_manager import DatabaseManager
-
-def add_assessed_value_column():
-    print("🔄 データベース構造の変更を開始します...")
-    print("👉 'real_estate_assets' テーブルに 'assessed_value' カラムを追加します。")
-
-    db = DatabaseManager()
-    engine = db.engine
-
-    # SQLコマンド
-    alter_sql = text("ALTER TABLE real_estate_assets ADD COLUMN assessed_value FLOAT DEFAULT 0.0;")
-
-    try:
-        with engine.connect() as conn:
-            conn.execute(alter_sql)
-            conn.commit()
-        print("✅ 成功: カラムを追加しました。")
-
-    except Exception as e:
-        error_msg = str(e)
-        if "already exists" in error_msg or "Duplicate column" in error_msg:
-            print("ℹ️  スキップ: カラムは既に追加されています。")
-        else:
-            print(f"❌ エラーが発生しました: {e}")
-
-if __name__ == "__main__":
-    add_assessed_value_column()
-````
-
 ## File: src/legal_system/core/data_sync.py
 ````python
 # file: src/legal_system/core/data_sync.py
@@ -8002,6 +7738,88 @@ class DataSyncEngine:
             session.add(new_asset)
 ````
 
+## File: src/legal_system/core/schemas.py
+````python
+# src/legal_system/core/schemas.py
+
+from typing import List, Literal, Optional
+from pydantic import BaseModel, Field
+
+class WillArticle(BaseModel):
+    """遺言書の個別の条文"""
+    article_number: str = Field(..., description="条数表記（例: 第１条）")
+    title: Optional[str] = Field(None, description="条文の見出し（例: 不動産の遺贈）")
+    content: str = Field(..., description="条文の本文")
+
+class WillDraftStructure(BaseModel):
+    """遺言書全体の構成データ"""
+    testator_name: str = Field(..., description="遺言者（依頼主）の氏名")
+    articles: List[WillArticle] = Field(..., description="条文のリスト")
+    supplementary_provisions: Optional[str] = Field(None, description="付言事項")
+
+
+# --- 追加: 案件検索用の軽量モデル ---
+class CaseSearchKeys(BaseModel):
+    """
+    案件特定のために書類から抽出するキー情報。
+    """
+
+    client_name: Optional[str] = Field(
+        None, description="依頼者（相続人代表）と思われる氏名"
+    )
+    deceased_name: Optional[str] = Field(
+        None, description="被相続人（亡くなった方）と思われる氏名"
+    )
+    date_hint: Optional[str] = Field(
+        None, description="書類に記載されている日付（死亡日や発行日など）"
+    )
+    summary_for_search: str = Field(..., description="検索のヒントになる短い要約")
+
+
+# --- 以下、既存の検証用モデル (変更なし) ---
+class VerificationField(BaseModel):
+    field_label: str = Field(..., description="項目名（例: 被相続人氏名）")
+    expected_value: Optional[str] = Field(None, description="Kintone上の値（期待値）")
+    actual_value: Optional[str] = Field(
+        None, description="書類から読み取った値（実測値）"
+    )
+    is_consistent: bool = Field(
+        ..., description="矛盾がないか (True: 一致/許容範囲, False: 不一致)"
+    )
+    reasoning: str = Field(
+        ..., description="判定の理由（例: '表記揺れ（斎藤/斉藤）だが同一人物と判断'）"
+    )
+    confidence_score: float = Field(..., description="AIの自信度 (0.0 - 1.0)")
+
+
+class MissingDocAlert(BaseModel):
+    doc_name: str = Field(..., description="不足している、または不備がある書類名")
+    issue_type: Literal["MISSING", "EXPIRED", "INVALID_SEAL", "OTHER"] = Field(
+        ..., description="不備の種類"
+    )
+    description: str = Field(..., description="詳細な指摘内容")
+
+
+class DocumentAnalysisResult(BaseModel):
+    summary: str = Field(..., description="解析全体の要約（監査ログ用）")
+    document_type: str = Field(
+        ..., description="書類種別（例: '残高証明書', '戸籍謄本'）"
+    )
+    verifications: List[VerificationField] = Field(
+        default_factory=list, description="各項目の照合結果リスト"
+    )
+    alerts: List[MissingDocAlert] = Field(
+        default_factory=list, description="検出された不備・不足"
+    )
+    extracted_data: dict = Field(
+        default_factory=dict, description="DB保存用の正規化済みデータ(JSON)"
+    )
+    overall_status: Literal["APPROVED", "WARNING", "REJECTED"] = Field(
+        ...,
+        description="AIによる一次判定。不整合がなければAPPROVED、要確認はWARNING。",
+    )
+````
+
 ## File: src/legal_system/main.py
 ````python
 # ファイルパス: src/legal_system/main.py
@@ -8057,6 +7875,272 @@ def main():
 
 if __name__ == "__main__":
     main()
+````
+
+## File: src/services/automation/touki_service.py
+````python
+# src/services/automation/touki_service.py
+
+import os
+import re
+import time
+import logging
+import platform
+from typing import Optional, Tuple
+
+# Selenium 関連
+from selenium import webdriver
+from selenium.webdriver.chrome.options import Options
+from selenium.webdriver.chrome.service import Service as ChromeService
+from selenium.webdriver.common.by import By
+from selenium.webdriver.support.ui import WebDriverWait, Select
+from selenium.webdriver.support import expected_conditions as EC
+from selenium.common.exceptions import TimeoutException, WebDriverException
+
+# Webdriver Manager (ドライバ自動更新)
+try:
+    from webdriver_manager.chrome import ChromeDriverManager
+except ImportError:
+    ChromeDriverManager = None
+
+# ロガー設定
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger(__name__)
+
+# 定数定義
+LOGIN_URL = 'https://www.touki.or.jp/TeikyoUketsuke/'
+
+class ToukiService:
+    """
+    登記情報提供サービスの自動操作を行うサービスクラス (完全運用版)
+    """
+    def __init__(self) -> None:
+        self.user_id = os.getenv("TOUKI_USER_ID", "dummy_user") 
+        self.password = os.getenv("TOUKI_PASSWORD", "dummy_pass")
+        
+        # 環境判定: Docker内かどうか
+        self.is_docker = os.path.exists("/.dockerenv") or os.environ.get("IS_DOCKER")
+        
+        # Dockerならヘッドレス必須、ローカルならGUI強制
+        self.headless = True if self.is_docker else False
+        
+        logger.info(f"🚀 ToukiService Initialized. Headless: {self.headless}")
+
+    def _get_driver(self):
+        """Chrome WebDriverの初期化と設定"""
+        options = Options()
+        
+        if self.headless:
+            options.add_argument("--headless")
+            options.add_argument("--no-sandbox")
+            options.add_argument("--disable-dev-shm-usage")
+            options.add_argument("--disable-gpu")
+            options.add_argument("--window-size=1920,1080")
+        else:
+            # GUI表示を強制
+            options.add_experimental_option("detach", True)
+            options.add_argument("--window-position=0,0")
+            options.add_argument("--window-size=1280,800")
+
+        options.add_argument("--user-agent=Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36")
+        options.add_experimental_option("excludeSwitches", ["enable-automation"])
+        options.add_experimental_option('useAutomationExtension', False)
+
+        try:
+            if ChromeDriverManager:
+                service = ChromeService(ChromeDriverManager().install())
+            else:
+                service = ChromeService()
+            
+            driver = webdriver.Chrome(service=service, options=options)
+            if not self.headless:
+                driver.maximize_window()
+            return driver
+        except Exception as e:
+            logger.error(f"❌ WebDriverの起動に失敗しました: {e}")
+            raise Exception(f"ブラウザ起動エラー: {e}")
+
+    def _wait_and_click(self, driver, by, value, timeout=10):
+        """指定した要素が表示されクリック可能になるまで待機してクリックするヘルパー"""
+        try:
+            element = WebDriverWait(driver, timeout).until(
+                EC.element_to_be_clickable((by, value))
+            )
+            element.click()
+            logger.info(f"Clicked element: {value}")
+        except Exception as e:
+            logger.error(f"Click failed for {value}: {e}")
+            raise
+
+    def _to_zenkaku(self, text: str) -> str:
+        if not text: return ""
+        return text.translate(str.maketrans(
+            '0123456789abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ!"#$%&\'()*+,-./:;<=>?@[\\]^_`{|}~ ',
+            '０１２３４５６７８９ａｂｃｄｅｆｇｈｉｊｋｌｍｎｏｐｑｒｓｔｕｖｗｘｙｚＡＢＣＤＥＦＧＨＩＪＫＬＭＮＯＰＱＲＳＴＵＶＷＸＹＺ！”＃＄％＆’（）＊＋，－．／：；＜＝＞？＠［￥］＾＿｀｛｜｝～　'
+        ))
+
+    def _process_address_efficiently(self, address_string: str) -> Tuple[Optional[str], Optional[str], Optional[str]]:
+        if not address_string: return None, None, None
+        pref_pattern = r'(東京都|北海道|(?:京都|大阪)府|.{2,3}県)'
+        match = re.match(pref_pattern + r'(.+)', address_string)
+        if not match: return None, None, None
+        prefectures = match.group(1)
+        buf = match.group(2).strip()
+        buf_match = re.match(r'(.*丁目)(.*)', buf)
+        if buf_match:
+            town_name_raw = buf_match.group(1)
+            block_raw = buf_match.group(2)
+        else:
+            split_match = re.search(r'\d', buf)
+            if split_match:
+                idx = split_match.start()
+                town_name_raw = buf[:idx]
+                block_raw = buf[idx:]
+            else:
+                town_name_raw = buf
+                block_raw = ''
+        town_name = self._to_zenkaku(town_name_raw.strip())
+        block = self._to_zenkaku(block_raw.strip())
+        return prefectures, town_name, block
+
+    def _extract_municipality(self, address_without_pref: str) -> str:
+        match = re.match(r'^(.+?[郡市区町村])', address_without_pref)
+        if match: return match.group(1)
+        return address_without_pref
+
+    def _login(self, driver) -> bool:
+        try:
+            driver.get(LOGIN_URL)
+            if "TeikyoUketsuke" in driver.current_url and "Menu" in driver.title:
+                return True
+            WebDriverWait(driver, 10).until(EC.presence_of_element_located((By.ID, "userId")))
+            driver.find_element(By.ID, 'userId').send_keys(self.user_id)
+            driver.find_element(By.ID, 'password').send_keys(self.password)
+            driver.find_element(By.XPATH, "//button[contains(@class, 'CForwardLong')]").click()
+            try:
+                force_btn = WebDriverWait(driver, 3).until(EC.element_to_be_clickable((By.XPATH, "//span[contains(text(), '強制ログイン')]")))
+                force_btn.click()
+            except TimeoutException: pass 
+            WebDriverWait(driver, 15).until(EC.url_contains("TeikyoUketsuke"))
+            time.sleep(1) 
+            return True
+        except Exception as e:
+            logger.error(f"❌ Login Error: {e}")
+            return False
+
+    def request_real_estate(self, address: str, target_type: str = '土地') -> str:
+        """不動産請求を実行し、確定ボタンをクリックする"""
+        driver = None
+        try:
+            driver = self._get_driver()
+            if not self._login(driver):
+                return "❌ ログインに失敗しました。"
+
+            # 不動産請求メニューへ遷移
+            self._wait_and_click(driver, By.PARTIAL_LINK_TEXT, "不動産請求")
+            
+            # 住所解析
+            pref, town, blk = self._process_address_efficiently(address)
+            if not pref: return f"❌ 住所の解析に失敗しました: {address}"
+
+            # 種別選択
+            WebDriverWait(driver, 10).until(EC.presence_of_element_located((By.ID, "fuShozaiTypeTOCHI")))
+            if target_type == '建物':
+                driver.find_element(By.ID, "fuShozaiTypeTATEMONO").click()
+            else:
+                driver.find_element(By.ID, "fuShozaiTypeTOCHI").click()
+
+            # 都道府県選択
+            Select(driver.find_element(By.NAME, "todofukenShozai")).select_by_visible_text(pref)
+            time.sleep(0.5)
+            
+            # 直接入力タブへ切り替え
+            driver.find_element(By.NAME, "fuShozaiChokusetuNyuryoku").click()
+            WebDriverWait(driver, 5).until(EC.visibility_of_element_located((By.NAME, "chibanKuiki")))
+            
+            # 市区町村・町域の入力 (入力漏れ対策として明示的にsend_keys)
+            kuiki_input = driver.find_element(By.NAME, 'chibanKuiki')
+            kuiki_input.clear()
+            kuiki_input.send_keys(town) # ここで「市区町村」も含んだ文字列を入力
+            
+            # 地番・家屋番号の入力
+            kaoku_input = driver.find_element(By.NAME, 'chibanKaoku')
+            kaoku_input.clear()
+            kaoku_input.send_keys(blk)
+
+            # 共同担保目録のチェック
+            try:
+                kyotan = driver.find_element(By.ID, "fuKyodoTanpoYES")
+                if kyotan.is_displayed(): kyotan.click()
+            except: pass
+
+            # ★修正点: 確定ボタンのクリック処理 (XPath変更 & wait_and_click使用)
+            # 理由: ボタン要素自体にはテキストがなく、子要素のspanにテキストが含まれているため、
+            # contains(text(), '確定') をspanに対して行う必要があります。
+            confirm_xpath = "//button[contains(@class, 'CForward')]/span[contains(text(), '確定')]"
+            self._wait_and_click(driver, By.XPATH, confirm_xpath)
+            
+            logger.info("✅ 確定ボタンをクリックしました。")
+
+            time.sleep(3)
+            return f"✅ 「{address}」({target_type}) の請求を確定しました。"
+
+        except Exception as e:
+            logger.error(f"❌ Automation Error: {e}")
+            return f"エラーが発生しました: {e}"
+
+    def request_commercial(self, name: str, address: str) -> str:
+        """商業・法人請求を実行し、確定ボタンをクリックする"""
+        driver = None
+        try:
+            # 1. メニュー遷移
+            self._wait_and_click(By.PARTIAL_LINK_TEXT, "不動産請求")
+            
+            # 2. 住所解析
+            pref, town, blk = self._process_address_efficiently(address)
+            if not pref:
+                raise ValueError(f"住所の解析に失敗しました: {address}")
+
+            # 3. 入力画面表示待機
+            WebDriverWait(driver, 10).until(EC.presence_of_element_located((By.ID, "fuShozaiTypeTOCHI")))
+            
+            if target_type == '建物':
+                self._wait_and_click(By.ID, "fuShozaiTypeTATEMONO")
+            else:
+                self._wait_and_click(By.ID, "fuShozaiTypeTOCHI")
+
+            # 4. 住所入力
+            pref_select = WebDriverWait(driver, 10).until(EC.visibility_of_element_located((By.NAME, "todofukenShozai")))
+            Select(pref_select).select_by_visible_text(pref)
+            
+            self._wait_and_click(By.NAME, "fuShozaiChokusetuNyuryoku")
+            
+            # 直接入力フィールドが表示されるのを待機
+            WebDriverWait(driver, 5).until(EC.visibility_of_element_located((By.NAME, "chibanKuiki")))
+
+            self._wait_and_send_keys(By.NAME, 'chibanKuiki', town)
+            self._wait_and_send_keys(By.NAME, 'chibanKaoku', blk)
+
+            # 5. 共同担保目録: 有
+            try:
+                self._wait_and_click(By.ID, "fuKyodoTanpoYES", timeout=2)
+            except:
+                pass
+
+            # 6. 確定
+            confirm_xpath = "//button[contains(@class, 'CForward')]/span[contains(text(), '確定')]"
+            self._wait_and_click(By.XPATH, confirm_xpath)
+            
+            # logger.info("✅ 法人請求の確定ボタンをクリックしました。")
+
+            time.sleep(3)
+            return f"✅ 法人「{name}」の請求直前まで画面を作成しました。"
+
+        except Exception as e:
+            logger.error(f"❌ Automation Error: {e}")
+            return f"エラー: {e}"
+
+touki_service = ToukiService()
 ````
 
 ## File: update_bank_master.py
@@ -8190,6 +8274,45 @@ def save_local_state(commit_date):
 
 if __name__ == "__main__":
     download_data()
+````
+
+## File: add_column_migration.py
+````python
+# migrate_add_assessed_value.py
+import os
+import sys
+from sqlalchemy import text
+
+# パス解決
+sys.path.append(os.path.join(os.getcwd(), "src"))
+
+from legal_system.core.database_manager import DatabaseManager
+
+def add_assessed_value_column():
+    print("🔄 データベース構造の変更を開始します...")
+    print("👉 'real_estate_assets' テーブルに 'assessed_value' カラムを追加します。")
+
+    db = DatabaseManager()
+    engine = db.engine
+
+    # SQLコマンド
+    alter_sql = text("ALTER TABLE real_estate_assets ADD COLUMN assessed_value FLOAT DEFAULT 0.0;")
+
+    try:
+        with engine.connect() as conn:
+            conn.execute(alter_sql)
+            conn.commit()
+        print("✅ 成功: カラムを追加しました。")
+
+    except Exception as e:
+        error_msg = str(e)
+        if "already exists" in error_msg or "Duplicate column" in error_msg:
+            print("ℹ️  スキップ: カラムは既に追加されています。")
+        else:
+            print(f"❌ エラーが発生しました: {e}")
+
+if __name__ == "__main__":
+    add_assessed_value_column()
 ````
 
 ## File: run_watcher.py
@@ -8390,6 +8513,122 @@ def extract_text_from_scanned_pdf(file_path: str) -> List[Dict[str, Any]]:
     """
     engine = OCREngine()
     return engine.process_pdf(file_path)
+````
+
+## File: src/services/folder_service.py
+````python
+# src/services/folder_service.py
+
+import os
+import platform
+import subprocess
+from pathlib import Path
+from typing import Optional
+import pyautogui
+
+# サーバーの基準パス
+SERVER_BASE_PATH = r"\\192.168.11.20\行政書士法人チェスター\01.個別ＪＯＢ"
+
+def find_case_folder(search_term: str) -> Optional[str]:
+    """
+    基準パス配下からフォルダを検索してパスを返す。
+    """
+    if not search_term:
+        return None
+
+    target_path = Path(SERVER_BASE_PATH)
+    if not target_path.exists():
+        return None
+
+    try:
+        query = search_term.replace(" ", "").replace("　", "")
+        for item in target_path.iterdir():
+            if item.is_dir():
+                folder_name = item.name.replace(" ", "").replace("　", "")
+                if query in folder_name:
+                    return str(item.absolute())
+    except Exception as e:
+        print(f"Folder search error: {e}")
+        return None
+
+def open_local_folder(path: str) -> bool:
+    """
+    指定されたパスをエクスプローラーで開き、かつ最前面に表示させる。
+    """
+    if not path or not os.path.exists(path):
+        return False
+
+    try:
+        if platform.system() == "Windows":
+            # --- Windows向けの最強最前面表示ロジック ---
+            # 1. まず普通にエクスプローラーで開く
+            os.startfile(path)
+    
+            # ウィンドウが開くまでの猶予（環境によるが0.5~1秒程度）
+            # time.sleep(1) 
+
+            pyautogui.hotkey('alt', 'tab')
+            
+        elif platform.system() == "Darwin": # Mac用
+            subprocess.Popen(["open", path])
+            subprocess.run(["osascript", "-e", f'tell application "Finder" to activate'])
+        else: # Linux用
+            subprocess.Popen(["xdg-open", path])
+            
+        return True
+    except Exception as e:
+        print(f"Error opening folder: {e}")
+        return False
+````
+
+## File: .gitignore
+````
+# --- Python & Rye ---
+__pycache__/
+*.pyc
+.venv/
+.rye/
+
+# --- 環境変数 & 機密情報 (絶対にGitにあげない) ---
+.env
+.streamlit/secrets.toml
+
+# --- データベース & ログ ---
+# 監査ログやベクターDBはローカルで生成されるため除外
+db/sql/*.db
+db/chroma/
+*.log
+
+# --- 生成されたファイル・アップロードデータ ---
+# テンプレートPDFやアップロードされた一時ファイル
+data/templates/*.pdf
+data/uploads/
+data/generated/
+data/zengin
+
+# ※フォントファイル(ipaexg.ttf)などはアプリの動作に必要なので
+#   除外せず、Gitに含めるのが一般的です
+
+# --- AI Context / Repomix ---
+# ソースコードをまとめたファイルは除外
+repomix-output.*
+all_code_context.txt
+
+# --- IDE / エディタ ---
+.vscode/
+.idea/
+
+# --- Python Testing / Caching ---
+.pytest_cache/
+.mypy_cache/
+htmlcov/
+.coverage
+
+# --- OS ---
+.DS_Store
+Thumbs.db
+
+bootstrap.py
 ````
 
 ## File: src/legal_system/models/tables.py
@@ -9137,122 +9376,6 @@ class WillAllocation(Base):
     will_case = relationship("WillCase", back_populates="allocations")
 ````
 
-## File: src/services/folder_service.py
-````python
-# src/services/folder_service.py
-
-import os
-import platform
-import subprocess
-from pathlib import Path
-from typing import Optional
-import pyautogui
-
-# サーバーの基準パス
-SERVER_BASE_PATH = r"\\192.168.11.20\行政書士法人チェスター\01.個別ＪＯＢ"
-
-def find_case_folder(search_term: str) -> Optional[str]:
-    """
-    基準パス配下からフォルダを検索してパスを返す。
-    """
-    if not search_term:
-        return None
-
-    target_path = Path(SERVER_BASE_PATH)
-    if not target_path.exists():
-        return None
-
-    try:
-        query = search_term.replace(" ", "").replace("　", "")
-        for item in target_path.iterdir():
-            if item.is_dir():
-                folder_name = item.name.replace(" ", "").replace("　", "")
-                if query in folder_name:
-                    return str(item.absolute())
-    except Exception as e:
-        print(f"Folder search error: {e}")
-        return None
-
-def open_local_folder(path: str) -> bool:
-    """
-    指定されたパスをエクスプローラーで開き、かつ最前面に表示させる。
-    """
-    if not path or not os.path.exists(path):
-        return False
-
-    try:
-        if platform.system() == "Windows":
-            # --- Windows向けの最強最前面表示ロジック ---
-            # 1. まず普通にエクスプローラーで開く
-            os.startfile(path)
-    
-            # ウィンドウが開くまでの猶予（環境によるが0.5~1秒程度）
-            # time.sleep(1) 
-
-            pyautogui.hotkey('alt', 'tab')
-            
-        elif platform.system() == "Darwin": # Mac用
-            subprocess.Popen(["open", path])
-            subprocess.run(["osascript", "-e", f'tell application "Finder" to activate'])
-        else: # Linux用
-            subprocess.Popen(["xdg-open", path])
-            
-        return True
-    except Exception as e:
-        print(f"Error opening folder: {e}")
-        return False
-````
-
-## File: .gitignore
-````
-# --- Python & Rye ---
-__pycache__/
-*.pyc
-.venv/
-.rye/
-
-# --- 環境変数 & 機密情報 (絶対にGitにあげない) ---
-.env
-.streamlit/secrets.toml
-
-# --- データベース & ログ ---
-# 監査ログやベクターDBはローカルで生成されるため除外
-db/sql/*.db
-db/chroma/
-*.log
-
-# --- 生成されたファイル・アップロードデータ ---
-# テンプレートPDFやアップロードされた一時ファイル
-data/templates/*.pdf
-data/uploads/
-data/generated/
-data/zengin
-
-# ※フォントファイル(ipaexg.ttf)などはアプリの動作に必要なので
-#   除外せず、Gitに含めるのが一般的です
-
-# --- AI Context / Repomix ---
-# ソースコードをまとめたファイルは除外
-repomix-output.*
-all_code_context.txt
-
-# --- IDE / エディタ ---
-.vscode/
-.idea/
-
-# --- Python Testing / Caching ---
-.pytest_cache/
-.mypy_cache/
-htmlcov/
-.coverage
-
-# --- OS ---
-.DS_Store
-Thumbs.db
-
-bootstrap.py
-````
-
 ## File: src/legal.egg-info/top_level.txt
 ````
 __init__
@@ -9260,6 +9383,527 @@ chains
 legal_system
 services
 utils
+````
+
+## File: src/legal_system/core/ai_factory.py
+````python
+# src/legal_system/core/ai_factory.py
+
+import os
+import logging
+import requests
+from typing import Any, Optional
+
+# LangChain - Community / Local
+from langchain_community.chat_models import ChatOllama
+
+# LangChain - Google Studio
+from langchain_google_genai import ChatGoogleGenerativeAI, GoogleGenerativeAIEmbeddings
+
+# LangChain - Google Vertex AI
+from langchain_google_vertexai import ChatVertexAI, VertexAIEmbeddings
+
+from .config import Config, KeyManager
+
+logger = logging.getLogger(__name__)
+
+class AIFactory:
+    """
+    AIモデル（LLM）、Embeddings、VectorStoreのインスタンス生成を一元管理するファクトリークラス。
+    AI_PROVIDERの設定に基づき、Google AI Studio または Vertex AI を切り替えます。
+    """
+
+    @staticmethod
+    def _check_ollama_server(base_url: str) -> bool:
+        """Ollamaサーバーの生存確認"""
+        try:
+            response = requests.get(f"{base_url}/api/tags", timeout=1.0)
+            return response.status_code == 200
+        except requests.exceptions.RequestException:
+            return False
+
+    @classmethod
+    def get_llm(cls, mode: str = "cloud", temperature: Optional[float] = None) -> Any:
+        """
+        LLMインスタンスを取得します。
+        
+        Args:
+            mode (str): "cloud" (Gemini/Vertex) または "local" (Ollama/Llama)
+            temperature (float): 生成温度。Noneの場合はConfig値を使用。
+        """
+        temp = temperature if temperature is not None else Config.TEMPERATURE
+
+        # --- Local Mode (Ollama) ---
+        if mode == "local":
+            base_url = "http://host.docker.internal:11434"
+            
+            # 接続チェック（開発時の利便性のため、失敗時はエラーログを出してフォールバック検討等は実装依存）
+            if not cls._check_ollama_server(base_url):
+                # Docker内通信がだめな場合、localhostも試行(開発環境用)
+                base_url = "http://localhost:11434"
+                if not cls._check_ollama_server(base_url):
+                    raise ConnectionError("❌ Ollamaサーバーに接続できません。")
+
+            # 軽量モデルを指定
+            model_name = "llama3.2:1b"
+            logger.info(f"🤖 Local LLM Mode: {model_name}")
+
+            return ChatOllama(
+                base_url=base_url,
+                model=model_name,
+                temperature=temp,
+                format="json",
+                timeout=120,
+            )
+        
+        # --- Cloud Mode (Gemini / Vertex) ---
+        else:
+            if Config.is_vertex_enabled():
+                # Vertex AI (Enterprise)
+                logger.info(f"☁️ Cloud LLM Mode: Vertex AI ({Config.GOOGLE_MODEL_NAME})")
+                
+                # VertexAIはADC(Application Default Credentials)を利用するためAPIキー指定は不要
+                # Project/RegionはConfigまたは環境変数から自動取得されるが、明示も可能
+                return ChatVertexAI(
+                    model_name=Config.GOOGLE_MODEL_NAME,
+                    project=Config.GOOGLE_CLOUD_PROJECT,
+                    location=Config.GOOGLE_CLOUD_REGION,
+                    temperature=temp,
+                    convert_system_message_to_human=True,
+                    max_retries=2
+                )
+            else:
+                # Google AI Studio (Personal / API Key)
+                logger.info(f"☁️ Cloud LLM Mode: AI Studio ({Config.GOOGLE_MODEL_NAME})")
+                api_key = KeyManager.get_next_key()
+                
+                return ChatGoogleGenerativeAI(
+                    model=Config.GOOGLE_MODEL_NAME,
+                    google_api_key=api_key,
+                    temperature=temp,
+                    convert_system_message_to_human=True,
+                    max_retries=2
+                )
+
+    @classmethod
+    def get_embeddings(cls) -> Any:
+        """埋め込みモデル（Embeddings）を返します。"""
+        
+        if Config.is_vertex_enabled():
+            # Vertex AI Embeddings
+            # モデル名は text-embedding-004 などが望ましいが、Configに従う
+            return VertexAIEmbeddings(
+                model_name="text-embedding-004", # Vertex推奨モデルに固定
+                project=Config.GOOGLE_CLOUD_PROJECT,
+                location=Config.GOOGLE_CLOUD_REGION,
+            )
+        else:
+            # AI Studio Embeddings
+            api_key = KeyManager.get_next_key()
+            return GoogleGenerativeAIEmbeddings(
+                model=Config.EMBEDDING_MODEL,
+                google_api_key=api_key
+            )
+
+    @classmethod
+    def get_vector_store(cls):
+        """永続化されたChromaベクトルストアのインスタンスを返します。"""
+        from langchain_chroma import Chroma
+        
+        embeddings = cls.get_embeddings()
+
+        if not Config.VECTOR_STORE_PATH.exists():
+            os.makedirs(Config.VECTOR_STORE_PATH, exist_ok=True)
+
+        return Chroma(
+            persist_directory=str(Config.VECTOR_STORE_PATH),
+            embedding_function=embeddings,
+        )
+````
+
+## File: src/legal_system/core/database_manager.py
+````python
+# file: src/legal_system/core/database_manager.py
+
+import os
+from datetime import datetime
+from typing import Any, Dict, List, Optional
+
+import streamlit as st
+from sqlalchemy import create_engine, desc
+from sqlalchemy.engine import Engine
+from sqlalchemy.orm import scoped_session, sessionmaker
+
+# テーブル定義
+from src.legal_system.models.tables import (
+    AuditLog,
+    Base,
+    Case,
+    Coordinate,
+    FileRegistry,
+    User,
+)
+
+# Config
+from .config import Config
+
+
+# ==========================================
+# エンジン生成の共通ロジック (キャッシュなし)
+# ==========================================
+def _create_new_engine() -> Engine:
+    """
+    SQLAlchemyエンジンを新規作成する内部関数。
+    Streamlitへの依存を含みません。
+    """
+    # 【修正ポイント】 Windows環境での文字コードエラー(0x83)を防ぐため
+    # client_encoding='utf8' を明示的に指定します。
+    engine = create_engine(
+        Config.DATABASE_URL,
+        pool_size=20,
+        max_overflow=10,
+        pool_pre_ping=True,
+        connect_args={"client_encoding": "utf8"}  # Windows対策: 文字化けクラッシュ防止
+    )
+
+    # テーブル作成 (初回のみ)
+    try:
+        Base.metadata.create_all(engine)
+    except Exception as e:
+        # Streamlit環境下であればエラー表示、そうでなければ標準出力へ
+        msg = f"❌ データベース接続エラー: {e}"
+        # Watcherプロセスかどうかの判定
+        if os.environ.get("IS_WATCHER_PROCESS") != "true":
+            st.error(msg)
+            st.info("PostgreSQLサーバー設定(.env)を確認してください。")
+        else:
+            print(msg)
+        raise e
+
+    return engine
+
+
+# ==========================================
+# Streamlit用 キャッシュ付きエンジン取得
+# ==========================================
+@st.cache_resource(show_spinner="データベースに接続中...")
+def _get_cached_engine() -> Engine:
+    """Streamlitのキャッシュ機能を利用してエンジンを保持する"""
+    return _create_new_engine()
+
+
+# ==========================================
+# 公開アクセサ (環境判定ロジック付き)
+# ==========================================
+def get_db_engine() -> Engine:
+    """
+    実行環境に応じて適切なエンジン取得方法を選択するファクトリー関数。
+    - Watcherプロセス (IS_WATCHER_PROCESS=true): キャッシュなしで新規作成
+    - Streamlitアプリ: st.cache_resourceを利用して高速化
+    """
+    if os.environ.get("IS_WATCHER_PROCESS") == "true":
+        # バックグラウンド処理ではStreamlitのキャッシュ機能を使わない
+        return _create_new_engine()
+    else:
+        # UIスレッドではキャッシュを使う
+        return _get_cached_engine()
+
+
+class DatabaseManager:
+    """
+    データベース操作を一元管理するクラス。
+    環境に応じたエンジン取得戦略を内部で自動解決します。
+    """
+
+    def __init__(self):
+        # 環境判定済みのエンジン取得関数を呼び出し
+        self.engine = get_db_engine()
+
+        # セッションファクトリの作成
+        self.session_factory = sessionmaker(bind=self.engine)
+
+        # スレッドセーフなセッション
+        self.Session = scoped_session(self.session_factory)
+
+    def _get_session(self):
+        """新しいセッションを発行"""
+        return self.Session()
+
+    # ---------------------------------------------------------
+    # ユーザー管理
+    # ---------------------------------------------------------
+    def get_current_user_info(self) -> Dict[str, str]:
+        """Windowsログインユーザー情報を取得または作成"""
+        # Streamlit Cloud等でOSユーザーが取れない場合のフォールバック
+        pc_user = os.environ.get("USERNAME", "guest_user")
+
+        session = self._get_session()
+        try:
+            user = session.query(User).filter_by(windows_id=pc_user).first()
+            if user:
+                return {
+                    "id": user.windows_id,
+                    "name": user.name,
+                    "dept": user.department if user.department else "",
+                    "phone": user.phone if user.phone else "",
+                }
+            else:
+                # 新規自動登録
+                default_name = f"{pc_user}"
+                default_dept = "未設定"
+                new_user = User(
+                    windows_id=pc_user,
+                    name=default_name,
+                    department=default_dept,
+                    role="Operator",
+                )
+                session.add(new_user)
+                session.commit()
+                return {
+                    "id": pc_user,
+                    "name": default_name,
+                    "dept": default_dept,
+                    "phone": "",
+                }
+        except Exception as e:
+            print(f"Error getting user info: {e}")
+            return {"id": pc_user, "name": pc_user, "dept": "Error", "phone": ""}
+        finally:
+            session.close()
+
+    def register_user(
+        self, windows_id: str, display_name: str, department: str, phone: str
+    ):
+        session = self._get_session()
+        try:
+            user = session.query(User).filter_by(windows_id=windows_id).first()
+            if user:
+                user.name = display_name
+                user.department = department
+                user.phone = phone
+                user.updated_at = datetime.now()
+            else:
+                user = User(
+                    windows_id=windows_id,
+                    name=display_name,
+                    department=department,
+                    phone=phone,
+                    role="Operator",
+                )
+                session.add(user)
+            session.commit()
+        except Exception:
+            session.rollback()
+            raise
+        finally:
+            session.close()
+
+    # ---------------------------------------------------------
+    # ログ管理
+    # ---------------------------------------------------------
+    def log_action(self, user_id: str, action: str, target: str, details: str = ""):
+        session = self._get_session()
+        try:
+            # user_id (windows_id) から内部IDを引く
+            db_user = session.query(User).filter_by(windows_id=user_id).first()
+            u_id = db_user.id if db_user else None
+
+            log = AuditLog(
+                user_id=u_id,
+                action_type=action,
+                target=target,
+                details=details,
+                timestamp=datetime.now(),
+            )
+            session.add(log)
+            session.commit()
+        except Exception:
+            session.rollback()
+        finally:
+            session.close()
+
+    # ---------------------------------------------------------
+    # ファイル管理
+    # ---------------------------------------------------------
+    def is_file_registered(self, file_hash: str) -> bool:
+        session = self._get_session()
+        try:
+            exists = session.query(FileRegistry).filter_by(file_hash=file_hash).first()
+            return exists is not None
+        finally:
+            session.close()
+
+    def register_file_hash(
+        self,
+        file_hash: str,
+        filename: str,
+        doc_type: str = "その他",
+        case_id: Optional[int] = None,
+    ):
+        session = self._get_session()
+        try:
+            file_reg = (
+                session.query(FileRegistry).filter_by(file_hash=file_hash).first()
+            )
+            if file_reg:
+                file_reg.filename = filename
+                file_reg.doc_type = doc_type
+                if case_id is not None:
+                    file_reg.case_id = case_id
+                file_reg.registered_at = datetime.now()
+            else:
+                file_reg = FileRegistry(
+                    file_hash=file_hash,
+                    filename=filename,
+                    doc_type=doc_type,
+                    case_id=case_id,
+                    registered_at=datetime.now(),
+                )
+                session.add(file_reg)
+            session.commit()
+        except Exception:
+            session.rollback()
+            raise
+        finally:
+            session.close()
+
+    def get_all_files(self) -> List[Dict[str, Any]]:
+        session = self._get_session()
+        try:
+            results = (
+                session.query(FileRegistry, Case)
+                .outerjoin(Case, FileRegistry.case_id == Case.case_id)
+                .order_by(desc(FileRegistry.registered_at))
+                .all()
+            )
+            output = []
+            for f, c in results:
+                case_label = f"{c.case_number}" if c else "（共通雛形）"
+                output.append(
+                    {
+                        "filename": f.filename,
+                        "date": f.registered_at.strftime("%Y-%m-%d %H:%M:%S")
+                        if f.registered_at
+                        else "",
+                        "hash": f.file_hash,
+                        "type": f.doc_type if f.doc_type else "その他",
+                        "case": case_label,
+                        "doc_type": f.doc_type,
+                        "uploaded_at": f.registered_at,
+                    }
+                )
+            return output
+        finally:
+            session.close()
+
+    def delete_file_registry(self, filename: str):
+        session = self._get_session()
+        try:
+            session.query(FileRegistry).filter_by(filename=filename).delete()
+            session.commit()
+        except Exception:
+            session.rollback()
+            raise
+        finally:
+            session.close()
+
+    # ---------------------------------------------------------
+    # 座標管理 (Coordinate Tool)
+    # ---------------------------------------------------------
+    def register_coordinate(
+        self,
+        file_hash,
+        label,
+        x,
+        y,
+        page_number=1,
+        description="",
+        font_size=10,
+        color="black",
+        test_value="",
+    ):
+        session = self._get_session()
+        try:
+            coord = (
+                session.query(Coordinate)
+                .filter_by(file_hash=file_hash, label=label)
+                .first()
+            )
+            if not coord:
+                coord = Coordinate(file_hash=file_hash, label=label)
+                session.add(coord)
+
+            coord.x_point = x
+            coord.y_point = y
+            coord.page_number = page_number
+            coord.description = description
+            coord.font_size = font_size
+            coord.color = color
+            coord.value = test_value
+            session.commit()
+            return True
+        except Exception:
+            session.rollback()
+            return False
+        finally:
+            session.close()
+
+    def get_coordinates_by_hash(self, file_hash: str) -> List[Dict]:
+        session = self._get_session()
+        try:
+            coords = session.query(Coordinate).filter_by(file_hash=file_hash).all()
+            return [
+                {
+                    "id": c.id,
+                    "label": c.label,
+                    "x": c.x_point,
+                    "y": c.y_point,
+                    "page": c.page_number,
+                    "desc": c.description,
+                    "font_size": c.font_size,
+                    "color": c.color,
+                    "value": c.value,
+                }
+                for c in coords
+            ]
+        finally:
+            session.close()
+
+    def update_coordinate_direct(self, coord_id: int, updates: Dict):
+        session = self._get_session()
+        try:
+            coord = session.query(Coordinate).filter_by(id=coord_id).first()
+            if coord:
+                for k, v in updates.items():
+                    if k == "x":
+                        coord.x_point = v
+                    elif k == "y":
+                        coord.y_point = v
+                    elif k == "desc":
+                        coord.description = v
+                    # 必要に応じて他のフィールドも追加
+                    elif hasattr(coord, k):
+                        setattr(coord, k, v)
+                session.commit()
+                return True
+            return False
+        except Exception:
+            session.rollback()
+            return False
+        finally:
+            session.close()
+
+    def delete_coordinate(self, coordinate_id: int):
+        session = self._get_session()
+        try:
+            session.query(Coordinate).filter_by(id=coordinate_id).delete()
+            session.commit()
+            return True
+        except Exception:
+            session.rollback()
+            return False
+        finally:
+            session.close()
 ````
 
 ## File: src/services/deceased_service.py
@@ -10364,525 +11008,126 @@ def import_kintone_json(
         session.close()
 ````
 
-## File: src/legal_system/core/ai_factory.py
+## File: src/legal_system/core/config.py
 ````python
-# src/legal_system/core/ai_factory.py
+# file: src/legal_system/core/config.py
 
 import os
-import logging
-import requests
-from typing import Any, Optional
+import random
+from pathlib import Path
+from typing import List
 
-# LangChain - Community / Local
-from langchain_community.chat_models import ChatOllama
+from dotenv import load_dotenv
 
-# LangChain - Google Studio
-from langchain_google_genai import ChatGoogleGenerativeAI, GoogleGenerativeAIEmbeddings
+# .env ファイルの読み込み
+load_dotenv()
 
-# LangChain - Google Vertex AI
-from langchain_google_vertexai import ChatVertexAI, VertexAIEmbeddings
+# ==========================================
+# 1. パス設定 (モジュールレベル定数)
+# ==========================================
+BASE_DIR = Path(__file__).resolve().parents[3]
+DATA_DIR = BASE_DIR / "data"
 
-from .config import Config, KeyManager
+# DB関連パス
+DB_FILE_SQLITE = DATA_DIR / "db" / "sql" / "legal_system.db"
+DB_DIR_CHROMA = DATA_DIR / "db" / "chroma" / "local_rag_db"
 
-logger = logging.getLogger(__name__)
+# データ一時保存先
+DATA_DIR_TEMPLATES = DATA_DIR / "templates"
+VECTOR_STORE_PATH = DB_DIR_CHROMA
 
-class AIFactory:
-    """
-    AIモデル（LLM）、Embeddings、VectorStoreのインスタンス生成を一元管理するファクトリークラス。
-    AI_PROVIDERの設定に基づき、Google AI Studio または Vertex AI を切り替えます。
-    """
-
-    @staticmethod
-    def _check_ollama_server(base_url: str) -> bool:
-        """Ollamaサーバーの生存確認"""
-        try:
-            response = requests.get(f"{base_url}/api/tags", timeout=1.0)
-            return response.status_code == 200
-        except requests.exceptions.RequestException:
-            return False
-
-    @classmethod
-    def get_llm(cls, mode: str = "cloud", temperature: Optional[float] = None) -> Any:
-        """
-        LLMインスタンスを取得します。
-        
-        Args:
-            mode (str): "cloud" (Gemini/Vertex) または "local" (Ollama/Llama)
-            temperature (float): 生成温度。Noneの場合はConfig値を使用。
-        """
-        temp = temperature if temperature is not None else Config.TEMPERATURE
-
-        # --- Local Mode (Ollama) ---
-        if mode == "local":
-            base_url = "http://host.docker.internal:11434"
-            
-            # 接続チェック（開発時の利便性のため、失敗時はエラーログを出してフォールバック検討等は実装依存）
-            if not cls._check_ollama_server(base_url):
-                # Docker内通信がだめな場合、localhostも試行(開発環境用)
-                base_url = "http://localhost:11434"
-                if not cls._check_ollama_server(base_url):
-                    raise ConnectionError("❌ Ollamaサーバーに接続できません。")
-
-            # 軽量モデルを指定
-            model_name = "llama3.2:1b"
-            logger.info(f"🤖 Local LLM Mode: {model_name}")
-
-            return ChatOllama(
-                base_url=base_url,
-                model=model_name,
-                temperature=temp,
-                format="json",
-                timeout=120,
-            )
-        
-        # --- Cloud Mode (Gemini / Vertex) ---
-        else:
-            if Config.is_vertex_enabled():
-                # Vertex AI (Enterprise)
-                logger.info(f"☁️ Cloud LLM Mode: Vertex AI ({Config.GOOGLE_MODEL_NAME})")
-                
-                # VertexAIはADC(Application Default Credentials)を利用するためAPIキー指定は不要
-                # Project/RegionはConfigまたは環境変数から自動取得されるが、明示も可能
-                return ChatVertexAI(
-                    model_name=Config.GOOGLE_MODEL_NAME,
-                    project=Config.GOOGLE_CLOUD_PROJECT,
-                    location=Config.GOOGLE_CLOUD_REGION,
-                    temperature=temp,
-                    convert_system_message_to_human=True,
-                    max_retries=2
-                )
-            else:
-                # Google AI Studio (Personal / API Key)
-                logger.info(f"☁️ Cloud LLM Mode: AI Studio ({Config.GOOGLE_MODEL_NAME})")
-                api_key = KeyManager.get_next_key()
-                
-                return ChatGoogleGenerativeAI(
-                    model=Config.GOOGLE_MODEL_NAME,
-                    google_api_key=api_key,
-                    temperature=temp,
-                    convert_system_message_to_human=True,
-                    max_retries=2
-                )
-
-    @classmethod
-    def get_embeddings(cls) -> Any:
-        """埋め込みモデル（Embeddings）を返します。"""
-        
-        if Config.is_vertex_enabled():
-            # Vertex AI Embeddings
-            # モデル名は text-embedding-004 などが望ましいが、Configに従う
-            return VertexAIEmbeddings(
-                model_name="text-embedding-004", # Vertex推奨モデルに固定
-                project=Config.GOOGLE_CLOUD_PROJECT,
-                location=Config.GOOGLE_CLOUD_REGION,
-            )
-        else:
-            # AI Studio Embeddings
-            api_key = KeyManager.get_next_key()
-            return GoogleGenerativeAIEmbeddings(
-                model=Config.EMBEDDING_MODEL,
-                google_api_key=api_key
-            )
-
-    @classmethod
-    def get_vector_store(cls):
-        """永続化されたChromaベクトルストアのインスタンスを返します。"""
-        from langchain_chroma import Chroma
-        
-        embeddings = cls.get_embeddings()
-
-        if not Config.VECTOR_STORE_PATH.exists():
-            os.makedirs(Config.VECTOR_STORE_PATH, exist_ok=True)
-
-        return Chroma(
-            persist_directory=str(Config.VECTOR_STORE_PATH),
-            embedding_function=embeddings,
-        )
-````
-
-## File: src/legal_system/core/database_manager.py
-````python
-# file: src/legal_system/core/database_manager.py
-
-import os
-from datetime import datetime
-from typing import Any, Dict, List, Optional
-
-import streamlit as st
-from sqlalchemy import create_engine, desc
-from sqlalchemy.engine import Engine
-from sqlalchemy.orm import scoped_session, sessionmaker
-
-# テーブル定義
-from src.legal_system.models.tables import (
-    AuditLog,
-    Base,
-    Case,
-    Coordinate,
-    FileRegistry,
-    User,
-)
-
-# Config
-from .config import Config
+# RAG関連パス
+RULES_DIR = DATA_DIR / "rules"
+BANK_MASTER_PATH = RULES_DIR / "bank_master.csv"
+COMPANY_RULES_PATH = RULES_DIR / "company_rules.txt"
 
 
 # ==========================================
-# エンジン生成の共通ロジック (キャッシュなし)
+# 2. 設定管理クラス (Config)
 # ==========================================
-def _create_new_engine() -> Engine:
+class Config:
     """
-    SQLAlchemyエンジンを新規作成する内部関数。
-    Streamlitへの依存を含みません。
+    システム全体の設定定数を管理するクラス。
     """
-    # 【修正ポイント】 Windows環境での文字コードエラー(0x83)を防ぐため
-    # client_encoding='utf8' を明示的に指定します。
-    engine = create_engine(
-        Config.DATABASE_URL,
-        pool_size=20,
-        max_overflow=10,
-        pool_pre_ping=True,
-        connect_args={"client_encoding": "utf8"}  # Windows対策: 文字化けクラッシュ防止
+
+    # --- パス設定 ---
+    BASE_DIR = BASE_DIR
+    DATA_DIR = DATA_DIR
+    TEMPLATES_DIR = DATA_DIR_TEMPLATES
+
+    # RAG関連パス
+    BANK_MASTER_PATH = BANK_MASTER_PATH
+    COMPANY_RULES_PATH = COMPANY_RULES_PATH
+    VECTOR_STORE_PATH = VECTOR_STORE_PATH
+
+    # --- データベース設定 (PostgreSQL) ---
+    POSTGRES_USER = os.getenv("POSTGRES_USER", "postgres")
+    POSTGRES_PASSWORD = os.getenv("POSTGRES_PASSWORD", "password")
+    POSTGRES_HOST = os.getenv("POSTGRES_HOST", "127.0.0.1")
+    POSTGRES_PORT = os.getenv("POSTGRES_PORT", "5432")
+    POSTGRES_DB = os.getenv("POSTGRES_DB", "legal_db")
+
+    DATABASE_URL = (
+        f"postgresql+psycopg2://{POSTGRES_USER}:{POSTGRES_PASSWORD}"
+        f"@{POSTGRES_HOST}:{POSTGRES_PORT}/{POSTGRES_DB}"
     )
 
-    # テーブル作成 (初回のみ)
-    try:
-        Base.metadata.create_all(engine)
-    except Exception as e:
-        # Streamlit環境下であればエラー表示、そうでなければ標準出力へ
-        msg = f"❌ データベース接続エラー: {e}"
-        # Watcherプロセスかどうかの判定
-        if os.environ.get("IS_WATCHER_PROCESS") != "true":
-            st.error(msg)
-            st.info("PostgreSQLサーバー設定(.env)を確認してください。")
-        else:
-            print(msg)
-        raise e
+    # --- AIプロバイダー設定 (New) ---
+    # "studio" (API Key) or "vertex" (Google Cloud)
+    AI_PROVIDER = os.getenv("AI_PROVIDER", "studio").lower()
 
-    return engine
+    # --- Vertex AI 設定 ---
+    GOOGLE_CLOUD_PROJECT = os.getenv("GOOGLE_CLOUD_PROJECT")
+    GOOGLE_CLOUD_REGION = os.getenv("GOOGLE_CLOUD_REGION", "asia-northeast1")
+
+    # --- モデル設定 ---
+    # Vertex利用時はPublisher Model IDとして扱われる
+    GOOGLE_MODEL_NAME = "gemini-2.5-flash-lite"
+    MODEL_NAME = "gemini-2.5-flash-lite"
+    
+    # Embedding Model
+    # Vertex利用時は "text-embedding-004" 等が推奨されるが、ここでは互換性のため一旦共通化
+    EMBEDDING_MODEL = "models/embedding-001"
+    
+    TEMPERATURE = 0.0
+
+    # APIキー管理 (Studio用)
+    _keys_str = os.getenv("GOOGLE_API_KEYS", "")
+    GOOGLE_API_KEYS: List[str] = [k.strip() for k in _keys_str.split(",") if k.strip()]
+
+    if not GOOGLE_API_KEYS and os.getenv("GOOGLE_API_KEY"):
+        GOOGLE_API_KEYS = [os.getenv("GOOGLE_API_KEY")]
+
+    @classmethod
+    def validate_paths(cls) -> None:
+        """必須ディレクトリの存在確認"""
+        if not cls.DATA_DIR.exists():
+            os.makedirs(cls.DATA_DIR, exist_ok=True)
+        if not cls.TEMPLATES_DIR.exists():
+            os.makedirs(cls.TEMPLATES_DIR, exist_ok=True)
+        
+    @classmethod
+    def is_vertex_enabled(cls) -> bool:
+        return cls.AI_PROVIDER == "vertex"
 
 
 # ==========================================
-# Streamlit用 キャッシュ付きエンジン取得
+# 3. キー管理クラス (KeyManager)
 # ==========================================
-@st.cache_resource(show_spinner="データベースに接続中...")
-def _get_cached_engine() -> Engine:
-    """Streamlitのキャッシュ機能を利用してエンジンを保持する"""
-    return _create_new_engine()
-
-
-# ==========================================
-# 公開アクセサ (環境判定ロジック付き)
-# ==========================================
-def get_db_engine() -> Engine:
-    """
-    実行環境に応じて適切なエンジン取得方法を選択するファクトリー関数。
-    - Watcherプロセス (IS_WATCHER_PROCESS=true): キャッシュなしで新規作成
-    - Streamlitアプリ: st.cache_resourceを利用して高速化
-    """
-    if os.environ.get("IS_WATCHER_PROCESS") == "true":
-        # バックグラウンド処理ではStreamlitのキャッシュ機能を使わない
-        return _create_new_engine()
-    else:
-        # UIスレッドではキャッシュを使う
-        return _get_cached_engine()
-
-
-class DatabaseManager:
-    """
-    データベース操作を一元管理するクラス。
-    環境に応じたエンジン取得戦略を内部で自動解決します。
-    """
-
-    def __init__(self):
-        # 環境判定済みのエンジン取得関数を呼び出し
-        self.engine = get_db_engine()
-
-        # セッションファクトリの作成
-        self.session_factory = sessionmaker(bind=self.engine)
-
-        # スレッドセーフなセッション
-        self.Session = scoped_session(self.session_factory)
-
-    def _get_session(self):
-        """新しいセッションを発行"""
-        return self.Session()
-
-    # ---------------------------------------------------------
-    # ユーザー管理
-    # ---------------------------------------------------------
-    def get_current_user_info(self) -> Dict[str, str]:
-        """Windowsログインユーザー情報を取得または作成"""
-        # Streamlit Cloud等でOSユーザーが取れない場合のフォールバック
-        pc_user = os.environ.get("USERNAME", "guest_user")
-
-        session = self._get_session()
-        try:
-            user = session.query(User).filter_by(windows_id=pc_user).first()
-            if user:
-                return {
-                    "id": user.windows_id,
-                    "name": user.name,
-                    "dept": user.department if user.department else "",
-                    "phone": user.phone if user.phone else "",
-                }
-            else:
-                # 新規自動登録
-                default_name = f"{pc_user}"
-                default_dept = "未設定"
-                new_user = User(
-                    windows_id=pc_user,
-                    name=default_name,
-                    department=default_dept,
-                    role="Operator",
-                )
-                session.add(new_user)
-                session.commit()
-                return {
-                    "id": pc_user,
-                    "name": default_name,
-                    "dept": default_dept,
-                    "phone": "",
-                }
-        except Exception as e:
-            print(f"Error getting user info: {e}")
-            return {"id": pc_user, "name": pc_user, "dept": "Error", "phone": ""}
-        finally:
-            session.close()
-
-    def register_user(
-        self, windows_id: str, display_name: str, department: str, phone: str
-    ):
-        session = self._get_session()
-        try:
-            user = session.query(User).filter_by(windows_id=windows_id).first()
-            if user:
-                user.name = display_name
-                user.department = department
-                user.phone = phone
-                user.updated_at = datetime.now()
-            else:
-                user = User(
-                    windows_id=windows_id,
-                    name=display_name,
-                    department=department,
-                    phone=phone,
-                    role="Operator",
-                )
-                session.add(user)
-            session.commit()
-        except Exception:
-            session.rollback()
-            raise
-        finally:
-            session.close()
-
-    # ---------------------------------------------------------
-    # ログ管理
-    # ---------------------------------------------------------
-    def log_action(self, user_id: str, action: str, target: str, details: str = ""):
-        session = self._get_session()
-        try:
-            # user_id (windows_id) から内部IDを引く
-            db_user = session.query(User).filter_by(windows_id=user_id).first()
-            u_id = db_user.id if db_user else None
-
-            log = AuditLog(
-                user_id=u_id,
-                action_type=action,
-                target=target,
-                details=details,
-                timestamp=datetime.now(),
-            )
-            session.add(log)
-            session.commit()
-        except Exception:
-            session.rollback()
-        finally:
-            session.close()
-
-    # ---------------------------------------------------------
-    # ファイル管理
-    # ---------------------------------------------------------
-    def is_file_registered(self, file_hash: str) -> bool:
-        session = self._get_session()
-        try:
-            exists = session.query(FileRegistry).filter_by(file_hash=file_hash).first()
-            return exists is not None
-        finally:
-            session.close()
-
-    def register_file_hash(
-        self,
-        file_hash: str,
-        filename: str,
-        doc_type: str = "その他",
-        case_id: Optional[int] = None,
-    ):
-        session = self._get_session()
-        try:
-            file_reg = (
-                session.query(FileRegistry).filter_by(file_hash=file_hash).first()
-            )
-            if file_reg:
-                file_reg.filename = filename
-                file_reg.doc_type = doc_type
-                if case_id is not None:
-                    file_reg.case_id = case_id
-                file_reg.registered_at = datetime.now()
-            else:
-                file_reg = FileRegistry(
-                    file_hash=file_hash,
-                    filename=filename,
-                    doc_type=doc_type,
-                    case_id=case_id,
-                    registered_at=datetime.now(),
-                )
-                session.add(file_reg)
-            session.commit()
-        except Exception:
-            session.rollback()
-            raise
-        finally:
-            session.close()
-
-    def get_all_files(self) -> List[Dict[str, Any]]:
-        session = self._get_session()
-        try:
-            results = (
-                session.query(FileRegistry, Case)
-                .outerjoin(Case, FileRegistry.case_id == Case.case_id)
-                .order_by(desc(FileRegistry.registered_at))
-                .all()
-            )
-            output = []
-            for f, c in results:
-                case_label = f"{c.case_number}" if c else "（共通雛形）"
-                output.append(
-                    {
-                        "filename": f.filename,
-                        "date": f.registered_at.strftime("%Y-%m-%d %H:%M:%S")
-                        if f.registered_at
-                        else "",
-                        "hash": f.file_hash,
-                        "type": f.doc_type if f.doc_type else "その他",
-                        "case": case_label,
-                        "doc_type": f.doc_type,
-                        "uploaded_at": f.registered_at,
-                    }
-                )
-            return output
-        finally:
-            session.close()
-
-    def delete_file_registry(self, filename: str):
-        session = self._get_session()
-        try:
-            session.query(FileRegistry).filter_by(filename=filename).delete()
-            session.commit()
-        except Exception:
-            session.rollback()
-            raise
-        finally:
-            session.close()
-
-    # ---------------------------------------------------------
-    # 座標管理 (Coordinate Tool)
-    # ---------------------------------------------------------
-    def register_coordinate(
-        self,
-        file_hash,
-        label,
-        x,
-        y,
-        page_number=1,
-        description="",
-        font_size=10,
-        color="black",
-        test_value="",
-    ):
-        session = self._get_session()
-        try:
-            coord = (
-                session.query(Coordinate)
-                .filter_by(file_hash=file_hash, label=label)
-                .first()
-            )
-            if not coord:
-                coord = Coordinate(file_hash=file_hash, label=label)
-                session.add(coord)
-
-            coord.x_point = x
-            coord.y_point = y
-            coord.page_number = page_number
-            coord.description = description
-            coord.font_size = font_size
-            coord.color = color
-            coord.value = test_value
-            session.commit()
-            return True
-        except Exception:
-            session.rollback()
-            return False
-        finally:
-            session.close()
-
-    def get_coordinates_by_hash(self, file_hash: str) -> List[Dict]:
-        session = self._get_session()
-        try:
-            coords = session.query(Coordinate).filter_by(file_hash=file_hash).all()
-            return [
-                {
-                    "id": c.id,
-                    "label": c.label,
-                    "x": c.x_point,
-                    "y": c.y_point,
-                    "page": c.page_number,
-                    "desc": c.description,
-                    "font_size": c.font_size,
-                    "color": c.color,
-                    "value": c.value,
-                }
-                for c in coords
-            ]
-        finally:
-            session.close()
-
-    def update_coordinate_direct(self, coord_id: int, updates: Dict):
-        session = self._get_session()
-        try:
-            coord = session.query(Coordinate).filter_by(id=coord_id).first()
-            if coord:
-                for k, v in updates.items():
-                    if k == "x":
-                        coord.x_point = v
-                    elif k == "y":
-                        coord.y_point = v
-                    elif k == "desc":
-                        coord.description = v
-                    # 必要に応じて他のフィールドも追加
-                    elif hasattr(coord, k):
-                        setattr(coord, k, v)
-                session.commit()
-                return True
-            return False
-        except Exception:
-            session.rollback()
-            return False
-        finally:
-            session.close()
-
-    def delete_coordinate(self, coordinate_id: int):
-        session = self._get_session()
-        try:
-            session.query(Coordinate).filter_by(id=coordinate_id).delete()
-            session.commit()
-            return True
-        except Exception:
-            session.rollback()
-            return False
-        finally:
-            session.close()
+class KeyManager:
+    @staticmethod
+    def get_next_key() -> str:
+        # Vertexの場合はキー不要（ADC利用）だが、Config互換性のために実装維持
+        if Config.is_vertex_enabled():
+            return "vertex-managed"
+            
+        keys = Config.GOOGLE_API_KEYS
+        if not keys:
+            env_key = os.getenv("GOOGLE_API_KEY")
+            if env_key:
+                return env_key
+            raise ValueError("❌ 有効な Google API Key が見つかりません。")
+        return random.choice(keys)
 ````
 
 ## File: src/legal_system/ui/Home.py
@@ -12099,128 +12344,6 @@ def main():
 
 if __name__ == "__main__":
     main()
-````
-
-## File: src/legal_system/core/config.py
-````python
-# file: src/legal_system/core/config.py
-
-import os
-import random
-from pathlib import Path
-from typing import List
-
-from dotenv import load_dotenv
-
-# .env ファイルの読み込み
-load_dotenv()
-
-# ==========================================
-# 1. パス設定 (モジュールレベル定数)
-# ==========================================
-BASE_DIR = Path(__file__).resolve().parents[3]
-DATA_DIR = BASE_DIR / "data"
-
-# DB関連パス
-DB_FILE_SQLITE = DATA_DIR / "db" / "sql" / "legal_system.db"
-DB_DIR_CHROMA = DATA_DIR / "db" / "chroma" / "local_rag_db"
-
-# データ一時保存先
-DATA_DIR_TEMPLATES = DATA_DIR / "templates"
-VECTOR_STORE_PATH = DB_DIR_CHROMA
-
-# RAG関連パス
-RULES_DIR = DATA_DIR / "rules"
-BANK_MASTER_PATH = RULES_DIR / "bank_master.csv"
-COMPANY_RULES_PATH = RULES_DIR / "company_rules.txt"
-
-
-# ==========================================
-# 2. 設定管理クラス (Config)
-# ==========================================
-class Config:
-    """
-    システム全体の設定定数を管理するクラス。
-    """
-
-    # --- パス設定 ---
-    BASE_DIR = BASE_DIR
-    DATA_DIR = DATA_DIR
-    TEMPLATES_DIR = DATA_DIR_TEMPLATES
-
-    # RAG関連パス
-    BANK_MASTER_PATH = BANK_MASTER_PATH
-    COMPANY_RULES_PATH = COMPANY_RULES_PATH
-    VECTOR_STORE_PATH = VECTOR_STORE_PATH
-
-    # --- データベース設定 (PostgreSQL) ---
-    POSTGRES_USER = os.getenv("POSTGRES_USER", "postgres")
-    POSTGRES_PASSWORD = os.getenv("POSTGRES_PASSWORD", "password")
-    POSTGRES_HOST = os.getenv("POSTGRES_HOST", "127.0.0.1")
-    POSTGRES_PORT = os.getenv("POSTGRES_PORT", "5432")
-    POSTGRES_DB = os.getenv("POSTGRES_DB", "legal_db")
-
-    DATABASE_URL = (
-        f"postgresql+psycopg2://{POSTGRES_USER}:{POSTGRES_PASSWORD}"
-        f"@{POSTGRES_HOST}:{POSTGRES_PORT}/{POSTGRES_DB}"
-    )
-
-    # --- AIプロバイダー設定 (New) ---
-    # "studio" (API Key) or "vertex" (Google Cloud)
-    AI_PROVIDER = os.getenv("AI_PROVIDER", "studio").lower()
-
-    # --- Vertex AI 設定 ---
-    GOOGLE_CLOUD_PROJECT = os.getenv("GOOGLE_CLOUD_PROJECT")
-    GOOGLE_CLOUD_REGION = os.getenv("GOOGLE_CLOUD_REGION", "asia-northeast1")
-
-    # --- モデル設定 ---
-    # Vertex利用時はPublisher Model IDとして扱われる
-    GOOGLE_MODEL_NAME = "gemini-2.5-flash-lite"
-    MODEL_NAME = "gemini-2.5-flash-lite"
-    
-    # Embedding Model
-    # Vertex利用時は "text-embedding-004" 等が推奨されるが、ここでは互換性のため一旦共通化
-    EMBEDDING_MODEL = "models/embedding-001"
-    
-    TEMPERATURE = 0.0
-
-    # APIキー管理 (Studio用)
-    _keys_str = os.getenv("GOOGLE_API_KEYS", "")
-    GOOGLE_API_KEYS: List[str] = [k.strip() for k in _keys_str.split(",") if k.strip()]
-
-    if not GOOGLE_API_KEYS and os.getenv("GOOGLE_API_KEY"):
-        GOOGLE_API_KEYS = [os.getenv("GOOGLE_API_KEY")]
-
-    @classmethod
-    def validate_paths(cls) -> None:
-        """必須ディレクトリの存在確認"""
-        if not cls.DATA_DIR.exists():
-            os.makedirs(cls.DATA_DIR, exist_ok=True)
-        if not cls.TEMPLATES_DIR.exists():
-            os.makedirs(cls.TEMPLATES_DIR, exist_ok=True)
-        
-    @classmethod
-    def is_vertex_enabled(cls) -> bool:
-        return cls.AI_PROVIDER == "vertex"
-
-
-# ==========================================
-# 3. キー管理クラス (KeyManager)
-# ==========================================
-class KeyManager:
-    @staticmethod
-    def get_next_key() -> str:
-        # Vertexの場合はキー不要（ADC利用）だが、Config互換性のために実装維持
-        if Config.is_vertex_enabled():
-            return "vertex-managed"
-            
-        keys = Config.GOOGLE_API_KEYS
-        if not keys:
-            env_key = os.getenv("GOOGLE_API_KEY")
-            if env_key:
-                return env_key
-            raise ValueError("❌ 有効な Google API Key が見つかりません。")
-        return random.choice(keys)
 ````
 
 ## File: src/legal.egg-info/PKG-INFO

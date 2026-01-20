@@ -2,14 +2,15 @@
 
 import pandas as pd
 import numpy as np
+import base64
 from io import BytesIO
-from typing import List, Tuple, Dict, Any
+from typing import List, Tuple, Dict, Any, Optional
 from datetime import datetime
 from docx import Document
 from docx.shared import Pt, Mm, RGBColor
 from docx.enum.text import WD_ALIGN_PARAGRAPH
 from docx.oxml.ns import qn
-from langchain_core.messages import SystemMessage
+from langchain_core.messages import SystemMessage, HumanMessage
 from langchain_core.prompts import ChatPromptTemplate, HumanMessagePromptTemplate
 from langchain_core.output_parsers import PydanticOutputParser
 from PIL import Image, ImageOps, ImageChops
@@ -23,11 +24,9 @@ class WillDraftGenerator:
     def __init__(self):
         self.llm = AIFactory.get_llm(mode="cloud", temperature=0.0)
 
-    def generate_draft(self, excel_file: BytesIO, template_file: BytesIO, registry_files: List[Any] = None) -> Tuple[BytesIO, WillDraftStructure, str]:
+    def generate_draft(self, excel_file: BytesIO, template_file: BytesIO, registry_files: List[Any] = None) -> Tuple[BytesIO, Optional[BytesIO], WillDraftStructure, str]:
         """
         遺言書生成のメイン処理
-        Args:
-            registry_files: StreamlitのUploadedFileオブジェクトのリスト
         """
         # 1. Excel解析
         excel_file.seek(0)
@@ -36,7 +35,7 @@ class WillDraftGenerator:
         else:
             df = pd.read_csv(excel_file)
 
-        # データ補完（結合セル対策）
+        # データ補完
         df = df.replace(r'^\s*$', np.nan, regex=True).ffill()
         if 'No' in df.columns:
             df = df.dropna(subset=['No'])
@@ -46,34 +45,43 @@ class WillDraftGenerator:
 
         csv_text = df.fillna("").to_csv(index=False)
 
-        # 2. 登記情報の処理 (画像化 + テキスト抽出)
+        # 2. 登記情報の処理 (AIによるフォーマット変換)
         registry_data = self._process_registry_files(registry_files)
 
-        # 3. AI推論
+        # 3. AI推論 (条文構成)
         draft_data = self._invoke_ai_reasoning(csv_text)
 
-        # 4. Word生成
+        # 4. 遺言書Word生成 (本体 + テキストデータ)
         template_file.seek(0)
         safe_template = BytesIO(template_file.read())
-        output_doc = self._create_word_document_clean(safe_template, draft_data, registry_data)
+        # ここで登記情報のテキストを渡す
+        will_doc = self._create_will_document(safe_template, draft_data, registry_data.get("text", ""))
         
-        output_stream = BytesIO()
-        output_doc.save(output_stream)
-        output_stream.seek(0)
+        will_stream = BytesIO()
+        will_doc.save(will_stream)
+        will_stream.seek(0)
+
+        # 5. 登記情報Word生成 (別冊・画像のみ)
+        registry_stream = None
+        if registry_data.get("images"):
+            reg_doc = self._create_registry_document(registry_data)
+            registry_stream = BytesIO()
+            reg_doc.save(registry_stream)
+            registry_stream.seek(0)
         
-        return output_stream, draft_data, csv_text
+        return will_stream, registry_stream, draft_data, csv_text
 
     def _process_registry_files(self, files: List[Any]) -> Dict[str, Any]:
         """
-        アップロードされた登記情報(PDF/画像)を処理する
+        登記情報(PDF/画像)を処理する
         - 画像への変換 & 余白トリミング
-        - PDFからのテキスト抽出
+        - Gemini Visionによる指定フォーマットでのテキスト化
         """
         processed = {"images": [], "text": ""}
         if not files:
             return processed
 
-        full_text = []
+        all_images_for_ai = [] # テキスト解析用に全ての画像をリスト化
         
         for f in files:
             f.seek(0)
@@ -82,45 +90,127 @@ class WillDraftGenerator:
 
             # PDFの場合
             if file_name.lower().endswith(".pdf") or f.type == "application/pdf":
-                # 1. テキスト抽出
                 try:
-                    reader = PdfReader(BytesIO(file_bytes))
-                    text = ""
-                    for page in reader.pages:
-                        text += page.extract_text()
-                    if text.strip():
-                        full_text.append(f"【ファイル名: {file_name}】\n{text}\n")
-                except Exception as e:
-                    print(f"Text extract error: {e}")
-
-                # 2. 画像変換
-                try:
-                    # dpiを上げて鮮明に
+                    # 画像変換 (200dpi)
                     pil_images = convert_from_bytes(file_bytes, dpi=200)
                     for img in pil_images:
+                        # 1. 別冊用画像 (トリミング済)
                         trimmed = self._trim_whitespace(img)
                         buf = BytesIO()
                         trimmed.save(buf, format="JPEG")
                         processed["images"].append(BytesIO(buf.getvalue()))
+                        
+                        # 2. AI解析用画像
+                        ai_buf = BytesIO()
+                        img.convert("RGB").save(ai_buf, format="JPEG")
+                        all_images_for_ai.append(BytesIO(ai_buf.getvalue()))
+
                 except Exception as e:
-                    print(f"Image convert error: {e}")
+                    print(f"PDF process error: {e}")
 
             # 画像の場合
             else:
                 try:
                     img = Image.open(BytesIO(file_bytes))
+                    
+                    # 1. 別冊用
                     trimmed = self._trim_whitespace(img)
                     buf = BytesIO()
                     trimmed.save(buf, format="JPEG")
                     processed["images"].append(BytesIO(buf.getvalue()))
+
+                    # 2. AI解析用
+                    ai_buf = BytesIO()
+                    img.convert("RGB").save(ai_buf, format="JPEG")
+                    all_images_for_ai.append(BytesIO(ai_buf.getvalue()))
+
                 except Exception as e:
                     print(f"Image load error: {e}")
 
-        processed["text"] = "\n--------------------------------------------------\n".join(full_text)
+        # --- AIによるテキスト化 (Gemini Vision) ---
+        if all_images_for_ai:
+            processed["text"] = self._analyze_registry_images_with_ai(all_images_for_ai)
+        
         return processed
 
+    def _analyze_registry_images_with_ai(self, image_buffers: List[BytesIO]) -> str:
+        """登記情報の画像をAIに読み取らせて、指定フォーマットのテキストに変換する"""
+        prompt = """
+        提供された不動産登記情報の画像を読み取り、公証人が遺言書作成に使用するためのテキストデータを作成してください。
+        
+        # 重要な判定ルール
+        1. **マンション判定**: 文中に「一棟の建物の表示」および「敷地権」という文言が含まれる場合のみ「マンション」として扱ってください。それ以外は「土地」または「建物」です。
+        2. **持分（シェア）の特定**:
+           - 持分は通常、所有者氏名の直上（または直近）に記載されています（例：「持分２分の１」）。
+           - 「４１６番１から分筆」などの沿革情報は持分ではありません。必ず「〇分の〇」という分数表記を探してください。
+           - 単独所有で持分の記載がない場合は空欄にしてください。
+        3. **氏名の正規化**: 氏名に含まれる空白（全角・半角スペース）はすべて削除して認識してください。
+
+        # 出力フォーマット
+        物件ごとに（１）、（２）...と連番を振ってください。
+
+        【土地の場合】
+        （Ｎ）　土地
+        所在　■■市■■区■■■
+        　地番　■番■
+        　地目　■■
+        　地積　■.■㎡
+        　持分　■分の■（※記載がある場合のみ）
+
+        【建物の場合】
+        （Ｎ）　建物
+        　所在　■■市■■区■■■
+        　家屋番号　■番■
+        　種類　■■
+        　構造　■■
+        　床面積　1階　■.■㎡　2階　■.■㎡（※階数ごとに記載）
+        　持分　■分の■（※記載がある場合のみ）
+
+        【マンションの場合】（※「敷地権」等の記載がある場合）
+        （Ｎ）　区分所有建物
+        （一棟の建物の表示）
+        所在　■■市■■区■■■丁目　■番地■
+        建物の名称　■■■■■■
+        （敷地権の目的である土地の表示）
+        土地の符号　1
+        所在及び地番　■■市■■区■■■丁目
+        地目　宅地
+        地積　■■■.■■㎡
+        （専有部分の建物の表示）
+        家屋番号　■■■丁目　■番■■■
+        建物の名称　■■■
+        種類　居宅
+        構造　鉄筋コンクリート造■階建
+        床面積　■階部分　■■■. ■■㎡
+        （敷地権の表示）
+        土地の符号　1
+        敷地権の種類　所有権
+        敷地権の割合　■■■■分の■■■■
+
+        # 注意点
+        - 余計な挨拶や説明は一切不要です。テキストデータのみ出力してください。
+        """
+        
+        content = [{"type": "text", "text": prompt}]
+        
+        # 画像をBase64エンコードしてメッセージに追加
+        for img_buf in image_buffers:
+            img_buf.seek(0)
+            b64_data = base64.b64encode(img_buf.read()).decode("utf-8")
+            content.append({
+                "type": "image_url",
+                "image_url": f"data:image/jpeg;base64,{b64_data}"
+            })
+            
+        msg = HumanMessage(content=content)
+        
+        try:
+            res = self.llm.invoke([msg])
+            return res.content
+        except Exception as e:
+            return f"※AI解析エラー: {e}"
+
     def _trim_whitespace(self, img: Image.Image) -> Image.Image:
-        """画像の白い余白を自動で削除する"""
         try:
             bg = Image.new(img.mode, img.size, (255, 255, 255))
             diff = ImageChops.difference(img, bg)
@@ -128,35 +218,34 @@ class WillDraftGenerator:
             bbox = diff.getbbox()
             if bbox:
                 return img.crop(bbox)
-        except Exception:
-            pass
+        except: pass
         return img
 
     def _invoke_ai_reasoning(self, input_text: str) -> WillDraftStructure:
         system_content = """
         あなたは熟練した行政書士です。提供された「遺産整理要旨」に基づき、公正証書遺言の条文案を作成してください。
 
-        # 入力データについて
-        - CSV形式のデータを入力します。結合セルは補完済みです。
+        # 入力データ
+        - CSV形式（結合セル補完済み）
 
-        # 【重要】条文作成ルール
-        1. **予備的遺言の扱い**:
-           - **Excelデータに「予備的条項」等の記載がある場合のみ**作成してください。
-           - AIが勝手に予備的遺言を創作・提案することは**禁止**します。
+        # 【最重要】条文作成ルール
+        1. **テンプレートの尊重**:
+           - **前文や末尾の定型文は作成しないでください**（テンプレートにあるものを使用するため）。
+           - あなたが作成するのは、**「第1条」以降の具体的な財産処分の条文（本文）のみ**です。
 
-        2. **孫への継承（相続 vs 遺贈）**:
-           - 受取人が「孫」であり、かつ「相続させる」という指示がある場合は、条文自体は指示通り作成しつつ、**条文の末尾に『（※要確認：孫への承継は通常「遺贈」となります。養子縁組等がないか確認してください）』という注記を必ず追記してください。**
+        2. **財産配分の記述**:
+           - CSVに記載されている財産配分（誰に何を）の内容だけを、条文形式に変換してください。
+           - 「不動産」「預貯金」等の費目ごとに条文を分けてください。
 
-        3. **遺言執行者の指定**:
-           - 指定がある場合は、「行政書士法人チェスター（所在：東京都中央区八重洲一丁目7番20号）」を指定してください。
-           - **代表者名は記載しないでください**（法人名と所在地のみ）。
+        3. **予備的遺言**:
+           - Excelデータに「予備的条項」等の記載がある場合は、その内容を正確に条文化してください。
+           - 指示がない場合の勝手な創作は禁止です。
 
-        4. **祭祀主宰・付言事項**:
-           - Excelデータに具体的な内容（特定の人物名やメッセージ）が記載されている場合のみ作成してください。
-           - 空欄の場合や、単に「チェスター」とだけ書かれている場合は、条文を作成しないでください（出力しないでください）。
+        4. **孫への継承**:
+           - 受取人が「孫」で「相続させる」とある場合、条文末尾に『（※要確認：孫への承継は通常「遺贈」となります。養子縁組等がないか確認してください）』と注記してください。
 
-        5. **不動産の記載**:
-           - 所在、地番、家屋番号などは要旨の通り正確に記載すること。
+        5. **遺言執行者・祭祀主宰**:
+           - Excelに指定がある場合のみ条文を作成してください。
 
         出力は指定されたJSONスキーマに厳密に従ってください。
         """
@@ -166,12 +255,11 @@ class WillDraftGenerator:
         prompt = ChatPromptTemplate.from_messages([
             SystemMessage(content=system_content),
             HumanMessagePromptTemplate.from_template(
-                "以下の要旨データに基づき、遺言書ドラフトを作成してください。\n\n【要旨データ】\n{input_text}\n\n【出力形式】\n{format_instructions}"
+                "以下の要旨データに基づき、遺言書ドラフトの【本文条項のみ】を作成してください。\n\n【要旨データ】\n{input_text}\n\n【出力形式】\n{format_instructions}"
             )
         ])
         
         chain = prompt | self.llm | parser
-        
         return chain.invoke({
             "input_text": input_text,
             "format_instructions": parser.get_format_instructions()
@@ -188,25 +276,23 @@ class WillDraftGenerator:
         except Exception:
             pass
 
-    def _create_word_document_clean(self, template_file: BytesIO, data: WillDraftStructure, registry_data: Dict[str, Any]) -> Document:
+    def _create_word_document(self, template_file: BytesIO, data: WillDraftStructure, registry_text: str = "") -> Document:
+        """遺言書本体の作成（テンプレート追記モード）"""
         try:
             doc = Document(template_file)
-            if doc._body:
-                doc._body.clear_content()
+            # ★修正: clear_content() を削除し、テンプレートを維持する
+            # doc._body.clear_content() 
         except Exception:
-            doc = Document()
+            doc = Document() # テンプレート読み込み失敗時は白紙
 
-        # タイトル
-        p_main = doc.add_paragraph()
-        p_main.alignment = WD_ALIGN_PARAGRAPH.CENTER
-        self._set_jp_font(p_main.add_run("遺言公正証書（案）"), size_pt=18, is_bold=True)
-        doc.add_paragraph("")
+        # テンプレートの末尾に追記していく
+        doc.add_paragraph("\n") # 既存文章との間に余白を入れる
 
-        # 作成日時
+        # 作成日時スタンプ（確認用：本番では削除しても良い）
         p_date = doc.add_paragraph()
         p_date.alignment = WD_ALIGN_PARAGRAPH.RIGHT
-        timestamp = datetime.now().strftime('%Y年%m月%d日 作成')
-        self._set_jp_font(p_date.add_run(timestamp), size_pt=10.5)
+        timestamp = datetime.now().strftime('%Y年%m月%d日 ドラフト作成')
+        self._set_jp_font(p_date.add_run(timestamp), size_pt=9)
         doc.add_paragraph("") 
 
         if not data.articles:
@@ -225,16 +311,13 @@ class WillDraftGenerator:
             
             content_text = article.content if article.content else ""
             
-            # 注記（孫への確認等）が含まれる場合、赤字にする処理
             if "※要確認" in content_text:
                 parts = content_text.split("（※要確認")
-                # 通常部分
                 self._set_jp_font(p_content.add_run(parts[0]), size_pt=12)
-                # 注記部分
                 if len(parts) > 1:
                     run_alert = p_content.add_run(f"（※要確認{parts[1]}")
                     self._set_jp_font(run_alert, size_pt=12, is_bold=True)
-                    run_alert.font.color.rgb = RGBColor(255, 0, 0) # 赤色
+                    run_alert.font.color.rgb = RGBColor(255, 0, 0)
             else:
                 self._set_jp_font(p_content.add_run(content_text), size_pt=12)
             
@@ -248,34 +331,42 @@ class WillDraftGenerator:
             p_body.paragraph_format.first_line_indent = Mm(5)
             self._set_jp_font(p_body.add_run(data.supplementary_provisions), size_pt=12)
 
-        # --- 【別紙】登記情報 (画像) ---
-        images = registry_data.get("images", [])
-        if images:
-            doc.add_page_break()
-            p_h = doc.add_paragraph()
-            p_h.alignment = WD_ALIGN_PARAGRAPH.CENTER
-            self._set_jp_font(p_h.add_run("【別紙】不動産登記情報（画像）"), size_pt=14, is_bold=True)
-            doc.add_paragraph("") 
-
-            for img_data in images:
-                try:
-                    img_data.seek(0)
-                    doc.add_picture(img_data, width=Mm(170))
-                    # 余白削除により詰まっているので、最低限の改行のみ
-                    doc.add_paragraph("") 
-                except Exception as e:
-                    doc.add_paragraph(f"※画像エラー: {e}")
-
-        # --- 【参考】登記情報 (テキスト) ---
-        text_data = registry_data.get("text", "")
-        if text_data:
+        # ★修正: 登記情報のテキストデータを本文末尾に追加
+        if registry_text:
             doc.add_page_break()
             p_ht = doc.add_paragraph()
             p_ht.alignment = WD_ALIGN_PARAGRAPH.CENTER
             self._set_jp_font(p_ht.add_run("【参考】不動産登記情報（テキストデータ）"), size_pt=14, is_bold=True)
             doc.add_paragraph("※公証人作成用の参考テキストです。\n")
             
-            p_txt = doc.add_paragraph(text_data)
-            self._set_jp_font(p_txt.runs[0], size_pt=10.5)
+            p_txt = doc.add_paragraph(registry_text)
+            # テキストデータは少し小さめのフォントで出力
+            if p_txt.runs:
+                self._set_jp_font(p_txt.runs[0], size_pt=10.5)
+            else:
+                self._set_jp_font(p_txt.add_run(registry_text), size_pt=10.5)
 
+        return doc
+
+    def _create_registry_document(self, registry_data: Dict[str, Any]) -> Document:
+        """登記情報（別冊・画像のみ）の作成"""
+        doc = Document()
+        
+        # 表紙
+        p_main = doc.add_paragraph()
+        p_main.alignment = WD_ALIGN_PARAGRAPH.CENTER
+        self._set_jp_font(p_main.add_run("【別冊】不動産登記情報"), size_pt=20, is_bold=True)
+        doc.add_paragraph("\n")
+        
+        # 画像貼り付け
+        images = registry_data.get("images", [])
+        if images:
+            for img_data in images:
+                try:
+                    img_data.seek(0)
+                    doc.add_picture(img_data, width=Mm(170))
+                    doc.add_paragraph("") 
+                except Exception as e:
+                    doc.add_paragraph(f"※画像エラー: {e}")
+        
         return doc

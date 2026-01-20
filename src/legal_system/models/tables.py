@@ -1,4 +1,4 @@
-# ファイル名: src/legal_system/models/tables.py
+# src/legal_system/models/tables.py
 
 from datetime import datetime
 
@@ -260,7 +260,7 @@ class Deceased(Base):
     name_first = Column(String)
     name_last_kana = Column(String)
     name_first_kana = Column(String)
-    hometown = Column(String)
+    hometown = Column(String, comment="本籍地") # ★追加
     date_of_birth = Column(Date)
     date_of_death = Column(Date)
     relationship_type = Column(String)
@@ -567,6 +567,9 @@ class RealEstateAsset(Base):
     house_number = Column(String, comment="家屋番号")
     structure = Column(String, comment="構造")
     floor_area = Column(String, comment="床面積")
+
+    # ★追加: 固定資産税評価額
+    assessed_value = Column(Float, comment="固定資産税評価額", default=0.0)
 
     ownership_share = Column(String, nullable=True, comment="被相続人の持分")
 

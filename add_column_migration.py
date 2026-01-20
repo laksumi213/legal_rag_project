@@ -1,29 +1,28 @@
-# add_column_migration.py (新規作成: 1回だけ実行)
+# migrate_add_assessed_value.py
 import os
 import sys
-
 from sqlalchemy import text
 
-# パスを通す
+# パス解決
 sys.path.append(os.path.join(os.getcwd(), "src"))
 
 from legal_system.core.database_manager import DatabaseManager
 
-
-def add_referral_phone_column():
-    print("🔄 データベース構造の変更(V2)を開始します...")
+def add_assessed_value_column():
+    print("🔄 データベース構造の変更を開始します...")
+    print("👉 'real_estate_assets' テーブルに 'assessed_value' カラムを追加します。")
 
     db = DatabaseManager()
     engine = db.engine
 
-    # SQLコマンド: referral_sec_phone 列を追加
-    alter_sql = text("ALTER TABLE cases ADD COLUMN referral_sec_phone VARCHAR;")
+    # SQLコマンド
+    alter_sql = text("ALTER TABLE real_estate_assets ADD COLUMN assessed_value FLOAT DEFAULT 0.0;")
 
     try:
         with engine.connect() as conn:
             conn.execute(alter_sql)
             conn.commit()
-        print("✅ 成功: 'cases' テーブルに 'referral_sec_phone' カラムを追加しました。")
+        print("✅ 成功: カラムを追加しました。")
 
     except Exception as e:
         error_msg = str(e)
@@ -32,6 +31,5 @@ def add_referral_phone_column():
         else:
             print(f"❌ エラーが発生しました: {e}")
 
-
 if __name__ == "__main__":
-    add_referral_phone_column()
+    add_assessed_value_column()

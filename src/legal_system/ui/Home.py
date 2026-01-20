@@ -10,6 +10,7 @@ import time
 import unicodedata
 from datetime import date, datetime
 from io import BytesIO
+from typing import List, Union
 
 import pandas as pd
 import streamlit as st
@@ -62,44 +63,120 @@ if "warmup_thread_started" not in st.session_state:
     t.start()
     st.session_state["warmup_thread_started"] = True
 
-# ★改良版: 最強オートフォーカス (IDに依存せず、最初の入力欄を狙う)
-def enable_autofocus_on_search():
-    """
-    ページロード時に、画面上にある「最初のテキスト入力欄」を見つけ次第、
-    強制的にフォーカスを当てるJavaScript。
-    """
-    js_code = """
+# ★修正版: キーボードショートカット (再登録方式で安定化)
+def enable_keyboard_shortcuts():
+    SEARCH_PLACEHOLDER = "案件番号、氏名、電話番号で検索..."
+    BTN_OPEN_TEXT = "📂 開く"
+    BTN_KINTONE_TEXT = "🔗 Kintoneで開く"
+
+    js_code = f"""
     <script>
-        (function() {
-            let attempts = 0;
-            const maxAttempts = 60; // 6秒間粘る
+        (function() {{
+            const SEARCH_PH = "{SEARCH_PLACEHOLDER}";
+            const TEXT_OPEN = "{BTN_OPEN_TEXT}";
+            const TEXT_KINTONE = "{BTN_KINTONE_TEXT}";
 
-            function forceFocus() {
-                // 親フレーム(Streamlitアプリ本体)を取得
+            function findInputByPlaceholder(placeholder) {{
                 const doc = window.parent.document;
-                
-                // すべてのテキスト入力を取得 (st_keyupも含む)
-                const inputs = doc.querySelectorAll('input[type="text"]');
-                
-                for (let i = 0; i < inputs.length; i++) {
-                    const el = inputs[i];
-                    // 見えている、かつ無効化されていない最初の入力欄を狙う
-                    // offsetParent !== null は要素が表示されているかどうかの判定に使えます
-                    if (el.offsetParent !== null && !el.disabled) {
-                        el.focus();
-                        return true; 
-                    }
-                }
-                return false;
-            }
+                const inputs = doc.querySelectorAll('input');
+                for (let input of inputs) {{
+                    if (input.placeholder === placeholder) return input;
+                }}
+                const iframes = doc.querySelectorAll('iframe');
+                for (let frame of iframes) {{
+                    try {{
+                        const fDoc = frame.contentDocument || frame.contentWindow.document;
+                        const fInputs = fDoc.querySelectorAll('input');
+                        for (let fIn of fInputs) {{
+                            if (fIn.placeholder === placeholder) return fIn;
+                        }}
+                    }} catch(e) {{}}
+                }}
+                return null;
+            }}
 
-            const interval = setInterval(() => {
-                if (forceFocus() || attempts > maxAttempts) {
-                    clearInterval(interval);
-                }
+            function triggerButton(textLabel) {{
+                const doc = window.parent.document;
+                const buttons = doc.querySelectorAll('button');
+                for (let btn of buttons) {{
+                    if (btn.innerText.includes(textLabel)) {{
+                        btn.click();
+                        btn.style.border = "2px solid #d33682";
+                        setTimeout(() => btn.style.border = "", 200);
+                        return true;
+                    }}
+                }}
+                const links = doc.querySelectorAll('a');
+                for (let a of links) {{
+                    if (a.innerText.includes(textLabel)) {{
+                        a.click();
+                        return true;
+                    }}
+                }}
+                return false;
+            }}
+
+            // --- イベントリスナーの登録（重複防止・再登録方式） ---
+            const doc = window.parent.document;
+            
+            // 既に登録されているハンドラがあれば削除（リロード対策）
+            if (window.parent._myKeyboardHandler) {{
+                doc.removeEventListener('keydown', window.parent._myKeyboardHandler);
+            }}
+
+            // ハンドラ関数を定義
+            window.parent._myKeyboardHandler = function(e) {{
+                // Altキー必須
+                if (!e.altKey) return;
+
+                // [Alt + S] 検索
+                if (e.key.toLowerCase() === 's') {{
+                    e.preventDefault();
+                    const input = findInputByPlaceholder(SEARCH_PH);
+                    if (input) {{
+                        input.focus();
+                        input.style.boxShadow = "0 0 5px #d33682";
+                        setTimeout(() => input.style.boxShadow = "", 500);
+                    }}
+                }}
+                
+                // [Alt + O] 開く
+                if (e.key.toLowerCase() === 'o') {{
+                    e.preventDefault();
+                    triggerButton(TEXT_OPEN);
+                }}
+
+                // [Alt + K] Kintone
+                if (e.key.toLowerCase() === 'k') {{
+                    e.preventDefault();
+                    triggerButton(TEXT_KINTONE);
+                }}
+            }};
+
+            // 新しく登録
+            doc.addEventListener('keydown', window.parent._myKeyboardHandler);
+
+            // --- 初回オートフォーカス ---
+            let attempts = 0;
+            const maxAttempts = 100; 
+            const autoFocusTimer = setInterval(() => {{
+                const input = findInputByPlaceholder(SEARCH_PH);
+                const active = window.parent.document.activeElement;
+                const isInputActive = active && (active.tagName === 'INPUT' || active.tagName === 'TEXTAREA');
+                if (input) {{
+                    if (!isInputActive) {{
+                        input.focus();
+                        input.style.boxShadow = "0 0 5px #d33682";
+                        setTimeout(() => input.style.boxShadow = "", 1000);
+                    }}
+                    clearInterval(autoFocusTimer);
+                }}
                 attempts++;
-            }, 100); // 0.1秒ごとにチェック
-        })();
+                if (attempts > maxAttempts) {{
+                    clearInterval(autoFocusTimer);
+                }}
+            }}, 100);
+        }})();
     </script>
     """
     components.html(js_code, height=0)
@@ -137,7 +214,7 @@ except ImportError:
     download_data = None
 
 # ==========================================
-# 5. ヘルパー関数
+# 5. ヘルパー関数 (ビューワー & AI解析)
 # ==========================================
 @st.cache_resource(ttl=60)
 def check_update_status():
@@ -155,6 +232,92 @@ def check_update_status():
     except Exception:
         return 0, "確認できませんでした"
 
+@st.cache_data(show_spinner=False)
+def convert_pdf_to_images_cached(file_bytes: bytes):
+    """PDFを画像リストに変換しキャッシュする"""
+    try:
+        return convert_from_bytes(file_bytes, dpi=200) # 解像度200dpiで変換
+    except Exception as e:
+        return None
+
+def render_enhanced_document_viewer(file_bytes: bytes, file_type: str, key_prefix: str, base_width: int = 700):
+    """
+    汎用ドキュメントビューワー (拡大縮小・ページ送り機能付き)
+    """
+    with st.container(border=True):
+        st.markdown("###### 📄 書類ビューワー")
+        
+        # 1. 画像化処理
+        images = []
+        if "pdf" in file_type:
+            images = convert_pdf_to_images_cached(file_bytes)
+            if not images:
+                st.error("PDFの変換に失敗しました。")
+                return
+        else:
+            try:
+                img = Image.open(BytesIO(file_bytes))
+                images = [img]
+            except:
+                st.error("画像の読み込みに失敗しました。")
+                return
+
+        # 2. コントロールステートの初期化
+        page_key = f"{key_prefix}_page"
+        zoom_key = f"{key_prefix}_zoom"
+        
+        if page_key not in st.session_state: st.session_state[page_key] = 0
+        if zoom_key not in st.session_state: st.session_state[zoom_key] = 100
+
+        total_pages = len(images)
+        current_page = st.session_state[page_key]
+
+        # 3. ツールバー (ページ送り & ズーム)
+        col_nav, col_zoom = st.columns([1, 1])
+        
+        with col_nav:
+            # ページ送りボタン
+            c_prev, c_info, c_next = st.columns([1, 2, 1])
+            if c_prev.button("◀", key=f"{key_prefix}_prev", disabled=(current_page <= 0)):
+                st.session_state[page_key] -= 1
+                st.rerun()
+            
+            c_info.markdown(f"<div style='text-align: center; line-height: 2.3;'>{current_page + 1} / {total_pages}</div>", unsafe_allow_html=True)
+            
+            if c_next.button("▶", key=f"{key_prefix}_next", disabled=(current_page >= total_pages - 1)):
+                st.session_state[page_key] += 1
+                st.rerun()
+
+        with col_zoom:
+            # ズームスライダー (50% ~ 200%)
+            zoom = st.slider("拡大率 (%)", 50, 250, st.session_state[zoom_key], 10, key=f"{key_prefix}_slider")
+            st.session_state[zoom_key] = zoom
+
+        # 4. 画像表示 (スクロールコンテナ内)
+        target_image = images[current_page]
+        display_width = int(base_width * (zoom / 100))
+        
+        st.markdown(
+            f"""
+            <div style="
+                overflow: auto; 
+                height: 600px; 
+                border: 1px solid #ddd; 
+                border-radius: 5px; 
+                padding: 10px;
+                background-color: #f9f9f9;
+                text-align: center;">
+                {f'<img src="data:image/jpeg;base64,{base64.b64encode(image_to_bytes(target_image)).decode()}" width="{display_width}px" />'}
+            </div>
+            """,
+            unsafe_allow_html=True
+        )
+
+def image_to_bytes(img: Image.Image, format: str = "JPEG") -> bytes:
+    buf = BytesIO()
+    img.save(buf, format=format)
+    return buf.getvalue()
+
 def search_cases_enhanced(session, keyword: str):
     base_query = session.query(Case).options(
         joinedload(Case.deceased_ref).joinedload(Deceased.heirs),
@@ -162,7 +325,6 @@ def search_cases_enhanced(session, keyword: str):
         joinedload(Case.operator)
     )
     if not keyword:
-        # デフォルトでは最近の更新案件を表示
         return base_query.order_by(Case.created_at.desc()).limit(10).all()
 
     clean_key = f"%{keyword.strip()}%"
@@ -191,43 +353,88 @@ def normalize_text(text: str) -> str:
     if not text: return ""
     return unicodedata.normalize("NFKC", text).strip()
 
-def analyze_nayose_with_ai(image_bytes: bytes) -> dict:
+# ★修正: 名寄帳専用の強化プロンプト
+def analyze_nayose_with_ai(image_inputs: Union[bytes, List[bytes]]) -> dict:
     try:
-        img_str = base64.b64encode(image_bytes).decode("utf-8")
         llm = AIFactory.get_llm(mode="cloud", temperature=0.0)
-        prompt_text = """
-        あなたは不動産登記の専門家です。
-        名寄帳画像を読み取り、以下JSONを抽出してください。
         
-        【重要: 所在地の補完】
-        - 物件一覧の「所在」に都道府県や市区町村が省略されている場合、書類のヘッダーや発行元自治体名（例: 「横浜市」「千葉県」など）を探し、**必ず**それらを補完して正式な住所にしてください。
-        - 例: 「江戸川台東4丁目...」 -> 「千葉県流山市江戸川台東4丁目...」
+        prompt_text = """
+        あなたは日本の不動産登記・固定資産税の専門家（司法書士補助者）です。
+        提供された画像は自治体が発行した「名寄帳（固定資産税課税明細書）」の複数ページにわたる一連の書類です。
+        以下の高度な抽出・整形ルールに従い、全資産情報を網羅したJSONデータを作成してください。
 
-        【重要: 評価額の抽出】
-        - 「価格」「評価額」「固定資産税評価額」などの欄から金額を抽出してください。
-        - 千円単位や円単位の違いに注意し、数値（円単位）に直してください。
+        ## 前提条件と処理ルール
+        1. **レイアウトの多様性**: この文書は自治体によってフォーマットが異なります。表のヘッダー（項目名）を探し、列と行の関係を視覚的に解析してください。
+        2. **用語のゆらぎ吸収**: 以下の項目名は自治体によって表記が異なる場合があります。文脈から判断してマッピングしてください。
+           - 所在地 (例: 所在、土地の所在、家屋の所在、所 在 地、所　在　地)
+           - 地番/家屋番号 (例: 番地、地番、家屋番号)
+           - 地目/種類 (例: 現況地目、登記地目、種類、構造)
+           - 地積/床面積 (例: 登記地積、現況地積、課税地積、現況地目、登記地目、床面積) ※隣の列に「計」の列があればその値の方のみを読み取る
+           - 評価額 (例: 価格、価 格、価　格、決定価格、評価額)
+           - 課税標準額 (例: 課標、本則課税標準額)
+        3. **複数行の処理**: 1つの物件情報が2行以上にまたがって記載されている場合があります。区切り線や行間隔に注意して1つのオブジェクトに結合してください。
+        4. **所有者情報**: 文書のヘッダーまたは各行にある「所有者（納税義務者）」の氏名と住所も抽出してください。
+        5. **ノイズ除去**: ページ番号、発行日、公印などの付帯情報は無視してください。不明瞭な文字は無理に推測せず `null` としてください。
+        6. **空白スペースの除去**: 所在地や地目/種類など前後の関係を見て空白スペースを除いて出力してください。
 
-        【JSON構造】
+        【重要：読み取りとデータ整形のルール】
+        1. **行の認識と物件の特定（最重要）**:
+           - 登録する不動産の数は所在地数が基本となります。2行にまたがって記載があるものは、基本的には所在地の記載がある行のものが正しい値になります。
+             ただし、建物の地積/床面積は2行分を足した値の合計値（所在地の記載がある行の値とその上に記載がある値で例として45.54と60.45で105.99）となり計の列があればそこを読み取り、地目/種類は木造などではなく居宅などになります。
+             また、建物の評価額は土地とは違う列にあるため注意すること。
+           - 物件番号の列が一番左にあれば、その物件番号の記載の行のものが出力する不動産数となります。
+
+        2. **誤読・OCRノイズの修正**:
+           - 文字間の不自然なスペースは必ず除去してください。（例：「公　園」→「公園」、「宅　地」→「宅地」、「木　造」→「木造」、「居　宅」→「居宅」）
+           - 地目で「公」一文字だけはなく「公園」や「公衆用道路」の読み取り漏れです。前後の文脈から補正してください。
+
+        3. **必要のない値**:
+           - 課税標準額の列にある固定資産税や都市計画税は必要ありませんので値として無視してください。
+
+        4. **ページ跨ぎの処理**:
+           - 2ページ目以降の先頭行の「所在」が空欄に見える場合でも、1ページ目の最後の住所を安易にコピーしないでください。
+           - 2ページ目のヘッダーや、その行自体に記載されている所在（「同上」や「〜番地」など）を正確に読み取ってください。
+           - ページが変わると、全く異なる所在（例：別の町名）の物件が始まっている可能性があります。
+
+        5. **地番/家屋番号**:
+           - 〇-〇の形（例：416-9など）になっていることがほとんどで、何丁目などの漢字はありません。
+        
+        6. **出力項目**:
+           - 所在は、都道府県・市区町村が省略されている場合、書類全体のヘッダー等から補完して「完全な住所」にしてください。
+
+        【都道府県ごとのルール】 
+        1. 千葉県流山市東深井山ノ越〇〇〇は「千葉県流山市東深井」として読み取り、〇〇は地番として読み取る
+        
+
+        【出力JSONフォーマット】
         {
             "owner_name": "所有者氏名",
             "assets": [
                 {
-                    "type": "土地/家屋",
-                    "location": "所在(都道府県から記載)",
-                    "number": "番地/家屋番号",
-                    "category_structure": "地目/構造",
-                    "area": "地積/床面積(数値)",
-                    "assessed_value": "評価額(数値)"
+                    "type": "土地" または "家屋",
+                    "location": "所在（都道府県から）",
+                    "number": "地番 または 家屋番号",
+                    "category_structure": "地目 または 家屋構造",
+                    "area": "地積 または 床面積(合計値)",
+                    "assessed_value": "評価額(円単位の数値)"
                 }
             ]
         }
         """
-        message = HumanMessage(
-            content=[
-                {"type": "text", "text": prompt_text},
-                {"type": "image_url", "image_url": f"data:image/jpeg;base64,{img_str}"},
-            ]
-        )
+        
+        if isinstance(image_inputs, bytes):
+            image_inputs = [image_inputs]
+            
+        content_list = [{"type": "text", "text": prompt_text}]
+        
+        for img_bytes in image_inputs:
+            img_str = base64.b64encode(img_bytes).decode("utf-8")
+            content_list.append({
+                "type": "image_url",
+                "image_url": f"data:image/jpeg;base64,{img_str}"
+            })
+
+        message = HumanMessage(content=content_list)
         response = llm.invoke([message])
         content = response.content.replace("```json", "").replace("```", "").strip()
         start = content.find("{")
@@ -258,7 +465,6 @@ def get_probable_prefectures(session, case_id: int) -> list[str]:
         if m: prefs.add(m.group(1))
     return list(prefs)
 
-# コールバック関数 (SessionState更新用)
 def update_touki_address_callback(new_address: str):
     st.session_state["touki_target_address"] = new_address
 
@@ -344,11 +550,10 @@ def main():
             time.sleep(1); st.rerun()
 
     # ------------------------------------------
-    # メインエリア上部: リアルタイム案件検索
+    # メインエリア上部
     # ------------------------------------------
-    
-    # ★ オートフォーカスJS注入 (汎用版)
-    enable_autofocus_on_search()
+    enable_keyboard_shortcuts()
+    st.caption("⌨️ ショートカット: [Alt+S] 検索 | [Alt+O] フォルダを開く | [Alt+K] Kintone連携")
 
     search_query = st_keyup(
         "🔍 案件を検索 (電話番号・氏名・案件番号など)", 
@@ -360,19 +565,15 @@ def main():
     filtered_cases = search_cases_enhanced(session, search_query)
     target_case_id = st.session_state.get("selected_case_id")
 
-    # ★ 検索結果の表示ロジック (UI改善版)
     if search_query:
-        # 1件ヒット時は自動遷移
         if len(filtered_cases) == 1:
             auto_target = filtered_cases[0].case_id
             if target_case_id != auto_target:
                 st.session_state["selected_case_id"] = auto_target
                 st.rerun()
         
-        # リスト表示 (全幅ボタンでコンパクト＆左揃え風に)
         if filtered_cases:
             st.caption(f"検索結果: {len(filtered_cases)}件")
-            # CSS for left alignment
             st.markdown(
                 """
                 <style>
@@ -386,14 +587,9 @@ def main():
                 unsafe_allow_html=True,
             )
             for c in filtered_cases:
-                # 詳細情報のテキスト生成 (1行にまとめる)
                 d_name = f"{c.deceased_ref.name_last} {c.deceased_ref.name_first}" if c.deceased_ref else "未登録"
                 label_text = f"【{c.case_number}】 {c.client_name} 様 (被相続人: {d_name})"
-                
-                # 選択中の案件はprimary色で強調
                 btn_type = "primary" if target_case_id == c.case_id else "secondary"
-                
-                # ボタンクリックで選択 (枠全体がボタンになるため押しやすい)
                 if st.button(label_text, key=f"sel_{c.case_id}", use_container_width=True, type=btn_type):
                     st.session_state["selected_case_id"] = c.case_id
                     st.rerun()
@@ -401,18 +597,16 @@ def main():
         else:
             st.warning("該当する案件は見つかりませんでした。")
     
-    # 未選択時
     if not target_case_id and filtered_cases and not search_query:
         target_case_id = filtered_cases[0].case_id
         st.session_state["selected_case_id"] = target_case_id
 
-    # ターゲットが決まっていない場合
     if not target_case_id:
         st.info("👈 上部の検索バーから案件を検索するか、左のメニューを操作してください。")
         session.close()
         return
 
-    # === 以下、詳細画面の表示 ===
+    # === 詳細画面 ===
     current_case = session.query(Case).options(
         joinedload(Case.deceased_ref).joinedload(Deceased.heirs)
     ).filter_by(case_id=target_case_id).first()
@@ -423,44 +617,44 @@ def main():
         return
 
     st.title(f"{current_case.case_number}: {current_case.client_name} 様")
+
+    with st.container(border=True):
+        st.caption("🚀 クイックアクセス")
+        qc1, qc2 = st.columns([1, 2], gap="large")
+        with qc1:
+            KINTONE_DOMAIN = "chester-tax.cybozu.com"
+            APP_ID = "242"
+            rec_id = current_case.kintone_record_id
+            if rec_id:
+                kintone_url = f"https://{KINTONE_DOMAIN}/k/{APP_ID}/show#record={rec_id}"
+                st.link_button("🔗 Kintoneで開く", kintone_url, type="primary", use_container_width=True)
+            else:
+                st.button("🔗 Kintone連携なし", disabled=True, use_container_width=True)
+        with qc2:
+            curr_path = current_case.folder_path or ""
+            c_path, c_act = st.columns([3, 2])
+            new_path = c_path.text_input("フォルダパス", value=curr_path, label_visibility="collapsed", placeholder="フォルダパスを入力")
+            c_open, c_search = c_act.columns(2)
+            if c_open.button("📂 開く", use_container_width=True):
+                open_local_folder(new_path)
+                if new_path != curr_path: update_case_folder_path(target_case_id, new_path)
+            if c_search.button("🔍 自動検索", use_container_width=True):
+                q = current_case.case_number if current_case.case_number.startswith("G") else current_case.client_name.replace(" ", "")
+                with st.spinner("検索中..."):
+                    found = find_case_folder(q)
+                    if found:
+                        update_case_folder_path(target_case_id, found)
+                        st.success("発見!"); time.sleep(0.5); st.rerun()
+                    else: st.warning("なし")
+            if new_path != curr_path: update_case_folder_path(target_case_id, new_path)
+
+    st.write("") 
     
     # ==========================================
     # A. 案件概要・基本情報
     # ==========================================
     if menu == "🏠 案件概要・基本情報":
         st.subheader("基本情報・操作")
-
-        with st.container(border=True):
-            st.caption("🚀 クイックアクセス")
-            qc1, qc2 = st.columns([1, 2], gap="large")
-            with qc1:
-                KINTONE_DOMAIN = "chester-tax.cybozu.com"
-                APP_ID = "242"
-                rec_id = current_case.kintone_record_id
-                if rec_id:
-                    kintone_url = f"https://{KINTONE_DOMAIN}/k/{APP_ID}/show#record={rec_id}"
-                    st.link_button("🔗 Kintoneで開く", kintone_url, type="primary", use_container_width=True)
-                else:
-                    st.button("🔗 Kintone連携なし", disabled=True, use_container_width=True)
-            with qc2:
-                curr_path = current_case.folder_path or ""
-                c_path, c_act = st.columns([3, 2])
-                new_path = c_path.text_input("フォルダパス", value=curr_path, label_visibility="collapsed", placeholder="フォルダパスを入力")
-                c_open, c_search = c_act.columns(2)
-                if c_open.button("📂 開く", use_container_width=True):
-                    open_local_folder(new_path)
-                    if new_path != curr_path: update_case_folder_path(target_case_id, new_path)
-                if c_search.button("🔍 自動検索", use_container_width=True):
-                    q = current_case.case_number if current_case.case_number.startswith("G") else current_case.client_name.replace(" ", "")
-                    with st.spinner("検索中..."):
-                        found = find_case_folder(q)
-                        if found:
-                            update_case_folder_path(target_case_id, found)
-                            st.success("発見!"); time.sleep(0.5); st.rerun()
-                        else: st.warning("なし")
-                if new_path != curr_path: update_case_folder_path(target_case_id, new_path)
-
-        st.write("") 
 
         contractor = None
         if current_case.deceased_ref and current_case.deceased_ref.heirs:
@@ -504,7 +698,6 @@ def main():
                 except Exception as e: st.error(f"更新エラー: {e}")
 
         st.divider()
-        # --- 担当者・連携・削除 ---
         with st.container(border=True):
             st.markdown("##### 👥 担当者情報")
             users = session.query(User).all()
@@ -567,11 +760,37 @@ def main():
         d = current_case.deceased_ref
         with st.expander(f"👤 家族情報編集 (被相続人: {d.name_last if d else ''})"):
             if d:
+                d_addr = get_address_info("deceased", d.id)
                 with st.form("quick_fam_edit"):
-                    new_dl = st.text_input("被相続人 姓", value=d.name_last)
-                    new_df = st.text_input("被相続人 名", value=d.name_first)
+                    st.caption("基本情報")
+                    c1, c2 = st.columns(2)
+                    new_dl = c1.text_input("被相続人 姓", value=d.name_last)
+                    new_df = c2.text_input("被相続人 名", value=d.name_first)
+                    c3, c4 = st.columns(2)
+                    new_dl_k = c3.text_input("フリガナ (姓)", value=d.name_last_kana or "")
+                    new_df_k = c4.text_input("フリガナ (名)", value=d.name_first_kana or "")
+                    st.caption("日付情報")
+                    c5, c6 = st.columns(2)
+                    new_dob = c5.date_input("生年月日", value=d.date_of_birth if d.date_of_birth else None)
+                    if new_dob: c5.caption(f"和暦: {convert_seireki_to_wareki(new_dob)}")
+                    new_dod = c6.date_input("死亡日", value=d.date_of_birth if d.date_of_death else None)
+                    if new_dod: c6.caption(f"和暦: {convert_seireki_to_wareki(new_dod)}")
+                    st.caption("住所・本籍")
+                    new_honseki = st.text_input("本籍地", value=d.hometown or "")
+                    z, p = st.columns([1, 2])
+                    new_zip = z.text_input("郵便番号", value=d_addr.get("zip_code", ""))
+                    new_pref = p.text_input("都道府県", value=d_addr.get("prefecture", ""))
+                    new_city = st.text_input("市区町村・番地", value=f"{d_addr.get('city_ward_town') or ''}{d_addr.get('street_address') or ''}")
+                    new_bldg = st.text_input("建物名", value=d_addr.get("building_name", ""))
                     if st.form_submit_button("保存"):
-                        update_deceased(d.id, name_last=new_dl, name_first=new_df); st.rerun()
+                        update_deceased(
+                            d.id, name_last=new_dl, name_first=new_df,
+                            kana_last=new_dl_k, kana_first=new_df_k,
+                            dob=str(new_dob) if new_dob else None, dod=str(new_dod) if new_dod else None,
+                            hometown=new_honseki, last_zip_code=new_zip, last_pref=new_pref,
+                            last_city=new_city, last_street="", last_building=new_bldg
+                        )
+                        st.toast("更新しました", icon="✅"); time.sleep(0.5); st.rerun()
             else: st.warning("被相続人データがありません")
 
         st.markdown("#### 相続人・関係者リスト")
@@ -646,94 +865,141 @@ def main():
         st.info("👉 新規登録はサイドバーの「02_預貯金口座入力フォーム」をご利用ください")
 
     # ==========================================
-    # C. 不動産登録
+    # C. 不動産登録 (★修正: 縦積みレイアウト)
     # ==========================================
     elif menu == "🏘️ 不動産 登録":
         st.subheader("🏘️ 不動産・名寄帳読取")
-        with st.expander("📄 名寄帳(PDF/画像)から自動登録する", expanded=False):
-            uploaded_nayose = st.file_uploader("名寄帳をアップロード", type=["pdf", "png", "jpg"])
-            if "nayose_result" not in st.session_state: st.session_state["nayose_result"] = None
-            if uploaded_nayose:
-                if st.button("AI解析実行", type="primary"):
-                    with st.spinner("解析中..."):
-                        file_bytes = uploaded_nayose.read()
-                        target_bytes = file_bytes
-                        if uploaded_nayose.type == "application/pdf":
-                            try:
-                                images = convert_from_bytes(file_bytes, dpi=200, first_page=1, last_page=1)
-                                buf = BytesIO(); images[0].convert("RGB").save(buf, format="JPEG"); target_bytes = buf.getvalue()
-                            except: pass
-                        result = analyze_nayose_with_ai(target_bytes)
+        
+        # 1. ファイルアップロード (メインエリア上部)
+        uploaded_nayose = st.file_uploader("名寄帳(PDF/画像)をアップロード", type=["pdf", "png", "jpg"], key="up_nayose")
+        
+        # 2. プレビュー & 解析 (アップロードされたら表示)
+        if uploaded_nayose:
+            file_bytes = uploaded_nayose.getvalue()
+            
+            # ビューワー (幅広設定: base_width=1000)
+            render_enhanced_document_viewer(file_bytes, uploaded_nayose.type, "nayose_view", base_width=1000)
+            
+            # 自動解析
+            if "nayose_file_name" not in st.session_state or st.session_state["nayose_file_name"] != uploaded_nayose.name:
+                with st.spinner("AIが書類を解析中..."):
+                    target_images_bytes = []
+                    if uploaded_nayose.type == "application/pdf":
+                        try:
+                            images = convert_from_bytes(file_bytes, dpi=200)
+                            for img in images:
+                                buf = BytesIO()
+                                img.convert("RGB").save(buf, format="JPEG")
+                                target_images_bytes.append(buf.getvalue())
+                        except: pass
+                    else:
+                        target_images_bytes.append(file_bytes)
+                    
+                    if target_images_bytes:
+                        result = analyze_nayose_with_ai(target_images_bytes)
                         if "error" not in result:
-                            st.session_state["nayose_result"] = result; st.success("解析完了")
+                            st.session_state["nayose_result"] = result
+                            st.session_state["nayose_file_name"] = uploaded_nayose.name
+                            st.toast("解析完了！内容を確認してください", icon="✅")
                         else: st.error("解析失敗")
-            if st.session_state["nayose_result"]:
-                res = st.session_state["nayose_result"]
-                df_assets = pd.DataFrame(res.get("assets", []))
-                st.caption(f"所有者: {res.get('owner_name')}")
-                
-                column_config = {
-                    "type": st.column_config.SelectboxColumn("種類", options=["土地", "家屋", "マンション"], required=True),
-                    "location": st.column_config.TextColumn("所在", width="medium"),
-                    "number": st.column_config.TextColumn("地番/家屋番号", width="small"),
-                    "category_structure": st.column_config.TextColumn("地目/構造", width="small"),
-                    "area": st.column_config.NumberColumn("地積/床面積"),
-                    "assessed_value": st.column_config.NumberColumn("評価額 (円)", format="%d"),
-                }
-                edited_assets = st.data_editor(df_assets, column_config=column_config, num_rows="dynamic", use_container_width=True, key="nayose_editor")
-                if st.button("💾 この内容で登録する"):
-                    try:
-                        count = 0
-                        for index, row in edited_assets.iterrows():
-                            if not row["location"]: continue
-                            p_type = "Land"
-                            if "家" in str(row["type"]) or "建" in str(row["type"]): p_type = "Building"
-                            elif "マンション" in str(row["type"]): p_type = "Condo"
-                            area_val = 0.0
-                            try: area_val = float(str(row["area"]).replace(",", ""))
-                            except: pass
-                            val_val = 0.0
-                            try: val_val = float(str(row["assessed_value"]).replace(",", ""))
-                            except: pass
+        else:
+            st.info("☝️ 書類をアップロードすると、ここにプレビューが表示されます。")
 
-                            new_asset = RealEstateAsset(
-                                case_id=target_case_id,
-                                property_type=p_type,
-                                location=normalize_text(row["location"]),
-                                lot_number=normalize_text(row["number"]) if p_type == "Land" else None,
-                                land_category=normalize_text(row["category_structure"]) if p_type == "Land" else None,
-                                land_area=area_val if p_type == "Land" else None,
-                                house_number=normalize_text(row["number"]) if p_type != "Land" else None,
-                                structure=normalize_text(row["category_structure"]) if p_type != "Land" else None,
-                                floor_area=str(area_val) if p_type != "Land" else None,
-                                assessed_value=val_val
-                            )
-                            session.add(new_asset)
-                            count += 1
-                        session.commit()
-                        st.success(f"{count}件登録しました")
-                        st.info("💡 ヒント: 続けて登記情報を取得できます")
-                        if st.button("🚀 続けて登記情報を取得する (自動画面遷移)", type="primary"):
-                            st.session_state["next_menu_action"] = "🌐 登記情報取得"
-                            st.session_state["nayose_result"] = None
-                            st.rerun()
-                        time.sleep(2)
-                        st.session_state["nayose_result"] = None
-                        st.rerun()
-                    except Exception as e: st.error(f"エラー: {e}")
+        # 3. 編集・登録フォーム (その下)
+        if "nayose_result" in st.session_state and st.session_state["nayose_result"]:
+            st.divider()
+            st.markdown("##### 📝 解析結果・編集")
+            res = st.session_state["nayose_result"]
+            df_assets = pd.DataFrame(res.get("assets", []))
+            
+            st.markdown(f"**所有者:** `{res.get('owner_name')}`")
+            st.caption("AI解析結果です。修正して登録してください。")
+
+            column_config = {
+                "type": st.column_config.SelectboxColumn("種類", options=["土地", "家屋", "マンション"], required=True),
+                "location": st.column_config.TextColumn("所在", width="medium"),
+                "number": st.column_config.TextColumn("地番/家屋番号", width="small"),
+                "category_structure": st.column_config.TextColumn("地目/構造", width="small"),
+                "area": st.column_config.NumberColumn("地積/床面積"),
+                "assessed_value": st.column_config.NumberColumn("評価額 (円)", format="%d"),
+            }
+            edited_assets = st.data_editor(df_assets, column_config=column_config, num_rows="dynamic", use_container_width=True, key="nayose_editor")
+            
+            if st.button("💾 この内容で登録する", type="primary", use_container_width=True):
+                try:
+                    count = 0
+                    for index, row in edited_assets.iterrows():
+                        if not row["location"]: continue
+                        p_type = "Land"
+                        if "家" in str(row["type"]) or "建" in str(row["type"]): p_type = "Building"
+                        elif "マンション" in str(row["type"]): p_type = "Condo"
+                        area_val = 0.0
+                        try: area_val = float(str(row["area"]).replace(",", ""))
+                        except: pass
+                        val_val = 0.0
+                        try: val_val = float(str(row["assessed_value"]).replace(",", ""))
+                        except: pass
+
+                        new_asset = RealEstateAsset(
+                            case_id=target_case_id,
+                            property_type=p_type,
+                            location=normalize_text(row["location"]),
+                            lot_number=normalize_text(row["number"]) if p_type == "Land" else None,
+                            land_category=normalize_text(row["category_structure"]) if p_type == "Land" else None,
+                            land_area=area_val if p_type == "Land" else None,
+                            house_number=normalize_text(row["number"]) if p_type != "Land" else None,
+                            structure=normalize_text(row["category_structure"]) if p_type != "Land" else None,
+                            floor_area=str(area_val) if p_type != "Land" else None,
+                            assessed_value=val_val
+                        )
+                        session.add(new_asset)
+                        count += 1
+                    session.commit()
+                    st.success(f"{count}件登録しました！")
+                    time.sleep(1)
+                    st.session_state["nayose_result"] = None
+                    st.rerun()
+                except Exception as e: st.error(f"エラー: {e}")
+
+        # 4. 登録済み一覧 (最下部)
         st.divider()
-        st.markdown("##### 📝 登録済み不動産一覧")
+        st.subheader("📋 登録済み不動産一覧")
         real_estates = session.query(RealEstateAsset).filter_by(case_id=target_case_id).all()
         if real_estates:
             for re_asset in real_estates:
                 label = f"[{re_asset.property_type}] {re_asset.location} {re_asset.lot_number or re_asset.house_number or ''}"
                 with st.expander(label):
-                    c1, c2, c3 = st.columns(3)
-                    c1.write(f"**地目/構造:** {re_asset.land_category or re_asset.structure}")
-                    c2.write(f"**面積:** {re_asset.land_area or re_asset.floor_area}")
-                    c3.write(f"**評価額:** {re_asset.assessed_value:,.0f} 円" if re_asset.assessed_value else "-")
-                    if st.button("削除", key=f"del_re_{re_asset.id}"):
-                        session.delete(re_asset); session.commit(); st.rerun()
+                    is_edit = st.toggle("編集モード", key=f"toggle_re_{re_asset.id}")
+                    if is_edit:
+                        with st.form(f"edit_re_{re_asset.id}"):
+                            col_e1, col_e2 = st.columns(2)
+                            e_loc = col_e1.text_input("所在", value=re_asset.location)
+                            e_num = col_e2.text_input("地番/家屋番号", value=re_asset.lot_number or re_asset.house_number or "")
+                            col_e3, col_e4 = st.columns(2)
+                            e_cat = col_e3.text_input("地目/構造", value=re_asset.land_category or re_asset.structure or "")
+                            e_area = col_e4.text_input("地積/床面積", value=str(re_asset.land_area or re_asset.floor_area or ""))
+                            e_val = st.number_input("評価額", value=int(re_asset.assessed_value or 0))
+                            if st.form_submit_button("変更を保存"):
+                                re_asset.location = e_loc
+                                if re_asset.property_type == "Land":
+                                    re_asset.lot_number = e_num
+                                    re_asset.land_category = e_cat
+                                    try: re_asset.land_area = float(e_area)
+                                    except: pass
+                                else:
+                                    re_asset.house_number = e_num
+                                    re_asset.structure = e_cat
+                                    re_asset.floor_area = e_area
+                                re_asset.assessed_value = e_val
+                                session.commit(); st.toast("保存しました", icon="💾"); time.sleep(0.5); st.rerun()
+                    else:
+                        c1, c2, c3 = st.columns(3)
+                        c1.write(f"**地目/構造:** {re_asset.land_category or re_asset.structure}")
+                        c2.write(f"**面積:** {re_asset.land_area or re_asset.floor_area}")
+                        val_display = getattr(re_asset, 'assessed_value', 0)
+                        c3.write(f"**評価額:** {val_display:,.0f} 円" if val_display else "-")
+                        if st.button("削除", key=f"del_re_{re_asset.id}"):
+                            session.delete(re_asset); session.commit(); st.toast("削除しました", icon="🗑️"); time.sleep(0.5); st.rerun()
         else: st.info("登録されている不動産はありません。")
 
     # ==========================================

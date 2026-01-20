@@ -1,8 +1,19 @@
 # src/legal_system/core/schemas.py
 
 from typing import List, Literal, Optional
-
 from pydantic import BaseModel, Field
+
+class WillArticle(BaseModel):
+    """遺言書の個別の条文"""
+    article_number: str = Field(..., description="条数表記（例: 第１条）")
+    title: Optional[str] = Field(None, description="条文の見出し（例: 相続、遺贈、祭祀の主宰）")
+    content: str = Field(..., description="条文の本文")
+
+class WillDraftStructure(BaseModel):
+    """遺言書全体の構成データ"""
+    preamble: Optional[str] = Field(None, description="前文（遺言者は...）")
+    articles: List[WillArticle] = Field(..., description="条文のリスト")
+    supplementary_provisions: Optional[str] = Field(None, description="付言事項")
 
 
 # --- 追加: 案件検索用の軽量モデル ---

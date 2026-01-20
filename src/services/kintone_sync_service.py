@@ -21,51 +21,6 @@ from src.utils.date_utils import parse_all_flexible_date
 logger = logging.getLogger(__name__)
 
 
-def get_kintone_data_as_dict(case_id: int) -> Optional[Dict[str, Any]]:
-    """
-    Kintoneブックマークレット（書き込み用）が期待する形式の辞書を作成する
-    """
-    db = DatabaseManager()
-    session = db._get_session()
-
-    try:
-        case = session.query(Case).filter_by(case_id=case_id).first()
-        if not case:
-            return None
-
-        # 案件情報の抽出
-        # ... (既存の氏名などの抽出ロジック) ...
-
-        # ★ここが重要: システム独自のデータをKintoneフィールドへマッピング
-        # ブックマークレット側のフィールドコードに合わせてキーを設定します
-
-        kintone_payload = {
-            "顧客コード_2": case.case_number,  # 仮番号 or G番号
-            "顧客名": case.client_name,
-            "顧客名(ふりがな)": case.client_name_kana,
-            # 紹介元情報 (今回追加)
-            "SOL案件No.（日興）": case.sol_case_number,
-            "支店名（日興）": case.referral_sec_branch_name,
-            "担当者（日興）": case.referral_sec_rep_name,
-            # ※Kintoneに電話番号フィールドがない場合、備考欄などに転記するか、
-            #   あるいは「紹介元電話番号」というフィールドをKintone側に追加することを推奨します。
-            #   ここでは一旦、備考などに含める例とします。
-            "備考": f"【紹介元電話】{case.referral_sec_phone}"
-            if case.referral_sec_phone
-            else "",
-            # 日付
-            "紹介日": str(case.introduction_date) if case.introduction_date else "",
-        }
-
-        return kintone_payload
-
-    except Exception as e:
-        logger.error(f"Kintone data build error: {e}")
-        return None
-    finally:
-        session.close()
-
-
 # ---------------------------------------------------------
 # ヘルパー関数
 # ---------------------------------------------------------
@@ -90,6 +45,118 @@ def format_name_full_width(last: str, first: str) -> str:
     if l and f:
         return f"{l}　{f}"
     return f"{l}{f}"
+
+
+# ---------------------------------------------------------
+# データ出力 (DB -> Kintone用JSON)
+# ---------------------------------------------------------
+def get_kintone_data_as_dict(case_id: int) -> Optional[Dict[str, Any]]:
+    """
+    Kintoneブックマークレット（書き込み用）が期待する形式の辞書を作成する。
+    DB内の最新情報を、Kintoneのフィールドコード（日本語）に合わせて出力します。
+    """
+    db = DatabaseManager()
+    session = db._get_session()
+
+    try:
+        case = session.query(Case).filter_by(case_id=case_id).first()
+        if not case:
+            return None
+        
+        deceased = case.deceased_ref
+
+        # --- 1. 基本情報 ---
+        # 担当者名解決
+        manager_name = ""
+        if case.manager_id:
+            m_user = session.query(User).get(case.manager_id)
+            if m_user: manager_name = m_user.name
+        
+        operator_name = ""
+        if case.operator_id:
+            o_user = session.query(User).get(case.operator_id)
+            if o_user: operator_name = o_user.name
+
+        # --- 2. 被相続人情報 ---
+        d_name = ""
+        d_kana = ""
+        start_date = ""
+
+        if deceased:
+            d_name = format_name_full_width(deceased.name_last, deceased.name_first)
+            dk_last = katakana_to_hiragana(deceased.name_last_kana)
+            dk_first = katakana_to_hiragana(deceased.name_first_kana)
+            d_kana = format_name_full_width(dk_last, dk_first)
+            if deceased.date_of_death:
+                start_date = deceased.date_of_death.strftime("%Y-%m-%d")
+
+        # --- 3. 依頼者（契約者）情報 ---
+        # Heirの中から契約者を探す
+        contractor = None
+        if deceased and deceased.heirs:
+            contractor = next((h for h in deceased.heirs if h.is_contracting_party), None)
+            # 契約者がいなければ一人目を仮定
+            if not contractor and deceased.heirs:
+                contractor = deceased.heirs[0]
+
+        heir_tel = ""
+        heir_mail = ""
+        
+        # 連絡先(Contact)の取得
+        if contractor:
+            links = session.query(H_ContactLink).filter(H_ContactLink.heir_id == contractor.id).all()
+            for l in links:
+                c = session.query(Contact).get(l.contact_id)
+                if c:
+                    if c.type == "PHONE" and not heir_tel:
+                        heir_tel = c.value
+                    if c.type == "EMAIL" and not heir_mail:
+                        heir_mail = c.value
+
+        # --- 4. マッピング (DB -> Kintone Field Codes) ---
+        kintone_payload = {
+            "顧客コード_2": case.case_number,
+            "顧客名": case.client_name,
+            "顧客名(ふりがな)": case.client_name_kana,
+            
+            # 連絡先 (今回修正: DBから取得した値をセット)
+            "TEL": heir_tel,
+            "メールアドレス": heir_mail,
+            
+            # 住所情報はAddressテーブルから取得して結合も可能だが、
+            # 現状はCaseテーブルに正規化されていない場合は省略、または必要に応じて実装
+            
+            # 被相続人
+            "被相続人名": d_name,
+            "被相続人名（ふりがな）": d_kana,
+            "相続開始日": start_date,
+            
+            # 担当者
+            "担当者①": manager_name,
+            "担当者②": operator_name,
+            
+            # 紹介元情報
+            "SOL案件No.（日興）": case.sol_case_number or "",
+            "支店名（日興）": case.referral_sec_branch_name or "",
+            "担当者（日興）": case.referral_sec_rep_name or "",
+            "紹介日": str(case.introduction_date) if case.introduction_date else "",
+            
+            # 紹介元電話番号は備考へ
+            "備考": f"【紹介元電話】{case.referral_sec_phone}" if case.referral_sec_phone else "",
+        }
+
+        return kintone_payload
+
+    except Exception as e:
+        logger.error(f"Kintone data build error: {e}")
+        return None
+    finally:
+        session.close()
+
+
+def copy_kintone_data_to_clipboard(case_id: int) -> bool:
+    data = get_kintone_data_as_dict(case_id)
+    return data is not None
 
 
 # ---------------------------------------------------------
@@ -149,7 +216,6 @@ def import_kintone_json(
             session.flush()
 
         # 3. 案件情報の更新 (上書き)
-        # レコード番号の保存
         if k_record_id:
             case.kintone_record_id = k_record_id
 
@@ -193,7 +259,6 @@ def import_kintone_json(
         deceased.name_last_kana = d_k_parts[0]
         deceased.name_first_kana = d_k_parts[1] if len(d_k_parts) > 1 else ""
 
-        # 相続開始日
         start_date = parse_all_flexible_date(json_data.get("相続開始日", ""))
         if start_date:
             deceased.date_of_death = start_date
@@ -236,7 +301,7 @@ def import_kintone_json(
             .first()
         )
 
-        # 簡易分割 (都道府県)
+        # 簡易分割
         pref = ""
         street = address_full
         match = re.match(r"(...??[都道府県])(.+)", address_full)
@@ -264,11 +329,9 @@ def import_kintone_json(
             )
 
         # 7. 電話番号 (TEL) の取込
-        # JSONの "TEL" キーから取得し、カンマ区切りなどで複数ある場合は分割して登録
         tel_str = json_data.get("TEL", "")
         if tel_str:
-            # 既存の電話番号を一度クリアしてから再登録（完全同期）
-            # H_ContactLink経由で紐付いているPHONEタイプのContactを削除
+            # 既存の電話番号を一度クリア
             existing_links = session.query(H_ContactLink).filter(
                 H_ContactLink.heir_id == contractor.id
             ).all()
@@ -279,9 +342,7 @@ def import_kintone_json(
                     session.delete(contact)
                     session.delete(link)
             
-            # 新規登録
-            # 全角数字やハイフンのゆらぎはそのまま保存するか、正規化するかは要件次第だが、
-            # ここではカンマ区切りでの複数登録に対応
+            # カンマ区切りなどで複数ある場合は分割して登録
             tels = tel_str.replace("、", ",").split(",")
             for i, t in enumerate(tels):
                 clean_tel = t.strip()
@@ -298,7 +359,7 @@ def import_kintone_json(
         # 8. メールアドレス
         mail_str = json_data.get("メールアドレス", "")
         if mail_str:
-             # 既存メール削除 (簡易)
+            # 既存メール削除
             existing_links = session.query(H_ContactLink).filter(
                 H_ContactLink.heir_id == contractor.id
             ).all()

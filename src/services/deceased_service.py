@@ -5,7 +5,7 @@ import logging
 from typing import Any, Dict, List, Optional
 
 import requests
-from sqlalchemy import or_, func  # ★funcを追加
+from sqlalchemy import or_, func
 from sqlalchemy.orm import joinedload
 
 from legal_system.core.database_manager import DatabaseManager
@@ -136,7 +136,7 @@ def find_cases_by_attributes(
                 db_client_clean = func.replace(func.replace(Case.client_name, ' ', ''), '　', '')
                 conditions.append(db_client_clean.contains(clean_c))
 
-        # 3. 被相続人名検索 (★強化: 姓+名を結合し、さらにスペースを除去して比較)
+        # 3. 被相続人名検索 (姓+名を結合し、さらにスペースを除去して比較)
         if deceased_name:
             clean_d = deceased_name.replace(" ", "").replace("　", "")
             if len(clean_d) >= 1:
@@ -149,7 +149,7 @@ def find_cases_by_attributes(
                 conditions.append(or_(
                     Deceased.name_last.contains(clean_d),   # 念のため単独一致も残す
                     Deceased.name_first.contains(clean_d),
-                    full_name_clean.contains(clean_d)       # ★ここが最強の検索条件
+                    full_name_clean.contains(clean_d)
                 ))
 
         if not conditions:
@@ -493,6 +493,10 @@ def update_deceased(deceased_id: int, **kwargs) -> bool:
         d.name_first = kwargs.get("name_first", d.name_first)
         d.name_last_kana = kwargs.get("kana_last", d.name_last_kana)
         d.name_first_kana = kwargs.get("kana_first", d.name_first_kana)
+
+        # ★追加: 本籍地
+        if "hometown" in kwargs:
+            d.hometown = kwargs["hometown"]
 
         if kwargs.get("dob"):
             d.date_of_birth = parse_all_flexible_date(kwargs["dob"])

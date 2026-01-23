@@ -44,3 +44,5 @@ htmlcov/
 Thumbs.db
 
 bootstrap.py
+credentials.json
+token.json

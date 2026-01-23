@@ -16,6 +16,8 @@ import streamlit as st
 from langchain_core.messages import HumanMessage
 from pdf2image import convert_from_bytes
 from PIL import Image
+# ★追加: joinedload をインポート
+from sqlalchemy.orm import joinedload
 
 # パス解決
 ROOT_DIR = os.path.dirname(

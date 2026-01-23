@@ -1,8 +1,10 @@
-# file: run_watcher.py
+# run_watcher.py
+
 import logging
 import os
 import sys
 import time
+import threading  # ★追加
 
 # ロギング設定
 logging.basicConfig(
@@ -19,47 +21,81 @@ SRC_DIR = os.path.join(BASE_DIR, "src")
 if SRC_DIR not in sys.path:
     sys.path.append(SRC_DIR)
 
-# WatcherプロセスではStreamlit環境ではないことを明示するためのフラグ
+# Watcherプロセス環境フラグ
 os.environ["IS_WATCHER_PROCESS"] = "true"
 
 from legal_system.core.data_sync import DataSyncEngine
+# ★追加: Gmail監視サービス
+from services.gmail_watcher_service import GmailWatcherService
 
-# ★修正ポイント: コンテナ内でも確実に見えるデータフォルダを監視対象にする
 WATCH_DIR = os.path.join(BASE_DIR, "data", "kintone_watch")
 
-
+# --- 1. 既存のファイル監視ハンドラ ---
 class JsonHandler(FileSystemEventHandler):
     def __init__(self):
         time.sleep(2)
-        # DataSyncEngine内でDB接続が行われる
         self.syncer = DataSyncEngine()
 
     def on_created(self, event):
-        if event.is_directory:
-            return
+        if event.is_directory: return
         filename = os.path.basename(event.src_path)
-
         if filename.startswith("G") and filename.endswith(".json"):
             logger.info(f"📥 連携JSONを検知: {filename}")
-            # ファイルの書き込み完了を待機
             time.sleep(1.5)
-            success = self.syncer.sync_from_kintone_json(event.src_path)
-            if success:
+            if self.syncer.sync_from_kintone_json(event.src_path):
                 logger.info(f"✅ DB同期完了: {filename}")
-                # 処理済みファイルは削除または移動すると良いが、今回はログ出力のみ
+                # ★追加: 新規案件が入ったので、未紐付けメモの再チェックを行う
+                # (簡易的にGmailサービスのメソッドを呼ぶ)
+                try:
+                    gmail_svc = GmailWatcherService()
+                    gmail_svc.retry_linking_pending_notes()
+                except:
+                    pass
             else:
                 logger.error(f"❌ 同期失敗: {filename}")
 
+# --- 2. 新規: Gmail監視ループ ---
+def run_gmail_watcher():
+    """Gmailを定期監視するスレッド関数"""
+    logger.info("📧 Gmail監視スレッドを開始します...")
+    
+    # サービスの初期化 (クレデンシャルがない場合はログを出して終了しないように注意)
+    try:
+        service = GmailWatcherService()
+        if not service.service:
+            logger.warning("⚠️ Gmail APIが無効なため、メール監視はスキップします。")
+            return
+    except Exception as e:
+        logger.error(f"Gmail Service Init Error: {e}")
+        return
+
+    while True:
+        try:
+            # 新着メールの確認
+            service.poll_and_process()
+            
+            # 定期的に「未紐付けメモ」の再チェックも行う (例: 5回に1回など頻度は調整可)
+            service.retry_linking_pending_notes()
+            
+        except Exception as e:
+            logger.error(f"Gmail Watcher Loop Error: {e}")
+        
+        # 30分待機 (API制限考慮)
+        time.sleep(1800)
 
 if __name__ == "__main__":
-    # ★修正ポイント: フォルダが存在しない場合は自動作成する
+    # ディレクトリ作成
     if not os.path.exists(WATCH_DIR):
-        logger.info(f"監視ディレクトリを作成します: {WATCH_DIR}")
         os.makedirs(WATCH_DIR, exist_ok=True)
 
-    logger.info(f"🚀 監視開始: {WATCH_DIR}")
-    logger.info("G番号(Gxxxx.json)のファイルをこのフォルダに置くと、自動で取り込まれます。")
+    logger.info(f"🚀 システム監視プロセス起動")
 
+    # A. Gmail監視を別スレッドで開始
+    gmail_thread = threading.Thread(target=run_gmail_watcher, daemon=True)
+    gmail_thread.start()
+
+    # B. フォルダ監視を開始 (メインスレッド)
+    logger.info(f"👀 フォルダ監視開始: {WATCH_DIR}")
     event_handler = JsonHandler()
     observer = Observer()
     observer.schedule(event_handler, WATCH_DIR, recursive=False)

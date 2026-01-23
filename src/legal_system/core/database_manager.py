@@ -4,7 +4,7 @@ import os
 from datetime import datetime
 from typing import Any, Dict, List, Optional
 
-import streamlit as st
+# ★修正：Streamlitをトップレベルでインポートしない（バックグラウンド衝突防止）
 from sqlalchemy import create_engine, desc
 from sqlalchemy.engine import Engine
 from sqlalchemy.orm import scoped_session, sessionmaker
@@ -22,86 +22,66 @@ from src.legal_system.models.tables import (
 # Config
 from .config import Config
 
-
 # ==========================================
-# エンジン生成の共通ロジック (キャッシュなし)
+# エンジン生成の共通ロジック
 # ==========================================
 def _create_new_engine() -> Engine:
-    """
-    SQLAlchemyエンジンを新規作成する内部関数。
-    Streamlitへの依存を含みません。
-    """
-    # 【修正ポイント】 Windows環境での文字コードエラー(0x83)を防ぐため
-    # client_encoding='utf8' を明示的に指定します。
+    """SQLAlchemyエンジンを新規作成する内部関数"""
     engine = create_engine(
         Config.DATABASE_URL,
         pool_size=20,
         max_overflow=10,
         pool_pre_ping=True,
-        connect_args={"client_encoding": "utf8"}  # Windows対策: 文字化けクラッシュ防止
+        connect_args={"client_encoding": "utf8"}
     )
-
-    # テーブル作成 (初回のみ)
     try:
         Base.metadata.create_all(engine)
     except Exception as e:
-        # Streamlit環境下であればエラー表示、そうでなければ標準出力へ
         msg = f"❌ データベース接続エラー: {e}"
-        # Watcherプロセスかどうかの判定
         if os.environ.get("IS_WATCHER_PROCESS") != "true":
-            st.error(msg)
-            st.info("PostgreSQLサーバー設定(.env)を確認してください。")
+            # Streamlitがロードされているか確認してエラー表示
+            try:
+                import streamlit as st
+                st.error(msg)
+            except ImportError:
+                print(msg)
         else:
             print(msg)
         raise e
-
     return engine
-
-
-# ==========================================
-# Streamlit用 キャッシュ付きエンジン取得
-# ==========================================
-@st.cache_resource(show_spinner="データベースに接続中...")
-def _get_cached_engine() -> Engine:
-    """Streamlitのキャッシュ機能を利用してエンジンを保持する"""
-    return _create_new_engine()
-
 
 # ==========================================
 # 公開アクセサ (環境判定ロジック付き)
 # ==========================================
 def get_db_engine() -> Engine:
     """
-    実行環境に応じて適切なエンジン取得方法を選択するファクトリー関数。
-    - Watcherプロセス (IS_WATCHER_PROCESS=true): キャッシュなしで新規作成
-    - Streamlitアプリ: st.cache_resourceを利用して高速化
+    実行環境に応じて適切なエンジン取得方法を選択する。
+    - Watcherプロセス: Streamlitを完全に無視
+    - Streamlitアプリ: st.cache_resourceを利用
     """
     if os.environ.get("IS_WATCHER_PROCESS") == "true":
-        # バックグラウンド処理ではStreamlitのキャッシュ機能を使わない
         return _create_new_engine()
     else:
-        # UIスレッドではキャッシュを使う
-        return _get_cached_engine()
-
+        # UI実行時のみStreamlitをインポートし、キャッシュを利用する
+        try:
+            import streamlit as st
+            
+            # 関数内でキャッシュ定義を行う（衝突回避）
+            @st.cache_resource(show_spinner="データベースに接続中...")
+            def _get_cached_engine() -> Engine:
+                return _create_new_engine()
+                
+            return _get_cached_engine()
+        except ImportError:
+            return _create_new_engine()
 
 class DatabaseManager:
-    """
-    データベース操作を一元管理するクラス。
-    環境に応じたエンジン取得戦略を内部で自動解決します。
-    """
-
     def __init__(self):
-        # 環境判定済みのエンジン取得関数を呼び出し
         self.engine = get_db_engine()
-
-        # セッションファクトリの作成
         self.session_factory = sessionmaker(bind=self.engine)
-
-        # スレッドセーフなセッション
         self.Session = scoped_session(self.session_factory)
 
     def _get_session(self):
-        """新しいセッションを発行"""
         return self.Session()
 
     # ---------------------------------------------------------

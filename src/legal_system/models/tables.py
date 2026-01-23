@@ -739,3 +739,30 @@ class WillAllocation(Base):
     percentage = Column(Float, nullable=True, comment="割合指定の場合 (例: 0.5)")
 
     will_case = relationship("WillCase", back_populates="allocations")
+
+class IncomingNoteBuffer(Base):
+    """
+    Gmail等から受信した会議メモの一時保管バッファ。
+    案件(Case)が特定されるまでここに滞留し、特定され次第 ContactLog へ移行または紐付けを行う。
+    """
+    __tablename__ = "incoming_note_buffer"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    
+    # メール情報
+    message_id = Column(String, unique=True, nullable=False, comment="GmailのMessage-ID")
+    received_at = Column(DateTime, nullable=False, default=datetime.now)
+    subject = Column(String, nullable=True)
+    body_text = Column(Text, nullable=False)
+    
+    # AI解析結果
+    detected_names = Column(String, nullable=True, comment="AIが抽出した氏名候補(JSON文字列)")
+    ai_summary = Column(Text, nullable=True, comment="AIによる簡易要約")
+
+    # ステータス管理
+    status = Column(String, default="PENDING", comment="PENDING(未紐付)/LINKED(紐付済)/IGNORED(対象外)")
+    
+    # 紐付け先 (決まった場合)
+    linked_case_id = Column(Integer, ForeignKey("cases.case_id"), nullable=True)
+    
+    linked_case = relationship("Case")

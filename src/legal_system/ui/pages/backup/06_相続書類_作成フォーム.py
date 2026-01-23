@@ -1,4 +1,4 @@
-# src/legal_system/ui/pages/60_相続書類_作成フォーム.py
+# src/legal_system/ui/pages/06_相続書類_作成フォーム.py
 
 import os
 import sys

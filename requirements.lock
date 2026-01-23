@@ -99,19 +99,29 @@ gitdb==4.0.12
 gitpython==3.1.45
     # via streamlit
 google-api-core==2.29.0
+    # via google-api-python-client
     # via google-cloud-aiplatform
     # via google-cloud-bigquery
     # via google-cloud-core
     # via google-cloud-resource-manager
     # via google-cloud-storage
+google-api-python-client==2.188.0
+    # via legal
 google-auth==2.47.0
     # via google-api-core
+    # via google-api-python-client
+    # via google-auth-httplib2
+    # via google-auth-oauthlib
     # via google-cloud-aiplatform
     # via google-cloud-bigquery
     # via google-cloud-core
     # via google-cloud-resource-manager
     # via google-cloud-storage
     # via google-genai
+google-auth-httplib2==0.3.0
+    # via google-api-python-client
+google-auth-oauthlib==1.2.4
+    # via legal
 google-cloud-aiplatform==1.133.0
     # via langchain-google-vertexai
     # via legal
@@ -160,6 +170,9 @@ h11==0.16.0
     # via wsproto
 httpcore==1.0.9
     # via httpx
+httplib2==0.31.1
+    # via google-api-python-client
+    # via google-auth-httplib2
 httptools==0.7.1
     # via uvicorn
 httpx==0.28.1
@@ -394,6 +407,8 @@ pybase64==1.4.3
     # via chromadb
 pycparser==2.23
     # via cffi
+pycryptodomex==3.23.0
+    # via pyzipper
 pydantic==2.12.5
     # via chromadb
     # via google-cloud-aiplatform
@@ -420,6 +435,8 @@ pymsgbox==2.0.1
     # via pyautogui
 pymupdf==1.26.7
     # via legal
+pyparsing==3.3.2
+    # via httplib2
 pypdf==6.5.0
     # via legal
 pyperclip==1.11.0
@@ -464,6 +481,8 @@ pyyaml==6.0.3
     # via langchain-core
     # via transformers
     # via uvicorn
+pyzipper==0.3.6
+    # via legal
 referencing==0.37.0
     # via jsonschema
     # via jsonschema-specifications
@@ -489,6 +508,7 @@ requests==2.32.5
     # via transformers
     # via webdriver-manager
 requests-oauthlib==2.0.0
+    # via google-auth-oauthlib
     # via kubernetes
 requests-toolbelt==1.0.0
     # via langsmith
@@ -614,6 +634,8 @@ typing-inspection==0.4.2
     # via pydantic-settings
 tzdata==2025.3
     # via pandas
+uritemplate==4.2.0
+    # via google-api-python-client
 urllib3==2.6.3
     # via kubernetes
     # via requests

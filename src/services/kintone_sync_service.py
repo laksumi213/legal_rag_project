@@ -3,7 +3,7 @@
 import logging
 import re
 from datetime import datetime
-from typing import Any, Dict, Optional
+from typing import Any, Dict, Optional, List
 
 from legal_system.core.database_manager import DatabaseManager
 from legal_system.models.tables import (
@@ -45,6 +45,20 @@ def format_name_full_width(last: str, first: str) -> str:
     if l and f:
         return f"{l}　{f}"
     return f"{l}{f}"
+
+
+def get_value_from_keys(data: Dict[str, Any], keys: List[str]) -> str:
+    """
+    複数のキー候補から値を探して返すヘルパー関数
+    (Kintoneフィールドコードの表記ゆれを吸収)
+    """
+    for k in keys:
+        if k in data and data[k]:
+            val = str(data[k]).strip()
+            # "None" という文字列が入ってしまうケースを除外
+            if val.lower() != "none":
+                return val
+    return ""
 
 
 # ---------------------------------------------------------
@@ -118,30 +132,17 @@ def get_kintone_data_as_dict(case_id: int) -> Optional[Dict[str, Any]]:
             "顧客コード_2": case.case_number,
             "顧客名": case.client_name,
             "顧客名(ふりがな)": case.client_name_kana,
-            
-            # 連絡先 (今回修正: DBから取得した値をセット)
             "TEL": heir_tel,
             "メールアドレス": heir_mail,
-            
-            # 住所情報はAddressテーブルから取得して結合も可能だが、
-            # 現状はCaseテーブルに正規化されていない場合は省略、または必要に応じて実装
-            
-            # 被相続人
             "被相続人名": d_name,
             "被相続人名（ふりがな）": d_kana,
             "相続開始日": start_date,
-            
-            # 担当者
             "担当者①": manager_name,
             "担当者②": operator_name,
-            
-            # 紹介元情報
             "SOL案件No.（日興）": case.sol_case_number or "",
             "支店名（日興）": case.referral_sec_branch_name or "",
             "担当者（日興）": case.referral_sec_rep_name or "",
             "紹介日": str(case.introduction_date) if case.introduction_date else "",
-            
-            # 紹介元電話番号は備考へ
             "備考": f"【紹介元電話】{case.referral_sec_phone}" if case.referral_sec_phone else "",
         }
 
@@ -173,31 +174,32 @@ def import_kintone_json(
 
     try:
         # 1. データの正規化
-        k_rec_id_raw = json_data.get("$id") or json_data.get("record_id")
-        k_record_id = int(k_rec_id_raw) if k_rec_id_raw else None
-        case_num = (
-            json_data.get("顧客コード", "").strip()
-            or json_data.get("顧客コード_2", "").strip()
-        )
+        # -------------------------------------------------------
+        k_rec_id_raw = get_value_from_keys(json_data, ["$id", "record_id", "レコード番号"])
+        k_record_id = int(k_rec_id_raw) if k_rec_id_raw and k_rec_id_raw.isdigit() else None
+        
+        case_num = get_value_from_keys(json_data, ["顧客コード", "顧客コード_2", "case_number", "案件番号"])
 
-        client_name_raw = json_data.get("顧客名", "").replace("　", " ").strip()
-        client_kana_raw = (
-            json_data.get("顧客名(ふりがな)", "").replace("　", " ").strip()
-        )
+        client_name_raw = get_value_from_keys(json_data, ["顧客名", "client_name", "氏名"]).replace("　", " ")
+        client_kana_raw = get_value_from_keys(json_data, ["顧客名(ふりがな)", "顧客名（ふりがな）", "client_name_kana", "フリガナ"]).replace("　", " ")
 
-        deceased_name_raw = json_data.get("被相続人名", "").replace("　", " ").strip()
-        deceased_kana_raw = (
-            json_data.get("被相続人名（ふりがな）", "").replace("　", " ").strip()
-        )
+        deceased_name_raw = get_value_from_keys(json_data, ["被相続人名", "deceased_name", "被相続人"]).replace("　", " ")
+        deceased_kana_raw = get_value_from_keys(json_data, ["被相続人名（ふりがな）", "被相続人名(ふりがな)", "deceased_name_kana"]).replace("　", " ")
 
-        sol_no = json_data.get("SOL案件No.（日興）", "")
-        intro_date = parse_all_flexible_date(json_data.get("紹介日", ""))
-        consent_date = parse_all_flexible_date(json_data.get("同意書日付(日興)", ""))
+        sol_no = get_value_from_keys(json_data, ["SOL案件No.（日興）", "SOL案件No", "sol_case_number"])
+        
+        # 日付パース強化
+        intro_date_str = get_value_from_keys(json_data, ["紹介日", "introduction_date"])
+        intro_date = parse_all_flexible_date(intro_date_str)
+        
+        consent_date_str = get_value_from_keys(json_data, ["同意書日付(日興)", "同意書日付", "consent_date"])
+        consent_date = parse_all_flexible_date(consent_date_str)
 
-        mgr_name = json_data.get("担当者①", "")
-        opr_name = json_data.get("担当者②", "")
+        mgr_name = get_value_from_keys(json_data, ["担当者①", "manager_name", "担当者1"])
+        opr_name = get_value_from_keys(json_data, ["担当者②", "operator_name", "担当者2"])
 
         # 2. 案件 (Case) の特定または作成
+        # -------------------------------------------------------
         case = None
         if target_case_id:
             case = session.query(Case).get(target_case_id)
@@ -207,65 +209,74 @@ def import_kintone_json(
 
         if not case:
             # 新規作成
+            # 案件番号がない場合は一時IDを発行してエラー回避
+            temp_num = case_num if case_num else f"TMP-{datetime.now().strftime('%H%M%S')}"
             case = Case(
-                case_number=case_num if case_num else "TMP",
-                client_name=client_name_raw,
+                case_number=temp_num,
+                client_name=client_name_raw if client_name_raw else "名称未設定",
                 created_at=datetime.now(),
             )
             session.add(case)
             session.flush()
 
         # 3. 案件情報の更新 (上書き)
+        # -------------------------------------------------------
         if k_record_id:
             case.kintone_record_id = k_record_id
 
-        case.client_name = client_name_raw
-        case.client_name_kana = client_kana_raw
+        if client_name_raw:
+            case.client_name = client_name_raw
+        if client_kana_raw:
+            case.client_name_kana = client_kana_raw
+            
         case.sol_case_number = sol_no
         case.introduction_date = intro_date
         case.consent_date = consent_date
 
         # 紹介元情報
-        case.referral_sec_branch_name = (
-            json_data.get("支店名（日興）") or json_data.get("支店名（大和）") or ""
-        )
-        case.referral_sec_rep_name = (
-            json_data.get("担当者（日興）") or json_data.get("担当者（大和）") or ""
-        )
+        case.referral_sec_branch_name = get_value_from_keys(json_data, ["支店名（日興）", "支店名（大和）", "紹介元支店", "referral_branch"])
+        case.referral_sec_rep_name = get_value_from_keys(json_data, ["担当者（日興）", "担当者（大和）", "紹介元担当者", "referral_rep"])
 
         # 担当者紐付け (名前の部分一致検索)
         if mgr_name:
             u = session.query(User).filter(User.name.contains(mgr_name)).first()
-            if u:
-                case.manager_id = u.id
+            if u: case.manager_id = u.id
         if opr_name:
             u = session.query(User).filter(User.name.contains(opr_name)).first()
-            if u:
-                case.operator_id = u.id
+            if u: case.operator_id = u.id
 
         session.flush()
 
         # 4. 被相続人 (Deceased) の更新
+        # -------------------------------------------------------
         deceased = session.query(Deceased).filter_by(case_id=case.case_id).first()
         if not deceased:
             deceased = Deceased(case_id=case.case_id)
             session.add(deceased)
 
-        d_parts = deceased_name_raw.split(" ", 1)
-        deceased.name_last = d_parts[0]
-        deceased.name_first = d_parts[1] if len(d_parts) > 1 else ""
+        if deceased_name_raw:
+            d_parts = deceased_name_raw.split(" ", 1)
+            deceased.name_last = d_parts[0]
+            deceased.name_first = d_parts[1] if len(d_parts) > 1 else ""
 
-        d_k_parts = deceased_kana_raw.split(" ", 1)
-        deceased.name_last_kana = d_k_parts[0]
-        deceased.name_first_kana = d_k_parts[1] if len(d_k_parts) > 1 else ""
+        if deceased_kana_raw:
+            d_k_parts = deceased_kana_raw.split(" ", 1)
+            deceased.name_last_kana = d_k_parts[0]
+            deceased.name_first_kana = d_k_parts[1] if len(d_k_parts) > 1 else ""
 
-        start_date = parse_all_flexible_date(json_data.get("相続開始日", ""))
+        # ★修正: 相続開始日のキーゆらぎ吸収 & 確実な保存
+        death_date_str = get_value_from_keys(json_data, ["相続開始日", "死亡日", "date_of_death", "death_date"])
+        start_date = parse_all_flexible_date(death_date_str)
         if start_date:
             deceased.date_of_death = start_date
+        elif death_date_str:
+            # parse_all_flexible_date で失敗した場合のログ出力（デバッグ用）
+            logger.warning(f"Failed to parse date: {death_date_str}")
 
         session.flush()
 
         # 5. 契約者 (Heir) の更新
+        # -------------------------------------------------------
         contractor = (
             session.query(Heir)
             .filter(Heir.deceased_id == deceased.id, Heir.is_contracting_party == True)
@@ -280,58 +291,73 @@ def import_kintone_json(
             )
             session.add(contractor)
 
-        c_parts = client_name_raw.split(" ", 1)
-        contractor.name_last = c_parts[0]
-        contractor.name_first = c_parts[1] if len(c_parts) > 1 else ""
+        if client_name_raw:
+            c_parts = client_name_raw.split(" ", 1)
+            contractor.name_last = c_parts[0]
+            contractor.name_first = c_parts[1] if len(c_parts) > 1 else ""
 
-        c_k_parts = client_kana_raw.split(" ", 1)
-        contractor.name_last_kana = c_k_parts[0]
-        contractor.name_first_kana = c_k_parts[1] if len(c_k_parts) > 1 else ""
+        if client_kana_raw:
+            c_k_parts = client_kana_raw.split(" ", 1)
+            contractor.name_last_kana = c_k_parts[0]
+            contractor.name_first_kana = c_k_parts[1] if len(c_k_parts) > 1 else ""
 
         # 6. 住所 (Heirに紐づくAddress)
-        zip_code = json_data.get("郵便番号", "")
-        address_full = json_data.get("住所", "")
+        # ★修正: 追記を防ぐため、一度クリアしてから値をセットする
+        # -------------------------------------------------------
+        zip_code = get_value_from_keys(json_data, ["郵便番号", "zip_code"])
+        address_full = get_value_from_keys(json_data, ["住所", "address"])
 
-        addr_link = (
-            session.query(H_AddressHistory)
-            .filter(
-                H_AddressHistory.heir_id == contractor.id,
-                H_AddressHistory.is_current_address == True,
-            )
-            .first()
-        )
-
-        # 簡易分割
-        pref = ""
-        street = address_full
-        match = re.match(r"(...??[都道府県])(.+)", address_full)
-        if match:
-            pref = match.group(1)
-            street = match.group(2)
-
-        if addr_link:
-            addr = session.query(Address).get(addr_link.address_id)
-            addr.zip_code = zip_code
-            addr.prefecture = pref
-            addr.street_address = street
-        else:
-            new_addr = Address(
-                zip_code=zip_code, prefecture=pref, street_address=street
-            )
-            session.add(new_addr)
-            session.flush()
-            session.add(
-                H_AddressHistory(
-                    heir_id=contractor.id,
-                    address_id=new_addr.id,
-                    is_current_address=True,
+        if zip_code or address_full:
+            addr_link = (
+                session.query(H_AddressHistory)
+                .filter(
+                    H_AddressHistory.heir_id == contractor.id,
+                    H_AddressHistory.is_current_address == True,
                 )
+                .first()
             )
+
+            # 簡易分割 (都道府県とそれ以降)
+            pref = ""
+            street = address_full
+            # "東京都千代田区..." -> "東京都", "千代田区..."
+            match = re.match(r"(.{2,3}[都道府県])(.+)", address_full)
+            if match:
+                pref = match.group(1)
+                street = match.group(2)
+
+            if addr_link:
+                # 既存住所がある場合は更新（上書き）
+                addr = session.query(Address).get(addr_link.address_id)
+                # ★ここが重要: 既存の値をクリアせず追記になっていた可能性があるため、
+                # 確実に新しい値で上書きする。
+                addr.zip_code = zip_code
+                addr.prefecture = pref
+                # city_ward_town は今回のロジックでは分割していないため空にするか、streetに含める
+                addr.city_ward_town = "" 
+                addr.street_address = street
+                addr.building_name = "" # 建物名も一旦リセット（Kintone側に建物名フィールドがあればそちらを使うべきだが、今回は住所一括のため）
+            else:
+                # 新規作成
+                new_addr = Address(
+                    zip_code=zip_code, prefecture=pref, street_address=street
+                )
+                session.add(new_addr)
+                session.flush()
+                session.add(
+                    H_AddressHistory(
+                        heir_id=contractor.id,
+                        address_id=new_addr.id,
+                        is_current_address=True,
+                    )
+                )
 
         # 7. 電話番号 (TEL) の取込
-        tel_str = json_data.get("TEL", "")
+        # -------------------------------------------------------
+        tel_str = get_value_from_keys(json_data, ["TEL", "電話番号", "phone", "mobile"])
+        
         if tel_str:
-            # 既存の電話番号を一度クリア
+            # 既存の電話番号を一度すべて削除
             existing_links = session.query(H_ContactLink).filter(
                 H_ContactLink.heir_id == contractor.id
             ).all()
@@ -342,7 +368,7 @@ def import_kintone_json(
                     session.delete(contact)
                     session.delete(link)
             
-            # カンマ区切りなどで複数ある場合は分割して登録
+            # 新しい値を登録
             tels = tel_str.replace("、", ",").split(",")
             for i, t in enumerate(tels):
                 clean_tel = t.strip()
@@ -357,7 +383,9 @@ def import_kintone_json(
                     session.add(H_ContactLink(heir_id=contractor.id, contact_id=c.id))
 
         # 8. メールアドレス
-        mail_str = json_data.get("メールアドレス", "")
+        # -------------------------------------------------------
+        mail_str = get_value_from_keys(json_data, ["メールアドレス", "email", "mail"])
+        
         if mail_str:
             # 既存メール削除
             existing_links = session.query(H_ContactLink).filter(

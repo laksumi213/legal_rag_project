@@ -38,6 +38,9 @@ Requires-Dist: python-docx>=1.2.0
 Requires-Dist: streamlit-keyup>=0.3.0
 Requires-Dist: selenium>=4.40.0
 Requires-Dist: webdriver-manager>=4.0.2
+Requires-Dist: pyzipper>=0.3.6
+Requires-Dist: google-auth-oauthlib>=1.2.4
+Requires-Dist: google-api-python-client>=2.188.0
 
 # legal-rag-project
 

@@ -6,6 +6,7 @@ import os
 import random
 import re
 import time
+import base64
 from datetime import datetime
 from io import BytesIO
 
@@ -13,6 +14,8 @@ import pandas as pd
 import streamlit as st
 from langchain_text_splitters import RecursiveCharacterTextSplitter
 from pypdf import PdfReader
+# Gemini用メッセージは ocr_engine 側に移動したので不要だが、残しておいても害はない
+from langchain_core.messages import HumanMessage 
 
 # パス解決 (プロジェクト構成に合わせて調整)
 ROOT_DIR = os.path.dirname(
@@ -23,14 +26,8 @@ ROOT_DIR = os.path.dirname(
 
 from legal_system.core.ai_factory import AIFactory
 from legal_system.core.database_manager import DatabaseManager
+# ★修正: Gemini優先ロジックを含む関数をインポート
 from legal_system.core.ocr_engine import extract_text_from_scanned_pdf
-
-# PDFプレビュー用
-try:
-    from pdf2image import convert_from_bytes
-except ImportError:
-    convert_from_bytes = None
-
 
 # ---------------------------------------------------------
 # ヘルパー関数群
@@ -39,9 +36,14 @@ def calculate_file_hash(file_bytes: bytes) -> str:
     """ファイルの重複登録を防ぐためのハッシュ計算"""
     return hashlib.md5(file_bytes).hexdigest()
 
+# ★削除: extract_text_with_gemini は ocr_engine.py に移動したため削除
 
 def extract_text_safe(file_bytes: bytes) -> str:
-    """PDFからテキストを抽出。テキスト情報がない場合はOCRエンジンを使用"""
+    """
+    PDFからテキストを抽出。
+    1. テキストレイヤー (pypdf) を試す (高速・無料)
+    2. なければ Gemini Vision / PaddleOCR (ocr_engineにお任せ)
+    """
     text = ""
     try:
         pdf = PdfReader(BytesIO(file_bytes))
@@ -51,9 +53,14 @@ def extract_text_safe(file_bytes: bytes) -> str:
                 text += t
     except:
         pass
-    # テキストが極端に少ない場合はスキャンデータとみなしてOCRを実行
+        
+    # テキストが極端に少ない場合はスキャンデータとみなしてOCRエンジン(Gemini優先)を実行
     if len(text.strip()) < 50:
-        text = extract_text_from_scanned_pdf(file_bytes)
+        st.toast("テキストデータなし。AI視覚解析を実行します...", icon="👁️")
+        ocr_text = extract_text_from_scanned_pdf(file_bytes)
+        if ocr_text:
+            text = ocr_text
+                
     return text
 
 
@@ -211,7 +218,7 @@ def render_upload_tab(db_manager: DatabaseManager):
                             time.sleep(0.5)
                             continue
 
-                        # 解析処理
+                        # 解析処理 (extract_text_safe -> ocr_engine -> Gemini Vision)
                         text = extract_text_safe(fb)
                         if not text:
                             st.warning(
@@ -283,6 +290,8 @@ def render_upload_tab(db_manager: DatabaseManager):
             else:
                 if convert_from_bytes:
                     try:
+                        # プレビュー表示用
+                        from pdf2image import convert_from_bytes # 再度インポート確認
                         images = convert_from_bytes(fb_s, first_page=1, last_page=1)
                         if images:
                             st.image(images[0], width=400)
@@ -306,6 +315,8 @@ def render_upload_tab(db_manager: DatabaseManager):
                             st.stop()
 
                         st.write("📄 テキスト抽出中...")
+                        # ★注意: 機密タブですが、今回はユーザ要望により Gemini Vision (Cloud) を優先する ocr_engine を使っています。
+                        # 完全ローカル運用が必要な場合は、ここを分岐させる必要がありますが、現状は共通化しています。
                         text_s = extract_text_safe(fb_s)
 
                         st.write("🔍 文書解析中 (ルールベース + Llama)...")

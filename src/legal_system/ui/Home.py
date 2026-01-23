@@ -63,119 +63,147 @@ if "warmup_thread_started" not in st.session_state:
     t.start()
     st.session_state["warmup_thread_started"] = True
 
-# ★修正版: キーボードショートカット (再登録方式で安定化)
+# ★修正版: キーボードショートカット (ポーリング強化・st_keyup特定版)
 def enable_keyboard_shortcuts():
-    SEARCH_PLACEHOLDER = "案件番号、氏名、電話番号で検索..."
+    # 検索バーのプレースホルダーの一部
+    SEARCH_KEYWORD = "案件番号"; 
     BTN_OPEN_TEXT = "📂 開く"
     BTN_KINTONE_TEXT = "🔗 Kintoneで開く"
 
     js_code = f"""
     <script>
         (function() {{
-            const SEARCH_PH = "{SEARCH_PLACEHOLDER}";
+            const SEARCH_KW = "{SEARCH_KEYWORD}";
             const TEXT_OPEN = "{BTN_OPEN_TEXT}";
             const TEXT_KINTONE = "{BTN_KINTONE_TEXT}";
 
-            function findInputByPlaceholder(placeholder) {{
+            // --- Iframe内も含めてInputを探す関数 ---
+            function findTargetInput() {{
                 const doc = window.parent.document;
-                const inputs = doc.querySelectorAll('input');
-                for (let input of inputs) {{
-                    if (input.placeholder === placeholder) return input;
-                }}
-                const iframes = doc.querySelectorAll('iframe');
-                for (let frame of iframes) {{
+                
+                // 1. すべてのIframeを取得
+                const iframes = doc.getElementsByTagName('iframe');
+                
+                for (let i = 0; i < iframes.length; i++) {{
                     try {{
+                        const frame = iframes[i];
                         const fDoc = frame.contentDocument || frame.contentWindow.document;
-                        const fInputs = fDoc.querySelectorAll('input');
-                        for (let fIn of fInputs) {{
-                            if (fIn.placeholder === placeholder) return fIn;
+                        
+                        // Iframe内の全inputを取得
+                        const inputs = fDoc.getElementsByTagName('input');
+                        for (let j = 0; j < inputs.length; j++) {{
+                            const input = inputs[j];
+                            // プレースホルダーまたはaria-labelで判定
+                            const txt = (input.placeholder || "") + (input.getAttribute('aria-label') || "");
+                            if (txt.includes(SEARCH_KW)) {{
+                                return input; // 発見
+                            }}
                         }}
-                    }} catch(e) {{}}
+                    }} catch(e) {{
+                        // Cross-originエラーは無視
+                    }}
                 }}
                 return null;
             }}
 
+            // --- ボタンクリック関数 ---
             function triggerButton(textLabel) {{
                 const doc = window.parent.document;
-                const buttons = doc.querySelectorAll('button');
-                for (let btn of buttons) {{
-                    if (btn.innerText.includes(textLabel)) {{
-                        btn.click();
-                        btn.style.border = "2px solid #d33682";
-                        setTimeout(() => btn.style.border = "", 200);
-                        return true;
-                    }}
-                }}
-                const links = doc.querySelectorAll('a');
-                for (let a of links) {{
-                    if (a.innerText.includes(textLabel)) {{
-                        a.click();
+                // button, a, [role="button"] を広範囲に探索
+                const elements = doc.querySelectorAll('button, a, [role="button"]');
+                for (let el of elements) {{
+                    if (el.textContent && el.textContent.includes(textLabel)) {{
+                        el.click();
+                        // 視覚フィードバック
+                        const originalBorder = el.style.border;
+                        el.style.border = "3px solid #d33682"; 
+                        setTimeout(() => el.style.border = originalBorder, 300);
                         return true;
                     }}
                 }}
                 return false;
             }}
 
-            // --- イベントリスナーの登録（重複防止・再登録方式） ---
-            const doc = window.parent.document;
-            
-            // 既に登録されているハンドラがあれば削除（リロード対策）
-            if (window.parent._myKeyboardHandler) {{
-                doc.removeEventListener('keydown', window.parent._myKeyboardHandler);
+            // --- フォーカス実行処理 ---
+            function doFocus() {{
+                const input = findTargetInput();
+                if (input) {{
+                    input.focus();
+                    input.select();
+                    // 視覚フィードバック
+                    input.style.transition = "box-shadow 0.2s";
+                    input.style.boxShadow = "0 0 0 4px rgba(211, 54, 130, 0.5)";
+                    setTimeout(() => input.style.boxShadow = "", 800);
+                    return true;
+                }}
+                return false;
             }}
 
-            // ハンドラ関数を定義
-            window.parent._myKeyboardHandler = function(e) {{
+            // --- キーボードイベントハンドラ ---
+            const doc = window.parent.document;
+            
+            // 重複登録防止
+            if (window.parent._legalAppKeyHandler_v2) {{
+                doc.removeEventListener('keydown', window.parent._legalAppKeyHandler_v2, true);
+            }}
+
+            window.parent._legalAppKeyHandler_v2 = function(e) {{
                 // Altキー必須
                 if (!e.altKey) return;
+                const key = e.key.toLowerCase();
 
-                // [Alt + S] 検索
-                if (e.key.toLowerCase() === 's') {{
-                    e.preventDefault();
-                    const input = findInputByPlaceholder(SEARCH_PH);
-                    if (input) {{
-                        input.focus();
-                        input.style.boxShadow = "0 0 5px #d33682";
-                        setTimeout(() => input.style.boxShadow = "", 500);
-                    }}
+                // [Alt + S] 検索バー
+                if (key === 's') {{
+                    e.preventDefault(); 
+                    e.stopPropagation();
+                    doFocus();
                 }}
                 
-                // [Alt + O] 開く
-                if (e.key.toLowerCase() === 'o') {{
-                    e.preventDefault();
-                    triggerButton(TEXT_OPEN);
+                // [Alt + O] フォルダ
+                if (key === 'o') {{
+                    if (triggerButton(TEXT_OPEN)) {{
+                        e.preventDefault(); e.stopPropagation();
+                    }}
                 }}
 
                 // [Alt + K] Kintone
-                if (e.key.toLowerCase() === 'k') {{
-                    e.preventDefault();
-                    triggerButton(TEXT_KINTONE);
+                if (key === 'k') {{
+                    if (triggerButton(TEXT_KINTONE)) {{
+                        e.preventDefault(); e.stopPropagation();
+                    }}
                 }}
             }};
 
-            // 新しく登録
-            doc.addEventListener('keydown', window.parent._myKeyboardHandler);
+            // Captureフェーズ(true)で登録して優先度を上げる
+            doc.addEventListener('keydown', window.parent._legalAppKeyHandler_v2, true);
 
-            // --- 初回オートフォーカス ---
-            let attempts = 0;
-            const maxAttempts = 100; 
-            const autoFocusTimer = setInterval(() => {{
-                const input = findInputByPlaceholder(SEARCH_PH);
+            // --- 初期フォーカスのためのポーリング ---
+            // st_keyupは遅延ロードされるため、見つかるまでリトライする
+            let attempt = 0;
+            const maxAttempts = 20; // 0.2s * 20 = 4秒間試行
+            
+            const initFocusTimer = setInterval(() => {{
+                // すでにフォーカスが当たっているか確認
                 const active = window.parent.document.activeElement;
-                const isInputActive = active && (active.tagName === 'INPUT' || active.tagName === 'TEXTAREA');
-                if (input) {{
-                    if (!isInputActive) {{
-                        input.focus();
-                        input.style.boxShadow = "0 0 5px #d33682";
-                        setTimeout(() => input.style.boxShadow = "", 1000);
+                const isInputActive = active && (active.tagName === 'INPUT' || active.tagName === 'TEXTAREA' || active.tagName === 'IFRAME');
+                
+                // まだ入力欄にフォーカスがない場合のみ実行
+                if (!isInputActive) {{
+                    if (doFocus()) {{
+                        console.log("Initial focus set successfully.");
+                        clearInterval(initFocusTimer);
                     }}
-                    clearInterval(autoFocusTimer);
+                }} else {{
+                    // 既にどこかにフォーカスがあれば終了
+                    clearInterval(initFocusTimer);
                 }}
-                attempts++;
-                if (attempts > maxAttempts) {{
-                    clearInterval(autoFocusTimer);
+
+                attempt++;
+                if (attempt >= maxAttempts) {{
+                    clearInterval(initFocusTimer);
                 }}
-            }}, 100);
+            }}, 200); // 200msごとにチェック
+
         }})();
     </script>
     """
@@ -188,7 +216,7 @@ from legal_system.core.ai_factory import AIFactory
 from legal_system.core.database_manager import DatabaseManager
 from legal_system.models.tables import (
     Address, Case, Contact, Deceased, FinancialAsset, 
-    H_AddressHistory, H_ContactLink, Heir, RealEstateAsset, User
+    H_AddressHistory, H_ContactLink, Heir, RealEstateAsset, User, ContactLog
 )
 from legal_system.ui.label_generator import generate_advanced_label, get_branch_address
 from services.deceased_service import (
@@ -319,6 +347,9 @@ def image_to_bytes(img: Image.Image, format: str = "JPEG") -> bytes:
     return buf.getvalue()
 
 def search_cases_enhanced(session, keyword: str):
+    """
+    案件検索ロジック (被相続人氏名検索強化版)
+    """
     base_query = session.query(Case).options(
         joinedload(Case.deceased_ref).joinedload(Deceased.heirs),
         joinedload(Case.manager),
@@ -328,19 +359,31 @@ def search_cases_enhanced(session, keyword: str):
         return base_query.order_by(Case.created_at.desc()).limit(10).all()
 
     clean_key = f"%{keyword.strip()}%"
+    
     return base_query.join(Case.deceased_ref)\
         .outerjoin(Deceased.heirs)\
         .outerjoin(Heir.contact_links)\
         .outerjoin(H_ContactLink.contact)\
         .filter(
             or_(
+                # 案件情報
                 Case.case_number.ilike(clean_key),
                 Case.client_name.ilike(clean_key),
                 Case.client_name_kana.ilike(clean_key),
                 Case.sol_case_number.ilike(clean_key),
                 Case.referral_sec_phone.ilike(clean_key),
+                
+                # 被相続人情報 (個別フィールド + フルネーム結合検索)
                 Deceased.name_last.ilike(clean_key),
                 Deceased.name_first.ilike(clean_key),
+                # フルネーム (スペースなし)
+                (Deceased.name_last + Deceased.name_first).ilike(clean_key),
+                # フルネーム (半角スペース)
+                (Deceased.name_last + " " + Deceased.name_first).ilike(clean_key),
+                # フルネーム (全角スペース)
+                (Deceased.name_last + "　" + Deceased.name_first).ilike(clean_key),
+                
+                # 連絡先
                 Contact.value.ilike(clean_key)
             )
         ).distinct().limit(20).all()
@@ -746,7 +789,14 @@ def main():
                 if st.button("上書き実行"):
                     if ji:
                         try:
-                            import_kintone_json(json.loads(ji), target_case_id=target_case_id)
+                            # ==========================================
+                            # ★修正: 電話番号・メールアドレスの除外処理
+                            # ==========================================
+                            data = json.loads(ji)
+                            data.pop("TEL", None)
+                            data.pop("メールアドレス", None)
+                            
+                            import_kintone_json(data, target_case_id=target_case_id)
                             st.success("更新しました"); time.sleep(1); st.rerun()
                         except: st.error("エラー")
         with c_d:
@@ -845,6 +895,29 @@ def main():
                         if new_lname and new_rel:
                             add_heir(d.id, f"{new_lname} {new_fname}", new_rel); st.toast("追加しました", icon="✅"); time.sleep(1); st.rerun()
                         else: st.error("姓と続柄は必須です")
+
+        # ==================================================
+        # ★ 追加: AI自動取込メモ・対応履歴の表示エリア
+        # ==================================================
+        st.divider()
+        st.subheader("📝 会議メモ・対応履歴 (AI自動連携)")
+        
+        # データベースからこの案件の履歴を取得
+        logs = session.query(ContactLog).filter_by(case_id=target_case_id).order_by(ContactLog.log_id.desc()).all()
+        
+        if logs:
+            for log in logs:
+                # 自動取込かどうかでアイコンを変える
+                icon = "🤖" if "【自動取込】" in log.contact_content else "🗒️"
+                # タイトル用に本文の1行目を切り出す
+                title = log.contact_content.split('\n')[0]
+                if len(title) > 40: title = title[:40] + "..."
+                
+                with st.expander(f"{icon} {title}", expanded=True):
+                    st.text(log.contact_content)  # 本文をそのまま表示
+        else:
+            st.info("まだ履歴はありません。")
+            st.caption("※ Gmailから「メモ」が届くと、ここに自動で追加されます。")
 
     # ==========================================
     # B. 銀行口座登録

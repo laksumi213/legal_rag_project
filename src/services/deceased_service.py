@@ -2,10 +2,11 @@
 
 import datetime
 import logging
-from typing import Any, Dict, List, Optional
+import re
+from typing import Any, Dict, List, Optional, Set
 
 import requests
-from sqlalchemy import or_, func
+from sqlalchemy import or_, and_, func
 from sqlalchemy.orm import joinedload
 
 from legal_system.core.database_manager import DatabaseManager
@@ -19,6 +20,7 @@ from legal_system.models.tables import (
     H_ContactLink,
     Heir,
     User,
+    IncomingNoteBuffer,
 )
 from src.utils.date_utils import parse_all_flexible_date
 
@@ -109,48 +111,128 @@ def promote_to_formal_case_number(case_id: int) -> bool:
 
 
 # ==========================================
-# 2. 案件 (Case) 操作 & 検索
+# ★追加: 異体字展開ロジック (名寄せ強化)
+# ==========================================
+def _expand_name_variants(name: str) -> Set[str]:
+    """
+    入力された氏名に対し、一般的な異体字（旧字・俗字）の組み合わせを展開して返す。
+    例: "宮崎" -> {"宮崎", "宮﨑"}
+    """
+    if not name:
+        return set()
+
+    # ベースの正規化（スペース除去）
+    clean_base = name.replace(" ", "").replace("　", "")
+    candidates = {clean_base}
+
+    # 異体字マップ (必要に応じて追加してください)
+    variant_map = {
+        "崎": ["崎", "﨑", "嵜"],
+        "﨑": ["崎", "﨑", "嵜"],
+        "高": ["高", "髙"],
+        "髙": ["高", "髙"],
+        "沢": ["沢", "澤"],
+        "澤": ["沢", "澤"],
+        "斉": ["斉", "斎", "齋", "齊"],
+        "斎": ["斉", "斎", "齋", "齊"],
+        "辺": ["辺", "邉", "邊"],
+        "浜": ["浜", "濱"],
+        "濱": ["浜", "濱"],
+        "吉": ["吉", "𠮷"],
+        "𠮷": ["吉", "𠮷"],
+        "富": ["富", "冨"],
+        "冨": ["富", "冨"],
+    }
+
+    # 各文字について異体字があれば候補を増殖させる
+    for char, variants in variant_map.items():
+        if char in clean_base:
+            current_list = list(candidates)
+            for base_str in current_list:
+                for v in variants:
+                    candidates.add(base_str.replace(char, v))
+
+    return candidates
+
+
+# ==========================================
+# 2. 案件 (Case) 操作 & 検索 (大幅強化版)
 # ==========================================
 def find_cases_by_attributes(
     client_name: Optional[str] = None, 
     deceased_name: Optional[str] = None,
     case_number: Optional[str] = None
 ) -> List[Dict[str, Any]]:
-    """属性検索（名寄せ）: 案件番号、依頼者名、被相続人名で検索"""
+    """
+    属性検索（名寄せ）
+    - 異体字対応 (宮崎⇔宮﨑)
+    - 姓名分離検索 (Deceasedテーブル対応)
+    - スペース無視検索
+    """
     session = get_db_session()
     results = []
+    
+    # 検索キーのログ出力 (デバッグ用)
+    logger.info(f"🔎 FindCase Search: Num={case_number}, Client={client_name}, Dec={deceased_name}")
+
     try:
         query = session.query(Case).outerjoin(Case.deceased_ref)
         conditions = []
 
-        # 1. 案件番号検索 (G番号など)
+        # 1. 案件番号検索
         if case_number:
             c_num = case_number.strip()
             conditions.append(Case.case_number.ilike(f"%{c_num}%"))
 
-        # 2. 依頼者名検索 (DB側のスペースを除去して比較)
+        # 2. 依頼者名検索 (Case.client_name: 氏名結合文字列)
         if client_name:
-            clean_c = client_name.replace(" ", "").replace("　", "")
-            if len(clean_c) >= 1:
-                # DBのカラム値から全角/半角スペースを除去したもので比較
+            c_variants = _expand_name_variants(client_name)
+            if c_variants:
+                # DB側のスペースを除去したカラムと比較
                 db_client_clean = func.replace(func.replace(Case.client_name, ' ', ''), '　', '')
-                conditions.append(db_client_clean.contains(clean_c))
+                variant_conditions = [db_client_clean.contains(v) for v in c_variants]
+                conditions.append(or_(*variant_conditions))
 
-        # 3. 被相続人名検索 (姓+名を結合し、さらにスペースを除去して比較)
+        # 3. 被相続人名検索 (Deceased: 姓・名 分離カラム)
+        # ★ここを強化: 入力文字列を姓と名に分割して、それぞれで異体字マッチをかける
         if deceased_name:
-            clean_d = deceased_name.replace(" ", "").replace("　", "")
-            if len(clean_d) >= 1:
-                # DB上で 姓+名 を結合
-                full_name_db = Deceased.name_last + Deceased.name_first
+            # 入力文字列をスペースで分割 ("宮崎 修武" -> ["宮崎", "修武"])
+            parts = deceased_name.replace("　", " ").split(" ")
+            parts = [p for p in parts if p] # 空要素削除
+
+            if len(parts) >= 2:
+                # 姓と名が分かれている場合 -> 姓マッチ AND 名マッチ
+                last_input = parts[0]   # "宮崎"
+                first_input = "".join(parts[1:]) # "修武"
                 
-                # 結合結果からスペースを全削除
+                last_variants = _expand_name_variants(last_input)   # {"宮崎", "宮﨑"}
+                first_variants = _expand_name_variants(first_input) # {"修武"}
+
+                # 姓のいずれかに一致
+                last_cond = or_(*[Deceased.name_last.contains(v) for v in last_variants])
+                # 名のいずれかに一致
+                first_cond = or_(*[Deceased.name_first.contains(v) for v in first_variants])
+                
+                # (姓マッチ AND 名マッチ) を条件に追加
+                conditions.append(and_(last_cond, first_cond))
+                
+                logger.info(f"   -> Split Search: Last={last_variants}, First={first_variants}")
+
+            else:
+                # スペースがない場合 ("宮崎修武") -> 結合カラムで検索、または片方検索
+                d_variants = _expand_name_variants(deceased_name)
+                
+                # DB上で結合した仮想カラム
+                full_name_db = Deceased.name_last + Deceased.name_first
                 full_name_clean = func.replace(func.replace(full_name_db, ' ', ''), '　', '')
                 
-                conditions.append(or_(
-                    Deceased.name_last.contains(clean_d),   # 念のため単独一致も残す
-                    Deceased.name_first.contains(clean_d),
-                    full_name_clean.contains(clean_d)
-                ))
+                # 結合名 OR 姓のみ OR 名のみ
+                v_conds = []
+                for v in d_variants:
+                    v_conds.append(full_name_clean.contains(v))
+                    v_conds.append(Deceased.name_last.contains(v)) # 苗字だけ入力された場合用
+                
+                conditions.append(or_(*v_conds))
 
         if not conditions:
             return []
@@ -158,6 +240,8 @@ def find_cases_by_attributes(
         # いずれかの条件にヒットするものを取得
         cases = query.filter(or_(*conditions)).limit(20).all()
         
+        logger.info(f"   -> Hits: {len(cases)} cases found.")
+
         for c in cases:
             d_name = "未登録"
             d_date = None
@@ -351,10 +435,20 @@ def get_deceased_by_id(deceased_id: int) -> Optional[Deceased]:
 
 
 def delete_case_and_all_related_data(case_number: str) -> bool:
+    """
+    案件とその関連データを削除する。
+    IncomingNoteBuffer等の外部キー制約があるデータを先に削除する。
+    """
     session = get_db_session()
     try:
         case = session.query(Case).filter(Case.case_number == case_number).first()
         if case:
+            # ★追加: 外部キー制約回避のため、先に関連するIncomingNoteBufferを削除
+            session.query(IncomingNoteBuffer).filter(
+                IncomingNoteBuffer.linked_case_id == case.case_id
+            ).delete(synchronize_session=False)
+
+            # 案件本体の削除 (cascade設定により紐づくDeceased等は自動削除される想定)
             session.delete(case)
             session.commit()
             return True

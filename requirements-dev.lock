@@ -98,16 +98,22 @@ gitdb==4.0.12
     # via gitpython
 gitpython==3.1.45
     # via streamlit
+google-ai-generativelanguage==0.6.15
+    # via google-generativeai
 google-api-core==2.29.0
+    # via google-ai-generativelanguage
     # via google-api-python-client
     # via google-cloud-aiplatform
     # via google-cloud-bigquery
     # via google-cloud-core
     # via google-cloud-resource-manager
     # via google-cloud-storage
+    # via google-generativeai
 google-api-python-client==2.188.0
+    # via google-generativeai
     # via legal
 google-auth==2.47.0
+    # via google-ai-generativelanguage
     # via google-api-core
     # via google-api-python-client
     # via google-auth-httplib2
@@ -118,6 +124,7 @@ google-auth==2.47.0
     # via google-cloud-resource-manager
     # via google-cloud-storage
     # via google-genai
+    # via google-generativeai
 google-auth-httplib2==0.3.0
     # via google-api-python-client
 google-auth-oauthlib==1.2.4
@@ -141,6 +148,8 @@ google-crc32c==1.8.0
 google-genai==1.59.0
     # via google-cloud-aiplatform
     # via langchain-google-genai
+    # via legal
+google-generativeai==0.8.6
     # via legal
 google-resumable-media==2.8.0
     # via google-cloud-bigquery
@@ -377,13 +386,16 @@ propcache==0.4.1
     # via aiohttp
     # via yarl
 proto-plus==1.27.0
+    # via google-ai-generativelanguage
     # via google-api-core
     # via google-cloud-aiplatform
     # via google-cloud-resource-manager
 protobuf==5.29.5
+    # via google-ai-generativelanguage
     # via google-api-core
     # via google-cloud-aiplatform
     # via google-cloud-resource-manager
+    # via google-generativeai
     # via googleapis-common-protos
     # via grpc-google-iam-v1
     # via grpcio-status
@@ -413,6 +425,7 @@ pydantic==2.12.5
     # via chromadb
     # via google-cloud-aiplatform
     # via google-genai
+    # via google-generativeai
     # via langchain
     # via langchain-classic
     # via langchain-core
@@ -581,6 +594,7 @@ tornado==6.5.4
     # via streamlit
 tqdm==4.67.1
     # via chromadb
+    # via google-generativeai
     # via huggingface-hub
     # via sentence-transformers
     # via transformers
@@ -607,6 +621,7 @@ typing-extensions==4.15.0
     # via chromadb
     # via google-cloud-aiplatform
     # via google-genai
+    # via google-generativeai
     # via grpcio
     # via huggingface-hub
     # via langchain-core

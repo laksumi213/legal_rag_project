@@ -1,0 +1,61 @@
+def enable_advanced_autofocus():
+    """
+    Streamlitの深いiFrame構造を突破し、
+    特定のプレースホルダーを持つ検索バーに強制的にフォーカスを当てる。
+    """
+    # ターゲットにするプレースホルダーを定義 (st_keyupの引数と一致させる)
+    target_placeholder = "案件番号、氏名、電話番号で検索..."
+
+    js_code = f"""
+    <script>
+        (function() {{
+            const TARGET_TEXT = "{target_placeholder}";
+            let attempts = 0;
+            const maxAttempts = 50; // 最大5秒間試行
+
+            function findAndFocus() {{
+                // 1. Streamlitのメインドキュメント(親)を取得
+                const mainDoc = window.parent.document;
+                
+                // 2. すべてのinput要素をスキャン
+                const allInputs = mainDoc.querySelectorAll('input');
+                
+                for (let input of allInputs) {{
+                    // プレースホルダーが一致するか確認
+                    if (input.placeholder === TARGET_TEXT) {{
+                        input.focus();
+                        // 視覚的にフォーカスされたことを強調（任意）
+                        input.style.boxShadow = "0 0 5px #d33682"; 
+                        return true;
+                    }}
+                }}
+                
+                // 3. iFrame内にある可能性を考慮 (st_keyup等はiFrameでラップされる場合がある)
+                const iframes = mainDoc.querySelectorAll('iframe');
+                for (let frame of iframes) {{
+                    try {{
+                        const frameDoc = frame.contentDocument || frame.contentWindow.document;
+                        const frameInputs = frameDoc.querySelectorAll('input');
+                        for (let fInput of frameInputs) {{
+                            if (fInput.placeholder === TARGET_TEXT) {{
+                                fInput.focus();
+                                return true;
+                            }}
+                        }}
+                    }} catch (e) {{
+                        // クロスドメイン制約でアクセスできない場合はスキップ
+                    }}
+                }}
+                return false;
+            }}
+
+            const timer = setInterval(() => {{
+                if (findAndFocus() || attempts > maxAttempts) {{
+                    clearInterval(timer);
+                }}
+                attempts++;
+            }}, 100);
+        }})();
+    </script>
+    """
+    components.html(js_code, height=0)

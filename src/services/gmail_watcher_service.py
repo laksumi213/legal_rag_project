@@ -6,18 +6,19 @@ import time
 import logging
 import base64
 import difflib
+import tempfile
 from datetime import datetime
-from typing import List, Optional, Dict, Any
+from typing import List, Optional, Dict, Any, Generator
 
 # Google API
 from google.oauth2.credentials import Credentials
-from google_auth_oauthlib.flow import InstalledAppFlow
 from google.auth.transport.requests import Request
 from googleapiclient.discovery import build
+import google.generativeai as genai
 
 # LangChain / AI
 from langchain_core.messages import HumanMessage
-from langchain_core.output_parsers import JsonOutputParser
+# from langchain_core.output_parsers import JsonOutputParser # 未使用なら削除可
 
 # データベース / SQL
 from sqlalchemy import or_, func
@@ -26,6 +27,7 @@ from sqlalchemy.orm import joinedload
 # 内部モジュール
 from legal_system.core.database_manager import DatabaseManager
 from legal_system.core.ai_factory import AIFactory
+from legal_system.core.config import Config
 from legal_system.models.tables import Case, Deceased, ContactLog, IncomingNoteBuffer, Heir
 
 # ロガー設定
@@ -40,7 +42,13 @@ class GmailWatcherService:
         self.db = DatabaseManager()
         self.creds = self._authenticate_gmail()
         self.service = build('gmail', 'v1', credentials=self.creds) if self.creds else None
+        
+        # LangChain用
         self.llm = AIFactory.get_llm(mode="cloud", temperature=0.0)
+        
+        # 音声処理用に直接Geminiクライアントを設定
+        if os.getenv("GOOGLE_API_KEY"):
+            genai.configure(api_key=os.getenv("GOOGLE_API_KEY"))
 
     def _authenticate_gmail(self):
         token_path = 'token.json'
@@ -64,21 +72,63 @@ class GmailWatcherService:
 
         if 'body' in payload and 'data' in payload['body']:
             return decode_data(payload['body']['data'])
+        
+        # 本文探索も再帰的に行うのがベストだが、ここでは簡易的に text/plain を探す
         if 'parts' in payload:
             for part in payload['parts']:
                 if part.get('mimeType') == 'text/plain' and 'data' in part.get('body', {}):
                     return decode_data(part['body']['data'])
         return ""
 
+    def _get_attachment_data(self, msg_id: str, attachment_id: str) -> Optional[bytes]:
+        """Gmailから添付ファイルの生データを取得"""
+        try:
+            attachment = self.service.users().messages().attachments().get(
+                userId='me', messageId=msg_id, id=attachment_id
+            ).execute()
+            return base64.urlsafe_b64decode(attachment['data'])
+        except Exception as e:
+            logger.error(f"Attachment Download Error: {e}")
+            return None
+
+    def _walk_parts(self, part: Dict[str, Any]) -> Generator[Dict[str, Any], None, None]:
+        """
+        メールのパートを再帰的に探索してフラットなリストにするヘルパー関数。
+        これにより、multipart/alternative 内のネストされた添付ファイルも検出可能になる。
+        """
+        yield part
+        if 'parts' in part:
+            for sub_part in part['parts']:
+                yield from self._walk_parts(sub_part)
+
     def poll_and_process(self):
         if not self.service: return
         logger.info("📧 Gmail: 新着会議メモを確認中...")
         session = None
         try:
-            query = 'from:gemini-notes@google.com subject:"メモ" newer_than:7d'
+            target_senders = ["gemini-notes@google.com"]
+            target_keywords = ["録音", "ボイス"]
+
+            if target_senders:
+                senders_part = f'from:({" OR ".join(target_senders)} OR me)'
+            else:
+                senders_part = 'from:(gemini-notes@google.com OR me)'
+            
+            conditions = ['subject:"メモ"']
+            for kw in target_keywords:
+                conditions.append(f'subject:{kw}')
+                conditions.append(f'filename:{kw}')
+            
+            conditions_part = f'({" OR ".join(conditions)})'
+            query = f'{senders_part} {conditions_part} newer_than:7d'
+            
+            logger.info(f"🔎 Generated Query: {query}")
+
             results = self.service.users().messages().list(userId='me', q=query).execute()
             messages = results.get('messages', [])
-            if not messages: return
+            if not messages: 
+                logger.info("   -> 対象のメールは見つかりませんでした。")
+                return
 
             session = self.db._get_session()
             processed_count = 0
@@ -93,11 +143,42 @@ class GmailWatcherService:
                 subject = next((h['value'] for h in payload.get('headers', []) if h['name'] == 'Subject'), 'No Subject')
                 body_text = self._get_decoded_body(payload) or detail.get('snippet', '')
 
+                # --- 【修正】音声ファイルの検出と処理 (再帰対応) ---
+                audio_summary = ""
+                has_audio = False
+                
+                # _walk_partsを使って、ネストされたパートも含めて全てチェックする
+                for part in self._walk_parts(payload):
+                    fname = part.get('filename', '').lower()
+                    
+                    # 音声ファイルの拡張子チェック
+                    if fname and fname.endswith(('.m4a', '.mp3', '.wav', '.aac')):
+                        logger.info(f"   🎙️ 音声ファイルを検出: {fname}")
+                        att_id = part['body'].get('attachmentId')
+                        
+                        if att_id:
+                            audio_data = self._get_attachment_data(msg_id, att_id)
+                            if audio_data:
+                                logger.info("   ⏳ 音声をAIに送信中(文字起こし)...")
+                                try:
+                                    # 音声解析の実行
+                                    audio_summary_part = self._transcribe_audio_with_gemini(audio_data, fname)
+                                    has_audio = True
+                                    body_text += f"\n\n--- 🎙️ 音声解析結果 ({fname}) ---\n{audio_summary_part}"
+                                    # 複数の音声ファイルがある場合も考慮して追記する形にする
+                                except Exception as e:
+                                    logger.error(f"   ❌ 音声解析失敗: {e}")
+                                    body_text += f"\n\n（※音声解析エラー: {e}）"
+                # ------------------------------------------------
+
+                if not has_audio and not body_text.strip():
+                    body_text = "（本文なし・音声ファイルなし）"
+
                 logger.info(f"📥 新規メモ受信: {subject}")
+                
                 ai_result = self._analyze_email_with_ai(body_text)
                 detected_names = ai_result.get("names", [])
                 
-                # --- ★修正点: summary が辞書で返ってきた場合に文字列へ変換 ---
                 summary_raw = ai_result.get("summary", "（要約なし）")
                 if isinstance(summary_raw, dict):
                     title = summary_raw.get('title', '会議メモ')
@@ -106,12 +187,11 @@ class GmailWatcherService:
                 else:
                     summary_text = str(summary_raw)
 
-                # あいまい名寄せ実行
                 linked_case = self._find_case_by_names_fuzzy(session, detected_names)
                 
                 status = "PENDING"
                 linked_case_id = None
-                formatted_content = f"【AI要約】{summary_text}\n\n--- 以下、メール全文 ---\n{body_text}"
+                formatted_content = f"【AI要約】{summary_text}\n\n--- 以下、メール全文・音声解析 ---\n{body_text}"
 
                 if linked_case:
                     logger.info(f"   ✅ 案件ヒット(Fuzzy): {linked_case.client_name}")
@@ -127,7 +207,7 @@ class GmailWatcherService:
                     subject=subject,
                     body_text=formatted_content,
                     detected_names=json.dumps(detected_names, ensure_ascii=False),
-                    ai_summary=summary_text, # 文字列として保存
+                    ai_summary=summary_text,
                     status=status,
                     linked_case_id=linked_case_id
                 )
@@ -148,11 +228,44 @@ class GmailWatcherService:
         finally:
             if session: session.close()
 
+    def _transcribe_audio_with_gemini(self, audio_data: bytes, filename: str) -> str:
+        """Geminiを使って音声をテキスト化・要約する (Config参照版)"""
+        try:
+            with tempfile.NamedTemporaryFile(suffix=os.path.splitext(filename)[1], delete=False) as tmp:
+                tmp.write(audio_data)
+                tmp_path = tmp.name
+
+            # Geminiにアップロード
+            myfile = genai.upload_file(tmp_path)
+            
+            # Configからモデル名を取得 (一元管理)
+            target_model = Config.VISION_AUDIO_MODEL
+            logger.info(f"   🤖 使用モデル: {target_model}")
+            
+            model = genai.GenerativeModel(target_model)
+            
+            prompt = "この音声ファイルは行政書士と依頼者の会議録音です。内容を詳細に文字起こしし、重要なポイントを要約してください。"
+            
+            response = model.generate_content([prompt, myfile])
+            
+            os.remove(tmp_path)
+            return response.text
+
+        except Exception as e:
+            logger.error(f"Audio Transcribe Error: {e}")
+            error_msg = str(e)
+            
+            # Configのモデル名が使えなかった場合のヒント
+            if "404" in error_msg or "not found" in error_msg.lower():
+                return f"（音声解析エラー: モデル '{Config.VISION_AUDIO_MODEL}' が見つかりません。src/legal_system/core/config.py の VISION_AUDIO_MODEL を 'gemini-1.5-flash-001' 等に変更してください。）"
+            
+            return f"（音声解析エラー: {e}）"
+
     def _analyze_email_with_ai(self, text: str) -> Dict[str, Any]:
-        prompt = f"""会議メモを解析し、以下のJSON形式で返してください。
+        prompt = f"""会議メモ（または音声解析結果）を解析し、以下のJSON形式で返してください。
         1. names: 会議に関わる顧客・被相続人の氏名リスト（行政書士名は除外）。
         2. summary: 会議の内容を「title（見出し）」と「points（3点の箇条書きリスト）」に分けて要約。
-        本文: {text[:4000]}"""
+        本文: {text[:40000]}"""
         try:
             res = self.llm.invoke(prompt)
             content = res.content.replace("```json", "").replace("```", "").strip()
@@ -162,7 +275,6 @@ class GmailWatcherService:
 
     def _find_case_by_names_fuzzy(self, session, names: List[str]) -> Optional[Case]:
         if not names: return None
-        
         all_cases = session.query(Case).options(joinedload(Case.deceased_ref)).all()
         candidate_map = {}
         for c in all_cases:
@@ -202,3 +314,42 @@ class GmailWatcherService:
             session.commit()
         except Exception as e: logger.error(f"Retry error: {e}")
         finally: session.close()
+    
+    def get_pending_notes(self) -> List[IncomingNoteBuffer]:
+        session = self.db._get_session()
+        try:
+            return session.query(IncomingNoteBuffer).filter_by(status="PENDING").order_by(IncomingNoteBuffer.received_at.desc()).all()
+        finally:
+            session.close()
+
+    def link_note_to_case_manually(self, note_id: int, case_id: int) -> bool:
+        session = self.db._get_session()
+        try:
+            note = session.query(IncomingNoteBuffer).get(note_id)
+            case = session.query(Case).get(case_id)
+            if not note or not case: return False
+            
+            log = ContactLog(case_id=case.case_id, contact_content=note.body_text)
+            session.add(log)
+            note.status = "LINKED"
+            note.linked_case_id = case.case_id
+            session.commit()
+            return True
+        except Exception as e:
+            logger.error(f"Manual Link Error: {e}")
+            session.rollback()
+            return False
+        finally:
+            session.close()
+
+    def ignore_note(self, note_id: int) -> bool:
+        session = self.db._get_session()
+        try:
+            note = session.query(IncomingNoteBuffer).get(note_id)
+            if note:
+                note.status = "IGNORED"
+                session.commit()
+                return True
+            return False
+        finally:
+            session.close()

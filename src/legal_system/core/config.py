@@ -1,4 +1,4 @@
-# file: src/legal_system/core/config.py
+# src/legal_system/core/config.py
 
 import os
 import random
@@ -60,21 +60,23 @@ class Config:
         f"@{POSTGRES_HOST}:{POSTGRES_PORT}/{POSTGRES_DB}"
     )
 
-    # --- AIプロバイダー設定 (New) ---
-    # "studio" (API Key) or "vertex" (Google Cloud)
+    # --- AIプロバイダー設定 ---
     AI_PROVIDER = os.getenv("AI_PROVIDER", "studio").lower()
 
     # --- Vertex AI 設定 ---
     GOOGLE_CLOUD_PROJECT = os.getenv("GOOGLE_CLOUD_PROJECT")
     GOOGLE_CLOUD_REGION = os.getenv("GOOGLE_CLOUD_REGION", "asia-northeast1")
 
-    # --- モデル設定 ---
-    # Vertex利用時はPublisher Model IDとして扱われる
+    # --- モデル設定 (ここで一元管理) ---
+    # 通常のテキスト生成・チャット用
     GOOGLE_MODEL_NAME = "gemini-2.5-flash-lite"
     MODEL_NAME = "gemini-2.5-flash-lite"
     
+    # ★追加: 音声・画像解析用 (マルチモーダル性能が高いモデルを指定)
+    # 404エラーが出た場合はここを "gemini-1.5-flash-001" や "gemini-1.5-pro" に書き換えるだけで済みます
+    VISION_AUDIO_MODEL = "gemini-2.5-flash-lite" 
+    
     # Embedding Model
-    # Vertex利用時は "text-embedding-004" 等が推奨されるが、ここでは互換性のため一旦共通化
     EMBEDDING_MODEL = "models/embedding-001"
     
     TEMPERATURE = 0.0
@@ -105,7 +107,6 @@ class Config:
 class KeyManager:
     @staticmethod
     def get_next_key() -> str:
-        # Vertexの場合はキー不要（ADC利用）だが、Config互換性のために実装維持
         if Config.is_vertex_enabled():
             return "vertex-managed"
             

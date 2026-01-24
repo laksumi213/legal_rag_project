@@ -60,17 +60,13 @@ def main():
                         data = json.loads(json_text)
                         
                         # ==========================================
-                        # ★修正: 電話番号・メールアドレスの除外処理
+                        # 【修正】以前あったTEL/メールアドレスの除外コードを削除
+                        # Kintone上の連絡先を正として取り込みます
                         # ==========================================
-                        # Kintone上のデータが担当者や紹介元のものである場合があるため、
-                        # 意図しない混入を防ぐためにここでは取り込み対象外とします。
-                        data.pop("TEL", None)
-                        data.pop("メールアドレス", None)
 
                         # ==========================================
-                        # ★修正: 顧客コードが空の場合の自動採番ロジック
+                        # 顧客コードが空の場合の自動採番ロジック
                         # ==========================================
-                        # JSON内のコードを確認
                         raw_code = data.get("顧客コード", "") or data.get("顧客コード_2", "")
                         
                         if not raw_code:
@@ -78,7 +74,6 @@ def main():
                             temp_num = get_next_case_number_service()
                             data["顧客コード_2"] = temp_num # import_kintone_json はこれを見る
                             
-                            # ユーザーへのフィードバック
                             st.toast(f"ℹ️ 顧客コードが空のため、仮番号「{temp_num}」を発行して登録します。", icon="🔢")
                             time.sleep(0.5)
 
@@ -214,7 +209,7 @@ def main():
                                 city=city_val,
                                 street=street_val,
                                 building=bldg_val,
-                                rel="本人",     # 仮: 本人として登録
+                                rel="本人",      # 仮: 本人として登録
                                 hometown=""
                             )
                             

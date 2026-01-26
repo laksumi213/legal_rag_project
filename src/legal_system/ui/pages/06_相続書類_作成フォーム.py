@@ -10,7 +10,6 @@ from reportlab.lib.colors import black, red
 from reportlab.pdfbase import pdfmetrics
 from reportlab.pdfbase.ttfonts import TTFont
 from reportlab.pdfgen import canvas
-# ★追加: SQLAlchemy読み込みオプション
 from sqlalchemy.orm import joinedload
 
 # パス解決
@@ -21,16 +20,19 @@ ROOT_DIR = os.path.dirname(
 sys.path.append(ROOT_DIR)
 
 from legal_system.core.database_manager import DatabaseManager
-# ★修正: 必要なモデルを全てインポート
 from legal_system.models.tables import (
     Case, 
     FileRegistry, 
     Deceased, 
     Heir, 
-    H_AddressHistory
+    H_AddressHistory,
+    Address,          # 追加
+    FinancialAsset,   # 追加
+    RealEstateAsset   # 追加
 )
+from utils.date_utils import convert_seireki_to_wareki # 和暦変換用
 
-# フォント設定
+# フォント設定 (変更なし)
 FONT_PATH = os.path.join(ROOT_DIR, "data", "fonts", "ipaexg.ttf")
 try:
     if os.path.exists(FONT_PATH):
@@ -42,42 +44,72 @@ st.set_page_config(page_title="書類作成 | 相続業務支援", page_icon="�
 
 
 # ==========================================
-# データ置換ロジック
+# ★改良: データ置換ロジック (資産コンテキスト対応)
 # ==========================================
-def create_replacement_map(case_data):
+def create_replacement_map(case_data, target_asset=None):
+    """
+    プレースホルダと実際の値のマッピングを作成する。
+    target_asset: FinancialAsset または RealEstateAsset のインスタンス (任意)
+    """
     map_dict = {}
 
-    # 基本情報
+    # 1. 案件基本情報
     map_dict["{case_number}"] = case_data.case_number
     map_dict["{client_name}"] = case_data.client_name
 
-    # 被相続人情報
+    # 2. 被相続人情報
     if case_data.deceased_ref:
         d = case_data.deceased_ref
         full_name = f"{d.name_last} {d.name_first}".strip()
         map_dict["{deceased_name}"] = full_name
         map_dict["{deceased_name_last}"] = d.name_last or ""
         map_dict["{deceased_name_first}"] = d.name_first or ""
+        map_dict["{deceased_hometown}"] = d.hometown or ""
 
+        # 生年月日
+        if d.date_of_birth:
+             map_dict["{deceased_birthday}"] = convert_seireki_to_wareki(d.date_of_birth)
+
+        # 死亡日
         if d.date_of_death:
-            map_dict["{death_date}"] = d.date_of_death.strftime("%Y年%m月%d日")
+            map_dict["{death_date}"] = convert_seireki_to_wareki(d.date_of_death)
             map_dict["{death_year_seireki}"] = str(d.date_of_death.year)
-            if d.date_of_death.year >= 2019:
-                map_dict["{death_year_wareki}"] = f"令和{d.date_of_death.year - 2018}"
-            else:
-                map_dict["{death_year_wareki}"] = str(d.date_of_death.year)
             map_dict["{death_month}"] = str(d.date_of_death.month)
             map_dict["{death_day}"] = str(d.date_of_death.day)
+            
+            # 和暦年 (例: 昭和30) ※数字だけでなく元号含む
+            dt = d.date_of_death
+            if dt.year >= 2019:
+                wareki_year = f"令和{dt.year - 2018}"
+                if dt.year == 2019 and dt.month <= 4: wareki_year = f"平成31" # 厳密な分岐が必要なら
+            elif dt.year >= 1989:
+                wareki_year = f"平成{dt.year - 1988}"
+            elif dt.year >= 1926:
+                wareki_year = f"昭和{dt.year - 1925}"
+            elif dt.year >= 1912:
+                wareki_year = f"大正{dt.year - 1911}"
+            else:
+                wareki_year = f"明治{dt.year - 1868}"
+            
+            # "令和1" を "令和元" にするかはお好みで調整
+            if "令和1" in wareki_year and len(wareki_year) == 3: wareki_year = "令和元"
+            
+            map_dict["{death_year_wareki}"] = wareki_year
+        
+        # 最後の住所
+        d_addr_str = ""
+        if d.last_address:
+            a = d.last_address
+            d_addr_str = f"{a.prefecture}{a.city_ward_town}{a.street_address} {a.building_name or ''}".strip()
+        map_dict["{deceased_address}"] = d_addr_str
 
-    # 相続人情報 (簡易実装: 契約者または一人目)
+    # 3. 相続人情報 (契約者を優先)
     heir = None
     if case_data.deceased_ref and case_data.deceased_ref.heirs:
-        # 契約者を優先
         for h in case_data.deceased_ref.heirs:
             if h.is_contracting_party:
                 heir = h
                 break
-        # いなければ一人目
         if not heir:
             heir = case_data.deceased_ref.heirs[0]
 
@@ -86,13 +118,43 @@ def create_replacement_map(case_data):
         map_dict["{heir_name}"] = full_name_h
         map_dict["{heir_name_last}"] = heir.name_last or ""
         map_dict["{heir_name_first}"] = heir.name_first or ""
+        map_dict["{heir_rel}"] = heir.relationship_type or ""
         
-        # 住所取得ロジック
+        # ★追加: 生年月日の詳細分解ロジック
+        if heir.date_of_birth:
+            # 1. 和暦全 (例: 昭和30年1月1日)
+            map_dict["{heir_birthday}"] = convert_seireki_to_wareki(heir.date_of_birth)
+            
+            # 2. 西暦年 (例: 1955)
+            map_dict["{heir_birthday_year_seireki}"] = str(heir.date_of_birth.year)
+            
+            # 3. 和暦年 (例: 昭和30) ※数字だけでなく元号含む
+            dt = heir.date_of_birth
+            if dt.year >= 2019:
+                wareki_year = f"令和{dt.year - 2018}"
+                if dt.year == 2019 and dt.month <= 4: wareki_year = f"平成31" # 厳密な分岐が必要なら
+            elif dt.year >= 1989:
+                wareki_year = f"平成{dt.year - 1988}"
+            elif dt.year >= 1926:
+                wareki_year = f"昭和{dt.year - 1925}"
+            elif dt.year >= 1912:
+                wareki_year = f"大正{dt.year - 1911}"
+            else:
+                wareki_year = f"明治{dt.year - 1868}"
+            
+            # "令和1" を "令和元" にするかはお好みで調整
+            if "令和1" in wareki_year and len(wareki_year) == 3: wareki_year = "令和元"
+            
+            map_dict["{heir_birthday_year_wareki}"] = wareki_year
+            
+            # 4. 月・日
+            map_dict["{heir_birthday_month}"] = str(dt.month)
+            map_dict["{heir_birthday_day}"] = str(dt.day)
+        
+        # 住所
         addr_str = "（住所未登録）"
         pref, city, street, bldg = "", "", "", ""
-        
         if heir.address_links:
-            # 最新の住所を探す
             for link in heir.address_links:
                 if link.is_current_address and link.address:
                     a = link.address
@@ -109,10 +171,34 @@ def create_replacement_map(case_data):
         map_dict["{heir_street}"] = street
         map_dict["{heir_building}"] = bldg
 
+    # 4. ★追加: 対象資産情報 (コンテキスト)
+    if target_asset:
+        # 金融資産の場合
+        if isinstance(target_asset, FinancialAsset):
+            bank_name = target_asset.bank_ref.bank_name if target_asset.bank_ref else ""
+            branch_name = target_asset.branch_ref.branch_name if target_asset.branch_ref else ""
+            acc_type = target_asset.account_type_ref.type_name if target_asset.account_type_ref else "普通"
+            
+            map_dict["{bank_name}"] = bank_name
+            map_dict["{branch_name}"] = branch_name
+            map_dict["{account_type}"] = acc_type
+            map_dict["{account_number}"] = target_asset.account_number or ""
+            map_dict["{balance}"] = f"{target_asset.balance:,.0f}" if target_asset.balance else "0"
+            # 口座名義人がもしAssetにあれば(現状はDeceased名が一般的だが、名寄せOCR結果等を使うならここ)
+            map_dict["{account_holder}"] = f"{d.name_last} {d.name_first}" # 仮: 被相続人名
+
+        # 不動産資産の場合
+        elif isinstance(target_asset, RealEstateAsset):
+            map_dict["{prop_location}"] = target_asset.location or ""
+            map_dict["{prop_number}"] = target_asset.lot_number or target_asset.house_number or ""
+            map_dict["{prop_category}"] = target_asset.land_category or target_asset.structure or ""
+            map_dict["{prop_area}"] = str(target_asset.land_area or target_asset.floor_area or "")
+
     return map_dict
 
 
 def generate_pdf(template_path, coords, replacement_map):
+    # (変更なし: 既存のロジックをそのまま使用)
     try:
         reader = PdfReader(template_path)
         output = PdfWriter()
@@ -130,9 +216,10 @@ def generate_pdf(template_path, coords, replacement_map):
 
                 for c in page_coords:
                     raw_val = c["value"]
+                    # 辞書から置換。なければ元の値をそのまま使う(固定文字など)
                     text_to_draw = replacement_map.get(raw_val, raw_val)
-                    if not text_to_draw:
-                        continue
+                    
+                    if not text_to_draw: continue
 
                     draw_x = c["x"] * SCALE_FACTOR
                     top_y = ph - (c["y"] * SCALE_FACTOR)
@@ -146,8 +233,7 @@ def generate_pdf(template_path, coords, replacement_map):
                             dims = text_to_draw.replace("RECT:", "").split("x")
                             w_pt, h_pt = float(dims[0]), float(dims[1])
                             can.rect(draw_x, top_y - h_pt, w_pt, h_pt, stroke=1, fill=0)
-                        except:
-                            pass
+                        except: pass
                     else:
                         baseline_y = top_y - (font_sz * 0.9)
                         can.setFont("IPAexG", font_sz)
@@ -181,95 +267,127 @@ def main():
 
     # 1. 案件選択 (Home共有)
     target_case_id = st.session_state.get("selected_case_id")
+    
     if not target_case_id:
+        # 未選択時の選択UI
         st.warning("⚠️ 案件が選択されていません。")
-        st.info("Home画面またはサイドバーで案件を選択してから、このページを開いてください。")
-        with st.expander("案件を選択する（未選択の場合）"):
+        with st.expander("案件を選択する", expanded=True):
             cases = session.query(Case).all()
             opts = {f"{c.case_number}: {c.client_name}": c.case_id for c in cases}
-            sel = st.selectbox("案件選択", list(opts.keys()))
-            if st.button("この案件で作業を開始"):
+            sel = st.selectbox("案件リスト", list(opts.keys()))
+            if st.button("選択"):
                 st.session_state["selected_case_id"] = opts[sel]
                 st.rerun()
         return
 
-    # ★修正: リレーション読み込みの記述を修正
-    # Deceased.heirs.address_links ではなく Heir.address_links を指定
+    # データ一括ロード (FinancialAsset, RealEstateAsset も含める)
     target_case = session.query(Case).options(
-        joinedload(Case.deceased_ref)
-        .joinedload(Deceased.heirs)
-        .joinedload(Heir.address_links)
-        .joinedload(H_AddressHistory.address),
-        
-        joinedload(Case.deceased_ref)
-        .joinedload(Deceased.last_address)
+        joinedload(Case.deceased_ref).joinedload(Deceased.heirs).joinedload(Heir.address_links).joinedload(H_AddressHistory.address),
+        joinedload(Case.deceased_ref).joinedload(Deceased.last_address),
+        joinedload(Case.financial_assets).joinedload(FinancialAsset.bank_ref),
+        joinedload(Case.financial_assets).joinedload(FinancialAsset.branch_ref),
+        joinedload(Case.financial_assets).joinedload(FinancialAsset.account_type_ref),
+        joinedload(Case.real_estates)
     ).get(target_case_id)
 
     if not target_case:
         st.error("案件情報の取得に失敗しました。")
         return
 
-    d_name = (
-        target_case.deceased_ref.name_last
-        + " "
-        + target_case.deceased_ref.name_first
-        if target_case.deceased_ref
-        else "未登録"
-    )
+    d_name = target_case.deceased_ref.name_last + " " + target_case.deceased_ref.name_first if target_case.deceased_ref else "未登録"
     st.success(f"📂 対象案件: **{target_case.case_number} {target_case.client_name}** 様 (被相続人: {d_name})")
 
     st.divider()
 
-    # 2. テンプレート選択
-    files = (
-        session.query(FileRegistry)
-        .filter(FileRegistry.filename.like("%.pdf"))
-        .all()
-    )
+    # ------------------------------------
+    # 2. 対象資産の選択 (Context Selection)
+    # ------------------------------------
+    col_asset, col_tpl = st.columns([1, 1])
+    
+    target_asset = None
+    asset_description = "（資産指定なし）"
 
-    if not files:
-        st.warning(
-            "テンプレート(PDF)が登録されていません。「書式座標登録ツール」のメニューから登録してください。"
-        )
-    else:
-        file_opts = {f.filename: f.file_hash for f in files}
-        selected_file_name = st.selectbox(
-            "使用するテンプレート", list(file_opts.keys())
-        )
+    with col_asset:
+        st.markdown("##### 1. 対象資産を選択 (任意)")
+        st.caption("銀行の請求書など、特定の資産に関する書類を作る場合に選択してください。")
+        
+        # 資産リストの作成
+        asset_options = {"指定なし (基本情報のみ)": None}
+        
+        # 預貯金
+        if target_case.financial_assets:
+            for fa in target_case.financial_assets:
+                b_name = fa.bank_ref.bank_name if fa.bank_ref else "不明銀行"
+                br_name = fa.branch_ref.branch_name if fa.branch_ref else ""
+                label = f"🏦 {b_name} {br_name} ({fa.account_number})"
+                asset_options[label] = fa
+        
+        # 不動産
+        if target_case.real_estates:
+            for re_asset in target_case.real_estates:
+                loc = re_asset.location if len(re_asset.location or "") < 10 else (re_asset.location[:10] + "...")
+                label = f"🏘️ {re_asset.property_type}: {loc}"
+                asset_options[label] = re_asset
 
-        if selected_file_name:
+        selected_asset_label = st.selectbox("資産リスト", list(asset_options.keys()))
+        target_asset = asset_options[selected_asset_label]
+        
+        if target_asset:
+            asset_description = selected_asset_label
+
+    # ------------------------------------
+    # 3. テンプレート選択
+    # ------------------------------------
+    with col_tpl:
+        st.markdown("##### 2. テンプレートを選択")
+        files = session.query(FileRegistry).filter(FileRegistry.filename.like("%.pdf")).all()
+
+        if not files:
+            st.warning("テンプレートがありません。")
+        else:
+            file_opts = {f.filename: f.file_hash for f in files}
+            selected_file_name = st.selectbox("テンプレート一覧", list(file_opts.keys()))
             target_hash = file_opts[selected_file_name]
 
-            # 3. 作成ボタン
-            if st.button("🚀 PDFを作成する", type="primary"):
-                coords = db.get_coordinates_by_hash(target_hash)
-                if not coords:
-                    st.error(
-                        "このファイルには座標データが登録されていません。「書式座標登録ツール」で設定してください。"
-                    )
+    # ------------------------------------
+    # 4. 作成実行
+    # ------------------------------------
+    st.divider()
+    
+    if st.button("🚀 PDFを作成する", type="primary", use_container_width=True):
+        if not selected_file_name:
+            st.error("テンプレートを選択してください")
+        else:
+            coords = db.get_coordinates_by_hash(target_hash)
+            if not coords:
+                st.error("このテンプレートには座標が登録されていません。「書式座標登録ツール」で設定してください。")
+            else:
+                template_path = os.path.join(ROOT_DIR, "data", "templates", selected_file_name)
+                
+                if not os.path.exists(template_path):
+                    st.error("テンプレートファイルが見つかりません。")
                 else:
-                    template_path = os.path.join(
-                        ROOT_DIR, "data", "templates", selected_file_name
-                    )
+                    # ★ここが重要: 選択された資産(Context)を渡してマッピングを作成
+                    replace_map = create_replacement_map(target_case, target_asset)
+                    
+                    pdf_data = generate_pdf(template_path, coords, replace_map)
 
-                    if not os.path.exists(template_path):
-                        st.error(
-                            f"テンプレートファイルが見つかりません: {template_path}"
+                    if pdf_data:
+                        st.success(f"✅ 作成完了！ ({asset_description})")
+                        
+                        # ファイル名に資産名を含める
+                        dl_filename = f"作成済_{selected_file_name}"
+                        if target_asset and isinstance(target_asset, FinancialAsset) and target_asset.bank_ref:
+                             dl_filename = f"{target_asset.bank_ref.bank_name}_{selected_file_name}"
+
+                        st.download_button(
+                            label="📥 PDFをダウンロード",
+                            data=pdf_data,
+                            file_name=dl_filename,
+                            mime="application/pdf",
                         )
-                    else:
-                        replace_map = create_replacement_map(target_case)
-                        pdf_data = generate_pdf(template_path, coords, replace_map)
 
-                        if pdf_data:
-                            st.success("✅ 作成完了！")
-                            st.download_button(
-                                label="📥 作成されたPDFをダウンロード",
-                                data=pdf_data,
-                                file_name=f"作成済_{selected_file_name}",
-                                mime="application/pdf",
-                            )
     session.close()
-
 
 if __name__ == "__main__":
     main()

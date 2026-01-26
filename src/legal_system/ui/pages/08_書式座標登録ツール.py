@@ -86,35 +86,59 @@ wareki_year = get_wareki(today)
 
 PRESETS = {
     "（選択なし）": {"label": "", "val": ""},
-    "----- ★DB連携: 氏名 -----": {"label": "", "val": ""},
+
+    # --- 被相続人 ---
+    "----- ★被相続人 -----": {"label": "", "val": ""},
     "{被相続人 氏名(全)}": {"label": "被相続人氏名", "val": "{deceased_name}"},
     "{被相続人 氏(姓)}": {"label": "被相続人_姓", "val": "{deceased_name_last}"},
     "{被相続人 名}": {"label": "被相続人_名", "val": "{deceased_name_first}"},
-    "{相続人 氏名(全)}": {"label": "相続人氏名", "val": "{heir_name}"},
-    "{相続人 氏(姓)}": {"label": "相続人_姓", "val": "{heir_name_last}"},
-    "{相続人 名}": {"label": "相続人_名", "val": "{heir_name_first}"},
-    "{相続人 代理人氏名}": {"label": "相続人_代理人", "val": "{heir_name} 代理人"},
-    "----- ★DB連携: 死亡日 -----": {"label": "", "val": ""},
+    "{被相続人 最後の住所}": {"label": "被相続人住所", "val": "{deceased_address}"}, # 追加
+    "{被相続人 本籍}": {"label": "被相続人本籍", "val": "{deceased_hometown}"}, # 追加
     "{死亡日 (和暦全)}": {"label": "被相続人死亡日", "val": "{death_date}"},
     "{死亡日 年(西暦)}": {"label": "死亡日_西暦年", "val": "{death_year_seireki}"},
     "{死亡日 年(和暦)}": {"label": "死亡日_和暦年", "val": "{death_year_wareki}"},
     "{死亡日 月}": {"label": "死亡日_月", "val": "{death_month}"},
     "{死亡日 日}": {"label": "死亡日_日", "val": "{death_day}"},
-    "----- ★DB連携: 住所 -----": {"label": "", "val": ""},
+    
+    # --- 相続人（代表者） ---
+    "----- ★相続人（代表） -----": {"label": "", "val": ""},
+    "{相続人 氏名(全)}": {"label": "相続人氏名", "val": "{heir_name}"},
+    "{相続人 氏(姓)}": {"label": "相続人_姓", "val": "{heir_name_last}"},
+    "{相続人 名}": {"label": "相続人_名", "val": "{heir_name_first}"},
+    "{相続人 生年月日 (和暦全)}": {"label": "相続人生年月日", "val": "{heir_birthday}"},
+    "{相続人 生年月日 年(西暦)}": {"label": "相続人_西暦年", "val": "{heir_birthday_year_seireki}"},
+    "{相続人 生年月日 年(和暦)}": {"label": "相続人_和暦年", "val": "{heir_birthday_year_wareki}"},
+    "{相続人 生年月日 月}": {"label": "相続人_月", "val": "{heir_birthday_month}"},
+    "{相続人 生年月日 日}": {"label": "相続人_日", "val": "{heir_birthday_day}"},
+    "{相続人 続柄}": {"label": "相続人続柄", "val": "{heir_rel}"},
+    "{相続人 代理人氏名}": {"label": "相続人_代理人", "val": "{heir_name} 代理人"},
     "{相続人 住所(全)}": {"label": "相続人住所", "val": "{heir_address}"},
     "{相続人 都道府県}": {"label": "相続人_都道府県", "val": "{heir_pref}"},
     "{相続人 市区町村}": {"label": "相続人_市区町村", "val": "{heir_city}"},
     "{相続人 番地}": {"label": "相続人_番地", "val": "{heir_street}"},
     "{相続人 建物名}": {"label": "相続人_建物", "val": "{heir_building}"},
-    "----- 図形・記号 -----": {"label": "", "val": ""},
+    
+    # --- 不動産 (Context Aware) ---
+    "----- ★対象不動産 -----": {"label": "", "val": ""},
+    "{不動産 所在}": {"label": "不動産所在", "val": "{prop_location}"},
+    "{不動産 地番/家屋番号}": {"label": "地番_家屋番号", "val": "{prop_number}"},
+    "{不動産 地目/種類}": {"label": "地目_種類", "val": "{prop_category}"},
+    "{不動産 地積/床面積}": {"label": "地積_床面積", "val": "{prop_area}"},
+
+    # --- その他 ---
+    "----- 図形・記号・担当者 -----": {"label": "", "val": ""},
     "四角形枠": {"label": "枠線", "val": "RECT:30x30"},
     "数字「1」": {"label": "数字1", "val": "1", "size": 11.0},
     "チェック (✓)": {"label": "チェック", "val": "✓", "size": 14.0},
     "丸 (◯)": {"label": "丸", "val": "◯", "size": 14.0},
+    "代理人ラベル": {"label": "代理人ラベル", "val": "代理人"},
+    "被相続人ラベル": {"label": "被相続人ラベル", "val": "被相続人"},
+
     "----- 担当者・会社 -----": {"label": "", "val": ""},
-    "担当者名": {"label": "担当者氏名", "val": user_info["name"]},
-    "代理人肩書": {"label": "代理人肩書", "val": "代理人"},
     "会社住所": {"label": "会社住所", "val": COMPANY_INFO["address"]},
+    "会社代表者 (固定)": {"label": "会社代表者", "val": "行政書士法人チェスター　代表社員　清水　茜作", "desc": "固定文字列"},
+    "案件ID (G番号)": {"label": "案件ID", "val": "{case_number}", "desc": "G●●"},
+    "担当者名": {"label": "担当者氏名", "val": user_info["name"]}
 }
 
 # ---------------------------------------------------------

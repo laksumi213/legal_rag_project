@@ -16,7 +16,6 @@ import streamlit as st
 from langchain_core.messages import HumanMessage
 from pdf2image import convert_from_bytes
 from PIL import Image
-# ★追加: joinedload をインポート
 from sqlalchemy.orm import joinedload
 
 # パス解決
@@ -29,7 +28,7 @@ sys.path.append(ROOT_DIR)
 
 from legal_system.core.ai_factory import AIFactory
 from legal_system.core.database_manager import DatabaseManager
-from legal_system.models.tables import Address, Case, Deceased, Heir
+from legal_system.models.tables import Address, Case, Deceased, Heir, H_AddressHistory
 from services.deceased_service import find_cases_by_attributes, search_zip_by_address_api
 from utils.date_utils import convert_seireki_to_wareki
 
@@ -41,7 +40,6 @@ st.set_page_config(page_title="法定相続情報 読取", page_icon="👪", lay
 # ユーティリティ関数
 # -----------------------------------------------------------------------------
 def normalize_name_with_space(name: str) -> str:
-    """氏名の間に全角スペースを入れる"""
     if not name: return ""
     name = unicodedata.normalize("NFKC", name)
     if " " in name:
@@ -51,27 +49,18 @@ def normalize_name_with_space(name: str) -> str:
     return name
 
 def get_clean_name_for_compare(name: str) -> str:
-    """比較用にスペースを除去した氏名を取得"""
     if not name: return ""
     return name.replace(" ", "").replace("　", "")
 
 def parse_wareki_str(date_str: str) -> date:
-    """和暦・西暦文字列を解析して date オブジェクトを返す"""
     if not date_str: return None
     s = unicodedata.normalize("NFKC", date_str).strip()
-    
     try:
         return datetime.strptime(s.replace("/", "-"), "%Y-%m-%d").date()
     except: pass
-
-    eras = {
-        "令和": (2018, "R"), "平成": (1988, "H"), 
-        "昭和": (1925, "S"), "大正": (1911, "T"), "明治": (1868, "M")
-    }
-    
+    eras = {"令和": (2018, "R"), "平成": (1988, "H"), "昭和": (1925, "S"), "大正": (1911, "T"), "明治": (1868, "M")}
     pattern = r"([A-Za-z]+|[^\x00-\x7F]+)(\d+|元)[./年](\d+)[./月](\d+)[日]?"
     match = re.match(pattern, s)
-    
     if match:
         era_str = match.group(1)
         year_str = match.group(2)
@@ -117,12 +106,45 @@ def split_address_smart(full_address: str) -> dict:
         build = parts[1]
     return {"pref": pref, "city_ward": city_ward, "street": street, "build": build}
 
+# ★追加: 漢数字を算用数字に変換する関数
+def normalize_address_number(text: str) -> str:
+    """
+    住所検索のために、漢数字（一丁目など）を算用数字（1丁目）に簡易変換する。
+    """
+    if not text: return ""
+    trans_table = str.maketrans("一二三四五六七八九十", "1234567890") # 簡易変換
+    # 全体を変換すると人名などが壊れる可能性があるが、住所検索用の一時文字列ならOK
+    # ただし「十」の扱いは複雑（十一→101? 11?）なので、ここでは住所によくある「〇丁目」に絞って置換
+    
+    text = text.replace("一丁目", "1丁目").replace("二丁目", "2丁目").replace("三丁目", "3丁目")
+    text = text.replace("四丁目", "4丁目").replace("五丁目", "5丁目").replace("六丁目", "6丁目")
+    text = text.replace("七丁目", "7丁目").replace("八丁目", "8丁目").replace("九丁目", "9丁目")
+    text = text.replace("十丁目", "10丁目").replace("十一丁目", "11丁目")
+    
+    return text
+
 def smart_zip_search(pref, city_ward, street):
-    full = f"{pref}{city_ward}{street}"
+    """
+    住所から郵便番号を検索する。漢数字対応版。
+    """
+    # 1. そのまま結合して検索
+    full = f"{pref}{city_ward}{street}".strip()
+    if not full: return ""
+    
     zip_code = search_zip_by_address_api(full)
     if zip_code: return zip_code
-    town_level = f"{pref}{city_ward}"
-    zip_code = search_zip_by_address_api(town_level)
+
+    # 2. 漢数字を変換して検索 (例: 夏見台一丁目 -> 夏見台1丁目)
+    normalized_full = normalize_address_number(full)
+    if normalized_full != full:
+        zip_code = search_zip_by_address_api(normalized_full)
+        if zip_code: return zip_code
+    
+    # 3. 町域レベルで再検索
+    town_level = f"{pref}{city_ward}".strip()
+    if town_level:
+        zip_code = search_zip_by_address_api(town_level)
+    
     return zip_code if zip_code else ""
 
 # -----------------------------------------------------------------------------
@@ -179,7 +201,7 @@ def analyze_heir_document_with_ai(image_bytes: bytes) -> dict:
 # -----------------------------------------------------------------------------
 def main():
     st.title("👪 法定相続情報 読取・自動紐付け")
-    st.caption("書類をアップロードすると、AIが内容を読み取り、該当する案件を自動検索します。")
+    st.caption("書類をアップロードすると、**自動的に**内容を読み取り、該当する案件を検索します。")
 
     db = DatabaseManager()
     session = db._get_session()
@@ -190,17 +212,15 @@ def main():
         st.session_state["target_case_id"] = None
     if "candidate_cases" not in st.session_state:
         st.session_state["candidate_cases"] = []
+    if "last_analyzed_file_id" not in st.session_state:
+        st.session_state["last_analyzed_file_id"] = None
 
     uploaded_file = st.file_uploader("法定相続情報一覧図 (PDF/画像)", type=["pdf", "png", "jpg"])
 
     if uploaded_file:
-        if st.session_state.get("last_uploaded_file") != uploaded_file.name:
-            st.session_state["heir_result"] = None
-            st.session_state["target_case_id"] = None
-            st.session_state["candidate_cases"] = []
-            st.session_state["last_uploaded_file"] = uploaded_file.name
-
-        file_bytes = uploaded_file.read()
+        file_id = f"{uploaded_file.name}_{uploaded_file.size}"
+        
+        file_bytes = uploaded_file.getvalue()
         target_bytes = None
         display_img = None
 
@@ -218,80 +238,85 @@ def main():
             st.error(f"画像変換エラー: {e}")
             return
 
-        # 1. AI解析 & 検索
-        if not st.session_state["heir_result"]:
-            st.image(display_img, caption="プレビュー", width=400)
-            if st.button("🚀 AI解析＆案件検索を開始", type="primary"):
-                with st.spinner("🤖 書類を読み取り中..."):
-                    result = analyze_heir_document_with_ai(target_bytes)
-                    if "error" in result:
-                        st.error(f"解析失敗: {result['error']}")
-                    else:
-                        st.session_state["heir_result"] = result
-                        dec_name = result.get("deceased", {}).get("name", "")
-                        if dec_name:
-                            clean_name = get_clean_name_for_compare(dec_name)
-                            candidates = find_cases_by_attributes(deceased_name=clean_name)
-                            st.session_state["candidate_cases"] = candidates
-                        time.sleep(1)
-                        st.rerun()
+        # 1. 自動AI解析
+        if st.session_state["last_analyzed_file_id"] != file_id:
+            st.image(display_img, caption="プレビュー (解析中...)", width=400)
+            
+            with st.spinner("🤖 自動解析中... (文字読取 & 案件検索)"):
+                result = analyze_heir_document_with_ai(target_bytes)
+                
+                if "error" in result:
+                    st.error(f"解析失敗: {result['error']}")
+                else:
+                    st.session_state["heir_result"] = result
+                    st.session_state["last_analyzed_file_id"] = file_id 
+                    
+                    dec_name = result.get("deceased", {}).get("name", "")
+                    if dec_name:
+                        clean_name = get_clean_name_for_compare(dec_name)
+                        candidates = find_cases_by_attributes(deceased_name=clean_name)
+                        st.session_state["candidate_cases"] = candidates
+                    
+                    st.toast("解析が完了しました！", icon="✅")
+                    time.sleep(0.5)
+                    st.rerun() 
 
         # 2. 案件選択
         elif st.session_state["heir_result"] and st.session_state["target_case_id"] is None:
-            res = st.session_state["heir_result"]
-            dec_info = res.get("deceased", {})
-            st.success(f"✅ 読み取り完了: 被相続人 **{dec_info.get('name')}**")
+            col_prev, col_sel = st.columns([1, 1.5])
             
-            with st.expander("詳細データを確認する"):
-                st.json(res)
-
-            st.divider()
-            st.subheader("🔍 紐付け先の案件を選択")
-
-            candidates = st.session_state["candidate_cases"]
-            if candidates:
-                st.info(f"{len(candidates)} 件の候補が見つかりました。")
-                selected_idx = st.radio(
-                    "候補案件リスト",
-                    options=range(len(candidates)),
-                    format_func=lambda i: f"【{candidates[i]['case_number']}】 依頼者: {candidates[i]['client_name']} (被相続人: {candidates[i]['deceased_name']})",
-                    key="case_selector_radio"
-                )
-                if st.button("✅ この案件に紐付ける", type="primary"):
-                    st.session_state["target_case_id"] = candidates[selected_idx]["case_id"]
-                    st.rerun()
-            else:
-                st.warning("⚠️ 自動検索では該当する案件が見つかりませんでした。")
+            with col_prev:
+                st.image(display_img, use_container_width=True)
             
-            with st.expander("手動検索", expanded=not candidates):
-                manual_q = st.text_input("案件番号(Gxxxx) または 氏名で検索")
-                if st.button("検索実行"):
-                    hits = find_cases_by_attributes(case_number=manual_q, client_name=manual_q, deceased_name=manual_q)
-                    if hits:
-                        st.session_state["candidate_cases"] = hits
+            with col_sel:
+                res = st.session_state["heir_result"]
+                dec_info = res.get("deceased", {})
+                st.success(f"✅ 読み取り完了: 被相続人 **{dec_info.get('name')}**")
+                
+                candidates = st.session_state["candidate_cases"]
+                st.subheader("🔍 紐付け先の案件を選択")
+
+                if candidates:
+                    st.info(f"{len(candidates)} 件の候補が見つかりました。")
+                    selected_idx = st.radio(
+                        "候補案件リスト",
+                        options=range(len(candidates)),
+                        format_func=lambda i: f"【{candidates[i]['case_number']}】 依頼者: {candidates[i]['client_name']} (被相続人: {candidates[i]['deceased_name']})",
+                        key="case_selector_radio"
+                    )
+                    if st.button("✅ この案件に紐付ける", type="primary", use_container_width=True):
+                        st.session_state["target_case_id"] = candidates[selected_idx]["case_id"]
                         st.rerun()
-                    else:
-                        st.error("見つかりませんでした。")
+                else:
+                    st.warning("⚠️ 自動検索では該当する案件が見つかりませんでした。")
+                
+                st.markdown("---")
+                with st.expander("手動検索 (見つからない場合)", expanded=not candidates):
+                    manual_q = st.text_input("案件番号(Gxxxx) または 氏名で検索")
+                    if st.button("再検索"):
+                        hits = find_cases_by_attributes(case_number=manual_q, client_name=manual_q, deceased_name=manual_q)
+                        if hits:
+                            st.session_state["candidate_cases"] = hits
+                            st.rerun()
+                        else:
+                            st.error("見つかりませんでした。")
 
         # 3. 編集・登録
         elif st.session_state["target_case_id"]:
-            # 最新の案件情報を取得
             target_case = session.query(Case).options(
                 joinedload(Case.deceased_ref).joinedload(Deceased.heirs)
             ).filter_by(case_id=st.session_state["target_case_id"]).first()
             
-            # --- 既存の相続人データをマッピング ---
             existing_heirs = []
             if target_case.deceased_ref:
                 existing_heirs = target_case.deceased_ref.heirs
             
-            # 氏名(スペースなし) -> Heirオブジェクト のマップを作成
             existing_heir_map = {}
             for h in existing_heirs:
                 full_key = get_clean_name_for_compare(f"{h.name_last}{h.name_first}")
                 existing_heir_map[full_key] = h
 
-            st.info(f"📁 紐付け先: **{target_case.case_number} {target_case.client_name}**")
+            st.info(f"📁 紐付け先: **{target_case.case_number} {target_case.client_name}** 様")
             
             col_img, col_data = st.columns([1, 1.2])
             with col_img:
@@ -305,7 +330,6 @@ def main():
                 # --- 1. 被相続人 ---
                 st.markdown("##### 1. 被相続人情報")
                 with st.container(border=True):
-                    # DB値があれば優先、なければAI値
                     db_d = target_case.deceased_ref
                     
                     init_name = f"{db_d.name_last}　{db_d.name_first}" if db_d and db_d.name_last else normalize_name_with_space(d_info.get("name", ""))
@@ -317,7 +341,6 @@ def main():
                     d_kana = c2.text_input("フリガナ", value=init_kana) 
                     
                     c3, c4 = st.columns(2)
-                    # AIの和暦文字列を初期値に
                     d_dod_str = c3.text_input("死亡日 (和暦入力可)", value=d_info.get("death_date", ""), help="例: 令和5年1月1日")
                     d_dob_str = c4.text_input("生年月日 (和暦入力可)", value=d_info.get("birth_date", ""), help="例: 昭和24年5月1日")
                     
@@ -327,6 +350,8 @@ def main():
                     st.caption("最後の住所")
                     ai_addr_full = d_info.get("last_address", "")
                     split_res = split_address_smart(ai_addr_full)
+                    
+                    # 郵便番号自動検索 (漢数字対応)
                     auto_zip = ""
                     if ai_addr_full:
                         auto_zip = smart_zip_search(split_res["pref"], split_res["city_ward"], split_res["street"])
@@ -340,50 +365,53 @@ def main():
                     d_bldg = st.text_input("建物名", value=split_res["build"])
 
                 # --- 2. 相続人 (マージロジック適用) ---
-                st.markdown("##### 2. 相続人一覧")
+                st.markdown("##### 2. 相続人一覧 (手動修正可)")
                 heirs_raw = data.get("heirs", [])
                 
-                # 表示用データの構築 (AIデータ + 既存データの補完)
                 grid_data = []
+                
                 for h in heirs_raw:
                     ai_name_clean = get_clean_name_for_compare(h.get("name", ""))
-                    
-                    # 既存データとマッチング
                     matched_heir = existing_heir_map.get(ai_name_clean)
                     
+                    # 住所から郵便番号を検索 (漢数字対応)
+                    h_addr_val = h.get("address", "")
+                    h_auto_zip = ""
+                    if h_addr_val:
+                         split_h = split_address_smart(h_addr_val)
+                         h_auto_zip = smart_zip_search(split_h["pref"], split_h["city_ward"], split_h["street"])
+
                     row = {
                         "name": normalize_name_with_space(h.get("name", "")),
                         "kana": "",
                         "relationship": h.get("relationship", ""),
                         "birth_date": h.get("birth_date", ""),
-                        "address": h.get("address", ""),
+                        "address": h_addr_val,
+                        "zip_code": h_auto_zip,
                         "is_contractor": False
                     }
                     
                     if matched_heir:
-                        # 既存データがあれば、フリガナ・契約者フラグを引き継ぐ
                         row["name"] = f"{matched_heir.name_last}　{matched_heir.name_first}"
                         if matched_heir.name_last_kana:
                             row["kana"] = f"{matched_heir.name_last_kana}　{matched_heir.name_first_kana}"
                         row["is_contractor"] = matched_heir.is_contracting_party
-                        # 住所も既存があればそれを表示しても良いが、今回は読取結果(AI)を優先表示し、保存時に上書きする形をとる
-                        # ただしフリガナと契約者はAIから取れないので必須補完
                     
                     grid_data.append(row)
 
                 df_heirs = pd.DataFrame(grid_data)
                 if df_heirs.empty:
-                    df_heirs = pd.DataFrame(columns=["name", "kana", "relationship", "birth_date", "address", "is_contractor"])
+                    df_heirs = pd.DataFrame(columns=["name", "kana", "relationship", "birth_date", "address", "zip_code", "is_contractor"])
 
                 column_config = {
                     "name": st.column_config.TextColumn("氏名", required=True),
-                    "kana": st.column_config.TextColumn("フリガナ", width="medium"), # 追加
-                    "relationship": st.column_config.SelectboxColumn(
-                        "続柄", options=["妻", "夫", "長男", "二男", "長女", "二女", "養子", "兄弟姉妹"], required=True
-                    ),
+                    "kana": st.column_config.TextColumn("フリガナ", width="medium"),
+                    "relationship": st.column_config.TextColumn("続柄", required=True),
                     "birth_date": st.column_config.TextColumn("生年月日(和暦)"),
                     "address": st.column_config.TextColumn("住所 (全住所)", width="large"),
-                    "is_contractor": st.column_config.CheckboxColumn("契約者", default=False) # 追加
+                    # 郵便番号列 (手動修正可能)
+                    "zip_code": st.column_config.TextColumn("郵便番号", width="small"), 
+                    "is_contractor": st.column_config.CheckboxColumn("契約者", default=False)
                 }
 
                 edited_df = st.data_editor(
@@ -435,8 +463,6 @@ def main():
                         target_addr.building_name = d_bldg
 
                         # --- Heirs Save (Smart Merge) ---
-                        # 既存データを全削除せず、氏名マッチで更新する
-                        # 1. 画面上のリストにある人を処理
                         processed_heir_ids = []
 
                         for index, row in edited_df.iterrows():
@@ -448,22 +474,19 @@ def main():
                             fname = parts[1] if len(parts) > 1 else ""
                             clean_key = get_clean_name_for_compare(full_name)
 
-                            # フリガナ分割
                             k_lname, k_fname = "", ""
                             if row["kana"]:
                                 k_parts = normalize_name_with_space(row["kana"]).split("　")
                                 k_lname = k_parts[0]
                                 k_fname = k_parts[1] if len(k_parts) > 1 else ""
 
-                            # 既存マッチング
                             target_heir = existing_heir_map.get(clean_key)
                             
                             if not target_heir:
-                                # 新規作成
                                 target_heir = Heir(deceased_id=deceased.id)
                                 session.add(target_heir)
                             
-                            # 値の更新
+                            # 1. 相続人情報の更新 (郵便番号はここではまだ更新されない)
                             target_heir.name_last = lname
                             target_heir.name_first = fname
                             target_heir.name_last_kana = k_lname
@@ -472,17 +495,20 @@ def main():
                             target_heir.date_of_birth = parse_wareki_str(str(row["birth_date"]))
                             target_heir.is_contracting_party = row["is_contractor"]
                             
-                            session.flush() # ID確定
+                            session.flush()
                             processed_heir_ids.append(target_heir.id)
 
-                            # 住所更新 (分割 & ZIP検索)
+                            # 2. 住所情報の更新 (★ここで郵便番号も保存される)
                             if row["address"]:
                                 h_addr_val = row["address"]
                                 split_h = split_address_smart(h_addr_val)
-                                h_zip = smart_zip_search(split_h["pref"], split_h["city_ward"], split_h["street"])
                                 
-                                # 既存の住所リンクを探す
-                                from legal_system.models.tables import H_AddressHistory
+                                # テーブル上の郵便番号を採用 (編集済み優先)
+                                h_zip = str(row.get("zip_code", "")).strip()
+                                # 空なら裏で再検索 (漢数字対応)
+                                if not h_zip:
+                                    h_zip = smart_zip_search(split_h["pref"], split_h["city_ward"], split_h["street"])
+                                
                                 current_link = session.query(H_AddressHistory).filter(
                                     H_AddressHistory.heir_id == target_heir.id,
                                     H_AddressHistory.is_current_address == True
@@ -502,18 +528,12 @@ def main():
                                         is_current_address=True
                                     ))
                                 
-                                # 値セット
-                                h_addr_obj.zip_code = h_zip
+                                # ★保存処理の核心部分
+                                h_addr_obj.zip_code = h_zip  # ←ここで保存
                                 h_addr_obj.prefecture = split_h["pref"]
                                 h_addr_obj.city_ward_town = split_h["city_ward"]
                                 h_addr_obj.street_address = split_h["street"]
                                 h_addr_obj.building_name = split_h["build"]
-
-                        # (Optional) 画面になかった既存相続人を削除する場合
-                        # for h in existing_heirs:
-                        #     if h.id not in processed_heir_ids:
-                        #         session.delete(h)
-                        # 今回は「読み取り」なので、AIが拾えなかった人が消えるのを防ぐため、削除はしない安全策をとる
                                 
                         session.commit()
                         st.success(f"✅ 案件「{target_case.client_name}」の情報を更新しました！")

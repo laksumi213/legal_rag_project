@@ -106,11 +106,28 @@ def main():
         st.subheader("📂 対象案件切替")
         search_query = st.text_input("案件番号/氏名で検索", key="side_search")
         
+        # 1. まず検索条件で案件を取得
         filtered_cases = search_cases_simple(session, search_query)
+        
+        # ==========================================
+        # ★修正: 選択中の案件をリストに強制追加するロジック
+        # ==========================================
+        current_id = st.session_state.get("selected_case_id")
+        
+        if current_id:
+            # 現在の検索結果リストの中に、選択中の案件が含まれているかチェック
+            is_included = any(c.case_id == current_id for c in filtered_cases)
+            
+            if not is_included:
+                # 含まれていない場合（過去の案件など）、DBから取得してリストの先頭に追加する
+                target_case_obj = session.query(Case).get(current_id)
+                if target_case_obj:
+                    filtered_cases.insert(0, target_case_obj)
+
+        # 選択肢辞書の作成
         case_options = {f"{c.case_number}: {c.client_name}": c.case_id for c in filtered_cases}
         
-        # セッションから選択状態を復元
-        current_id = st.session_state.get("selected_case_id")
+        # セッションから選択状態を復元（インデックス特定）
         index = 0
         if current_id in case_options.values():
             keys = list(case_options.keys())
@@ -118,6 +135,8 @@ def main():
             index = vals.index(current_id)
             
         selected_label = st.selectbox("選択", list(case_options.keys()), index=index)
+        
+        # 選択されたらIDを更新
         if selected_label:
             st.session_state["selected_case_id"] = case_options[selected_label]
 

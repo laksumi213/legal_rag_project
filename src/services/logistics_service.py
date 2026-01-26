@@ -1,5 +1,6 @@
 # src/services/logistics_service.py
 
+import urllib.parse
 from datetime import datetime
 from langchain_core.messages import HumanMessage
 from langchain_core.prompts import ChatPromptTemplate
@@ -19,39 +20,48 @@ class LogisticsService:
         指定された住所に基づき、アクセスの良い公証役場を提案する
         """
         today_str = datetime.now().strftime("%Y-%m-%d")
-
-        # ★ここが「Gem」の中身に相当します
-        # ユーザー様が検証された「高精度ファクトベースAI」のプロンプトを適用
-        system_prompt = f"""
-        あなたは、信頼性の高い情報を提示できる高精度なファクトベースAIです。
-        ユーザーから提供された住所（{origin_address}）を起点として、アクセスが良く信頼性の高い「公証役場」を2〜3箇所選定し、提案してください。
-
-        【厳守ルール】
-        1. わからない/未確認は「わからない」と明言すること。無理な推測は禁止。
-        2. 推測を含む場合は「推測ですが」と明示すること。
-        3. 現在日付（{today_str} JST）を認識し、回答に明記すること。
-        4. 根拠/出典（公証人連合会や法務局の管轄情報など）を可能な限り添付すること。
-        5. 専門的知見が必要な場合は「専門家に確認」と明記すること。
         
+        # Googleマップ用に出発地をURLエンコードしておく (スペース等は削除)
+        clean_origin = origin_address.replace(" ", "").replace("　", "")
+        origin_enc = urllib.parse.quote(clean_origin)
+
+        # ★修正: URL形式を標準化し、文字化け対策を追加
+        system_prompt = f"""
+        あなたは、日本の公証実務に精通したロジスティクスAIです。
+        ユーザーから提供された住所（{clean_origin}）を起点として、アクセスが良く**実在する**「公証役場」を2〜3箇所選定し、提案してください。
+
+        【重要：情報の正確性と出力形式】
+        1. **出典の厳守**:
+           - 「日本公証人連合会」の公式リスト (https://www.koshonin.gr.jp/list) に掲載されている公証役場のみを提案してください。
+           - 「我孫子」「流山」など、実在しない役場は絶対に提案しないでください。
+
+        2. **文字化け・ハルシネーション防止**:
+           - 住所や名称は正確に記述してください。
+           - **不自然な記号の羅列（例: ॒॒॒॒...）や、無意味な空白の繰り返しは厳禁**です。標準的な日本語のみを使用してください。
+
+        3. **地図リンクの生成**:
+           - 以下のGoogleマップ公式パラメータ形式を使用してください。
+           - 形式: `https://www.google.com/maps/dir/?api=1&origin={origin_enc}&destination=[公証役場の住所]`
+           - destinationには、抽出した「公証役場の住所」をそのまま入れてください。
+
         【出力フォーマット】
-        ご提示いただいた住所（{origin_address}）に基づき...
+        --------------------------------------------------
+        ### 1. [公証役場名]
+        - **住所**: [郵便番号] [都道府県市区町村...]
+        - **最寄り駅**: [駅名] (徒歩〇分)
+        - **アクセス**: [出発地からの移動ルート概要]
+        - **地図**: [Googleマップでルートを見る](https://www.google.com/maps/dir/?api=1&origin={origin_enc}&destination=[公証役場の住所])
+        --------------------------------------------------
+        (これを2〜3件繰り返す)
 
-        【結論】
-        （推奨する公証役場リスト：名称、最寄り駅、所要時間目安）
+        【選定理由】
+        （なぜここを選んだかの理由）
 
-        【根拠】
-        （移動ルートの詳細、なぜそこが便利なのかの理由）
-
-        【注意点・例外】
-        （管轄の問題や、出張作成時の注意点など）
-
-        【出典】
-        （参照した情報源）
-
-        【確実性: 高/中/低】
+        【注意点】
+        （管轄や予約の必要性など）
         """
 
-        user_message = f"検索対象の住所: {origin_address}"
+        user_message = f"検索起点: {clean_origin}"
 
         try:
             prompt = ChatPromptTemplate.from_messages([
@@ -60,7 +70,6 @@ class LogisticsService:
             ])
             
             chain = prompt | self.llm
-            # inputにも住所を渡していますが、system_prompt内にも埋め込んで強化しています
             response = chain.invoke({"input": user_message})
             
             return response.content if hasattr(response, "content") else str(response)

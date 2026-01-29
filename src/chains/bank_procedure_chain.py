@@ -8,7 +8,7 @@ from langchain_community.document_loaders import TextLoader
 from langchain_core.output_parsers import StrOutputParser
 from langchain_core.prompts import ChatPromptTemplate
 
-from src.ai_factory import AIFactory
+from legal_system.core.ai_factory import AIFactory
 
 logger = logging.getLogger(__name__)
 

@@ -1,4 +1,4 @@
-# src/legal_system/ui/pages/13_公証役場連携.py
+# src/legal_system/ui/pages/10_公証役場・送付セット作成.py
 
 import os
 import sys

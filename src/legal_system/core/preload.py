@@ -1,31 +1,38 @@
 # src/legal_system/core/preload.py
 import streamlit as st
-
+import time
 
 @st.cache_resource(show_spinner=False)
 def warm_up_modules():
     """
-    重いライブラリをHome画面の裏で事前にメモリに読み込んでおく関数。
-    初回のみ実行され、キャッシュされます。
+    重いライブラリおよびメニューコンポーネントをバックグラウンドで事前にインポートし、
+    sys.modules（Pythonのモジュールキャッシュ）に乗せておく関数。
     """
-    print("🐢 バックグラウンドで重いモジュールをロード中...")
+    try:
+        # --- 1. 外部の重いライブラリ群 ---
+        import pypdf
+        import reportlab
+        import pdf2image
+        import PIL
+        import docx  # python-docx
+        import selenium
+        
+        # --- 2. メニュー別の独自コンポーネント群 ---
+        # これらをインポートしておくことで、Home.py側でimportした瞬間にキャッシュから返されます
+        from src.legal_system.ui.components.cases import basic_info
+        from src.legal_system.ui.components.cases import asset_list
+        from src.legal_system.ui.components.cases import nayose_registration
+        from src.legal_system.ui.components.cases import registry_acquisition
+        from src.legal_system.ui.components.cases import dashboard_widgets
+        from src.legal_system.ui.components import label_printer_ui
+        
+        # --- 3. 重いAI関連 ---
+        from src.legal_system.core import ai_factory
+        from src.services import gmail_watcher_service
+        from src.services import scanner_service
 
-    # # noqa: F401 をつけることで、Ruffに「未使用でも無視しろ」と指示します
-
-    # 1. 管理ツール (LangChain, PDF処理などを含む)
-    import pypdf  # noqa: F401
-
-    # 2. PDF生成・操作系
-    import reportlab  # noqa: F401
-    from reportlab.pdfbase import pdfmetrics  # noqa: F401
-    from reportlab.pdfbase.ttfonts import TTFont  # noqa: F401
-
-    # 3. DBモデル (SQLAlchemyの初期化コスト削減)
-    import legal_system.models.tables  # noqa: F401
-    import legal_system.ui.components.admin_tools  # noqa: F401
-
-    # 4. AI系
-    from legal_system.core.ai_factory import AIFactory  # noqa: F401
-
-    print("🐇 モジュールのウォームアップ完了。次ページへの遷移が高速化されました。")
+    except Exception as e:
+        # バックグラウンドでの失敗は起動を妨げないようログに留める
+        print(f"🐢 Warmup info: Some modules are still loading... {e}")
+    
     return True

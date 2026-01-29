@@ -5,6 +5,7 @@ import logging
 import re
 from typing import Any, Dict, List, Optional, Set
 
+import pandas as pd
 import requests
 from sqlalchemy import or_, and_, func
 from sqlalchemy.orm import joinedload
@@ -125,7 +126,7 @@ def _expand_name_variants(name: str) -> Set[str]:
     clean_base = name.replace(" ", "").replace("　", "")
     candidates = {clean_base}
 
-    # 異体字マップ (必要に応じて追加してください)
+    # 異体字マップ
     variant_map = {
         "崎": ["崎", "﨑", "嵜"],
         "﨑": ["崎", "﨑", "嵜"],
@@ -167,12 +168,11 @@ def find_cases_by_attributes(
     属性検索（名寄せ）
     - 異体字対応 (宮崎⇔宮﨑)
     - 姓名分離検索 (Deceasedテーブル対応)
-    - スペース無視検索
+    - スペース完全無視検索
     """
     session = get_db_session()
     results = []
     
-    # 検索キーのログ出力 (デバッグ用)
     logger.info(f"🔎 FindCase Search: Num={case_number}, Client={client_name}, Dec={deceased_name}")
 
     try:
@@ -194,45 +194,25 @@ def find_cases_by_attributes(
                 conditions.append(or_(*variant_conditions))
 
         # 3. 被相続人名検索 (Deceased: 姓・名 分離カラム)
-        # ★ここを強化: 入力文字列を姓と名に分割して、それぞれで異体字マッチをかける
         if deceased_name:
-            # 入力文字列をスペースで分割 ("宮崎 修武" -> ["宮崎", "修武"])
-            parts = deceased_name.replace("　", " ").split(" ")
-            parts = [p for p in parts if p] # 空要素削除
-
-            if len(parts) >= 2:
-                # 姓と名が分かれている場合 -> 姓マッチ AND 名マッチ
-                last_input = parts[0]   # "宮崎"
-                first_input = "".join(parts[1:]) # "修武"
-                
-                last_variants = _expand_name_variants(last_input)   # {"宮崎", "宮﨑"}
-                first_variants = _expand_name_variants(first_input) # {"修武"}
-
-                # 姓のいずれかに一致
-                last_cond = or_(*[Deceased.name_last.contains(v) for v in last_variants])
-                # 名のいずれかに一致
-                first_cond = or_(*[Deceased.name_first.contains(v) for v in first_variants])
-                
-                # (姓マッチ AND 名マッチ) を条件に追加
-                conditions.append(and_(last_cond, first_cond))
-                
-                logger.info(f"   -> Split Search: Last={last_variants}, First={first_variants}")
-
-            else:
-                # スペースがない場合 ("宮崎修武") -> 結合カラムで検索、または片方検索
-                d_variants = _expand_name_variants(deceased_name)
-                
-                # DB上で結合した仮想カラム
-                full_name_db = Deceased.name_last + Deceased.name_first
-                full_name_clean = func.replace(func.replace(full_name_db, ' ', ''), '　', '')
-                
-                # 結合名 OR 姓のみ OR 名のみ
-                v_conds = []
-                for v in d_variants:
-                    v_conds.append(full_name_clean.contains(v))
-                    v_conds.append(Deceased.name_last.contains(v)) # 苗字だけ入力された場合用
-                
-                conditions.append(or_(*v_conds))
+            # A. 完全にスペースを除去した文字列を用意
+            clean_search_key = deceased_name.replace(" ", "").replace("　", "")
+            
+            # B. 異体字展開
+            d_variants = _expand_name_variants(clean_search_key)
+            
+            # C. DB側も姓+名を結合し、さらにスペースを除去して比較する条件を作成
+            full_name_db = Deceased.name_last + Deceased.name_first
+            full_name_clean = func.replace(func.replace(full_name_db, ' ', ''), '　', '')
+            
+            v_conds = []
+            for v in d_variants:
+                # パターン1: 結合・正規化したDB値に、検索キーが含まれているか
+                v_conds.append(full_name_clean.contains(v))
+                # パターン2: 苗字だけ入力された場合用
+                v_conds.append(Deceased.name_last.contains(v))
+            
+            conditions.append(or_(*v_conds))
 
         if not conditions:
             return []
@@ -443,7 +423,7 @@ def delete_case_and_all_related_data(case_number: str) -> bool:
     try:
         case = session.query(Case).filter(Case.case_number == case_number).first()
         if case:
-            # ★追加: 外部キー制約回避のため、先に関連するIncomingNoteBufferを削除
+            # 外部キー制約回避のため、先に関連するIncomingNoteBufferを削除
             session.query(IncomingNoteBuffer).filter(
                 IncomingNoteBuffer.linked_case_id == case.case_id
             ).delete(synchronize_session=False)
@@ -588,7 +568,7 @@ def update_deceased(deceased_id: int, **kwargs) -> bool:
         d.name_last_kana = kwargs.get("kana_last", d.name_last_kana)
         d.name_first_kana = kwargs.get("kana_first", d.name_first_kana)
 
-        # ★追加: 本籍地
+        # 本籍地
         if "hometown" in kwargs:
             d.hometown = kwargs["hometown"]
 
@@ -633,6 +613,10 @@ def update_deceased(deceased_id: int, **kwargs) -> bool:
 
 
 def add_heir(deceased_id: int, name: str, rel: str, **kwargs) -> int:
+    """
+    相続人を追加する。
+    kwargsで occupation(職業), hometown(本籍), zip_code(郵便番号) を受け取る。
+    """
     session = get_db_session()
     try:
         parts = name.replace("　", " ").split(" ", 1)
@@ -647,9 +631,48 @@ def add_heir(deceased_id: int, name: str, rel: str, **kwargs) -> int:
             name_first_kana=kwargs.get("kana_first"),
             relationship_type=rel,
             is_contracting_party=kwargs.get("is_contracting_party", False),
+            # 追加項目
+            occupation=kwargs.get("occupation"),
+            hometown=kwargs.get("hometown"), # 本籍
+            date_of_birth=parse_all_flexible_date(kwargs.get("dob"))
         )
         session.add(new_heir)
         session.flush()
+
+        # 住所登録 (郵便番号と住所を分ける)
+        street = kwargs.get("street", "")
+        pref = kwargs.get("pref", "")
+        city = kwargs.get("city", "")
+        
+        if street or pref:
+            zip_val = kwargs.get("zip_code", "")
+            
+            new_addr = Address(
+                zip_code=zip_val,
+                prefecture=pref,
+                city_ward_town=city,
+                street_address=street, # streetに残りを入れる運用
+                building_name=kwargs.get("building", "")
+            )
+            session.add(new_addr)
+            session.flush()
+            
+            session.add(H_AddressHistory(
+                heir_id=new_heir.id,
+                address_id=new_addr.id,
+                is_current_address=True
+            ))
+
+        # 連絡先登録
+        if "phone_contacts" in kwargs:
+            for c_data in kwargs["phone_contacts"]:
+                val = c_data.get("value")
+                if val:
+                    nc = Contact(value=val, type="PHONE", sub_type="Primary")
+                    session.add(nc)
+                    session.flush()
+                    session.add(H_ContactLink(heir_id=new_heir.id, contact_id=nc.id))
+
         session.commit()
         return new_heir.id
     except Exception as e:
@@ -679,8 +702,14 @@ def update_heir(heir_id: int, name: str, rel: str, **kwargs) -> bool:
 
         if kwargs.get("dob"):
             heir.date_of_birth = parse_all_flexible_date(kwargs["dob"])
+            
+        # ★追加: 職業・本籍更新
+        if "occupation" in kwargs:
+            heir.occupation = kwargs["occupation"]
+        if "hometown" in kwargs:
+            heir.hometown = kwargs["hometown"]
 
-        if kwargs.get("pref") or kwargs.get("city"):
+        if kwargs.get("pref") or kwargs.get("city") or kwargs.get("street"):
             link = (
                 session.query(H_AddressHistory)
                 .filter(
@@ -695,8 +724,8 @@ def update_heir(heir_id: int, name: str, rel: str, **kwargs) -> bool:
                 addr.zip_code = kwargs.get("zip_code", addr.zip_code)
                 addr.prefecture = kwargs.get("pref", addr.prefecture)
                 addr.city_ward_town = kwargs.get("city", addr.city_ward_town)
-                addr.street_address = kwargs.get("street", "")
-                addr.building_name = kwargs.get("building", "")
+                addr.street_address = kwargs.get("street", addr.street_address)
+                addr.building_name = kwargs.get("building", addr.building_name)
             else:
                 new_addr = Address(
                     zip_code=kwargs.get("zip_code"),
@@ -758,14 +787,86 @@ def delete_heir(heir_id: int) -> bool:
     finally:
         session.close()
 
+def sync_heir_list(deceased_id: int, heir_data_list: List[Dict[str, Any]]) -> Dict[str, int]:
+    """
+    UIのst.data_editorから受け取ったリストとDBを同期する。
+    """
+    session = get_db_session()
+    result = {"added": 0, "updated": 0, "deleted": 0}
+    
+    try:
+        # 1. 既存レコードの取得
+        existing_heirs = session.query(Heir).filter(Heir.deceased_id == deceased_id).all()
+        existing_ids = {h.id for h in existing_heirs}
+        
+        # 2. UIからのリストIDを収集 (削除判定用)
+        incoming_ids = set()
+        
+        for data in heir_data_list:
+            h_id = data.get("id")
+            
+            # --- データの正規化 ---
+            full_name = data.get("name", "").strip().replace("　", " ")
+            parts = full_name.split(" ", 1)
+            lname = parts[0]
+            fname = parts[1] if len(parts) > 1 else ""
+            rel = data.get("relationship", "")
+            role_flg = True if data.get("role") == "契約者" else False
+            
+            dob = data.get("dob")
+            if hasattr(dob, 'date'): dob = dob.date()
+            if pd.isnull(dob): dob = None
+
+            if h_id and h_id in existing_ids:
+                # --- 更新 (Update) ---
+                incoming_ids.add(h_id)
+                target = session.query(Heir).get(h_id)
+                target.name_last = lname
+                target.name_first = fname
+                target.relationship_type = rel
+                target.date_of_birth = dob
+                target.is_contracting_party = role_flg
+                result["updated"] += 1
+            else:
+                # --- 新規追加 (Create) ---
+                if not lname: continue # 名前がない行は無視
+                new_h = Heir(
+                    deceased_id=deceased_id,
+                    name_last=lname,
+                    name_first=fname,
+                    relationship_type=rel,
+                    date_of_birth=dob,
+                    is_contracting_party=role_flg
+                )
+                session.add(new_h)
+                result["added"] += 1
+        
+        # 3. 削除 (Delete)
+        ids_to_delete = existing_ids - incoming_ids
+        if ids_to_delete:
+            session.query(Heir).filter(Heir.id.in_(ids_to_delete)).delete(synchronize_session=False)
+            result["deleted"] = len(ids_to_delete)
+            
+        session.commit()
+        return result
+
+    except Exception as e:
+        session.rollback()
+        logger.error(f"Sync Heir List Error: {e}")
+        raise e
+    finally:
+        session.close()
+
 
 # ==========================================
 # 5. 住所・郵便番号検索API
 # ==========================================
 def search_zip_by_address_api(address: str) -> Optional[str]:
+    """住所文字列から郵便番号を検索する"""
     if not address:
         return None
     try:
+        # HeartRails Geo API
         res = requests.get(
             "http://geoapi.heartrails.com/api/json",
             params={"method": "suggest", "matching": "like", "keyword": address},

@@ -1,4 +1,4 @@
-# src/legal_system/ui/pages/04_法定相続情報_読取.py
+# src/legal_system/ui/pages/06_法定相続情報_読取.py
 
 import base64
 import json
@@ -19,18 +19,23 @@ from PIL import Image
 from sqlalchemy.orm import joinedload
 
 # パス解決
+# pages -> ui -> legal_system -> src -> ROOT
+current_dir = os.path.dirname(os.path.abspath(__file__))
 ROOT_DIR = os.path.dirname(
     os.path.dirname(
-        os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+        os.path.dirname(os.path.dirname(current_dir))
     )
 )
-sys.path.append(ROOT_DIR)
+if ROOT_DIR not in sys.path:
+    sys.path.append(ROOT_DIR)
 
 from legal_system.core.ai_factory import AIFactory
 from legal_system.core.database_manager import DatabaseManager
 from legal_system.models.tables import Address, Case, Deceased, Heir, H_AddressHistory
-from services.deceased_service import find_cases_by_attributes, search_zip_by_address_api
-from utils.date_utils import convert_seireki_to_wareki
+
+# ★修正: src. を付与して絶対インポートに変更
+from src.services.deceased_service import find_cases_by_attributes, search_zip_by_address_api
+from src.utils.date_utils import convert_seireki_to_wareki
 
 logger = logging.getLogger(__name__)
 
@@ -112,10 +117,7 @@ def normalize_address_number(text: str) -> str:
     住所検索のために、漢数字（一丁目など）を算用数字（1丁目）に簡易変換する。
     """
     if not text: return ""
-    trans_table = str.maketrans("一二三四五六七八九十", "1234567890") # 簡易変換
-    # 全体を変換すると人名などが壊れる可能性があるが、住所検索用の一時文字列ならOK
-    # ただし「十」の扱いは複雑（十一→101? 11?）なので、ここでは住所によくある「〇丁目」に絞って置換
-    
+    # 簡易変換
     text = text.replace("一丁目", "1丁目").replace("二丁目", "2丁目").replace("三丁目", "3丁目")
     text = text.replace("四丁目", "4丁目").replace("五丁目", "5丁目").replace("六丁目", "6丁目")
     text = text.replace("七丁目", "7丁目").replace("八丁目", "8丁目").replace("九丁目", "9丁目")

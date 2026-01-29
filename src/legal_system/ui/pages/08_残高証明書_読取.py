@@ -1,4 +1,4 @@
-# src/legal_system/ui/pages/05_残高証明書_読取.py
+# src/legal_system/ui/pages/08_残高証明書_読取.py
 
 import base64
 import json

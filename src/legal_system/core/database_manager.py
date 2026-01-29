@@ -1,10 +1,9 @@
-# file: src/legal_system/core/database_manager.py
+# src/legal_system/core/database_manager.py
 
 import os
 from datetime import datetime
 from typing import Any, Dict, List, Optional
 
-# ★修正：Streamlitをトップレベルでインポートしない（バックグラウンド衝突防止）
 from sqlalchemy import create_engine, desc
 from sqlalchemy.engine import Engine
 from sqlalchemy.orm import scoped_session, sessionmaker
@@ -39,7 +38,6 @@ def _create_new_engine() -> Engine:
     except Exception as e:
         msg = f"❌ データベース接続エラー: {e}"
         if os.environ.get("IS_WATCHER_PROCESS") != "true":
-            # Streamlitがロードされているか確認してエラー表示
             try:
                 import streamlit as st
                 st.error(msg)
@@ -56,17 +54,16 @@ def _create_new_engine() -> Engine:
 def get_db_engine() -> Engine:
     """
     実行環境に応じて適切なエンジン取得方法を選択する。
-    - Watcherプロセス: Streamlitを完全に無視
+    - Watcherプロセス: Streamlitを無視して新規作成
     - Streamlitアプリ: st.cache_resourceを利用
     """
     if os.environ.get("IS_WATCHER_PROCESS") == "true":
         return _create_new_engine()
     else:
-        # UI実行時のみStreamlitをインポートし、キャッシュを利用する
         try:
             import streamlit as st
             
-            # 関数内でキャッシュ定義を行う（衝突回避）
+            # キャッシュ衝突を避けるため、関数内部で定義
             @st.cache_resource(show_spinner="データベースに接続中...")
             def _get_cached_engine() -> Engine:
                 return _create_new_engine()
@@ -89,7 +86,6 @@ class DatabaseManager:
     # ---------------------------------------------------------
     def get_current_user_info(self) -> Dict[str, str]:
         """Windowsログインユーザー情報を取得または作成"""
-        # Streamlit Cloud等でOSユーザーが取れない場合のフォールバック
         pc_user = os.environ.get("USERNAME", "guest_user")
 
         session = self._get_session()
@@ -103,7 +99,6 @@ class DatabaseManager:
                     "phone": user.phone if user.phone else "",
                 }
             else:
-                # 新規自動登録
                 default_name = f"{pc_user}"
                 default_dept = "未設定"
                 new_user = User(
@@ -126,9 +121,7 @@ class DatabaseManager:
         finally:
             session.close()
 
-    def register_user(
-        self, windows_id: str, display_name: str, department: str, phone: str
-    ):
+    def register_user(self, windows_id: str, display_name: str, department: str, phone: str):
         session = self._get_session()
         try:
             user = session.query(User).filter_by(windows_id=windows_id).first()
@@ -159,7 +152,6 @@ class DatabaseManager:
     def log_action(self, user_id: str, action: str, target: str, details: str = ""):
         session = self._get_session()
         try:
-            # user_id (windows_id) から内部IDを引く
             db_user = session.query(User).filter_by(windows_id=user_id).first()
             u_id = db_user.id if db_user else None
 
@@ -178,7 +170,7 @@ class DatabaseManager:
             session.close()
 
     # ---------------------------------------------------------
-    # ファイル管理
+    # ファイル管理 (FileRegistry)
     # ---------------------------------------------------------
     def is_file_registered(self, file_hash: str) -> bool:
         session = self._get_session()
@@ -194,17 +186,22 @@ class DatabaseManager:
         filename: str,
         doc_type: str = "その他",
         case_id: Optional[int] = None,
+        status: str = "CONFIRMED", # デフォルトは確認済(手動アップロード等)
+        ai_confidence: float = 0.0,
+        extracted_data: str = None
     ):
         session = self._get_session()
         try:
-            file_reg = (
-                session.query(FileRegistry).filter_by(file_hash=file_hash).first()
-            )
+            file_reg = session.query(FileRegistry).filter_by(file_hash=file_hash).first()
             if file_reg:
                 file_reg.filename = filename
                 file_reg.doc_type = doc_type
                 if case_id is not None:
                     file_reg.case_id = case_id
+                
+                # 更新
+                file_reg.status = status
+                file_reg.extracted_data = extracted_data
                 file_reg.registered_at = datetime.now()
             else:
                 file_reg = FileRegistry(
@@ -213,6 +210,9 @@ class DatabaseManager:
                     doc_type=doc_type,
                     case_id=case_id,
                     registered_at=datetime.now(),
+                    status=status,
+                    ai_confidence=ai_confidence,
+                    extracted_data=extracted_data
                 )
                 session.add(file_reg)
             session.commit()
@@ -234,19 +234,17 @@ class DatabaseManager:
             output = []
             for f, c in results:
                 case_label = f"{c.case_number}" if c else "（共通雛形）"
-                output.append(
-                    {
-                        "filename": f.filename,
-                        "date": f.registered_at.strftime("%Y-%m-%d %H:%M:%S")
-                        if f.registered_at
-                        else "",
-                        "hash": f.file_hash,
-                        "type": f.doc_type if f.doc_type else "その他",
-                        "case": case_label,
-                        "doc_type": f.doc_type,
-                        "uploaded_at": f.registered_at,
-                    }
-                )
+                output.append({
+                    "filename": f.filename,
+                    "date": f.registered_at.strftime("%Y-%m-%d %H:%M:%S") if f.registered_at else "",
+                    "hash": f.file_hash,
+                    "type": f.doc_type if f.doc_type else "その他",
+                    "case": case_label,
+                    "doc_type": f.doc_type,
+                    "uploaded_at": f.registered_at,
+                    "status": f.status,
+                    "ai_confidence": f.ai_confidence
+                })
             return output
         finally:
             session.close()
@@ -263,27 +261,12 @@ class DatabaseManager:
             session.close()
 
     # ---------------------------------------------------------
-    # 座標管理 (Coordinate Tool)
+    # 座標管理
     # ---------------------------------------------------------
-    def register_coordinate(
-        self,
-        file_hash,
-        label,
-        x,
-        y,
-        page_number=1,
-        description="",
-        font_size=10,
-        color="black",
-        test_value="",
-    ):
+    def register_coordinate(self, file_hash, label, x, y, page_number=1, description="", font_size=10, color="black", test_value=""):
         session = self._get_session()
         try:
-            coord = (
-                session.query(Coordinate)
-                .filter_by(file_hash=file_hash, label=label)
-                .first()
-            )
+            coord = session.query(Coordinate).filter_by(file_hash=file_hash, label=label).first()
             if not coord:
                 coord = Coordinate(file_hash=file_hash, label=label)
                 session.add(coord)
@@ -307,20 +290,17 @@ class DatabaseManager:
         session = self._get_session()
         try:
             coords = session.query(Coordinate).filter_by(file_hash=file_hash).all()
-            return [
-                {
-                    "id": c.id,
-                    "label": c.label,
-                    "x": c.x_point,
-                    "y": c.y_point,
-                    "page": c.page_number,
-                    "desc": c.description,
-                    "font_size": c.font_size,
-                    "color": c.color,
-                    "value": c.value,
-                }
-                for c in coords
-            ]
+            return [{
+                "id": c.id,
+                "label": c.label,
+                "x": c.x_point,
+                "y": c.y_point,
+                "page": c.page_number,
+                "desc": c.description,
+                "font_size": c.font_size,
+                "color": c.color,
+                "value": c.value,
+            } for c in coords]
         finally:
             session.close()
 
@@ -330,15 +310,10 @@ class DatabaseManager:
             coord = session.query(Coordinate).filter_by(id=coord_id).first()
             if coord:
                 for k, v in updates.items():
-                    if k == "x":
-                        coord.x_point = v
-                    elif k == "y":
-                        coord.y_point = v
-                    elif k == "desc":
-                        coord.description = v
-                    # 必要に応じて他のフィールドも追加
-                    elif hasattr(coord, k):
-                        setattr(coord, k, v)
+                    if k == "x": coord.x_point = v
+                    elif k == "y": coord.y_point = v
+                    elif k == "desc": coord.description = v
+                    elif hasattr(coord, k): setattr(coord, k, v)
                 session.commit()
                 return True
             return False

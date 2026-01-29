@@ -46,3 +46,7 @@ Thumbs.db
 bootstrap.py
 credentials.json
 token.json
+# --- Backups ---
+src_backup_*/
+temp_archived/
+data/scan_inbox/

@@ -29,6 +29,10 @@ RULES_DIR = DATA_DIR / "rules"
 BANK_MASTER_PATH = RULES_DIR / "bank_master.csv"
 COMPANY_RULES_PATH = RULES_DIR / "company_rules.txt"
 
+# スキャナ監視 (デフォルト設定)
+# ※ run_watcher.py で動的に上書きされる場合があります
+WATCH_DIR_DEFAULT = DATA_DIR / "scanned_inbox"
+
 
 # ==========================================
 # 2. 設定管理クラス (Config)
@@ -47,6 +51,10 @@ class Config:
     BANK_MASTER_PATH = BANK_MASTER_PATH
     COMPANY_RULES_PATH = COMPANY_RULES_PATH
     VECTOR_STORE_PATH = VECTOR_STORE_PATH
+    
+    # 監視設定 (Ver 3.3 追加)
+    WATCH_DIR = WATCH_DIR_DEFAULT
+    SCAN_INTERVAL_SEC = 2
 
     # --- データベース設定 (PostgreSQL) ---
     POSTGRES_USER = os.getenv("POSTGRES_USER", "postgres")
@@ -95,6 +103,8 @@ class Config:
             os.makedirs(cls.DATA_DIR, exist_ok=True)
         if not cls.TEMPLATES_DIR.exists():
             os.makedirs(cls.TEMPLATES_DIR, exist_ok=True)
+        if not cls.WATCH_DIR.exists():
+            os.makedirs(cls.WATCH_DIR, exist_ok=True)
         
     @classmethod
     def is_vertex_enabled(cls) -> bool:

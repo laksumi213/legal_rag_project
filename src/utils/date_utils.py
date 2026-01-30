@@ -2,15 +2,27 @@
 import datetime
 import re
 
-def parse_all_flexible_date(date_str: str) -> datetime.date:
+def parse_all_flexible_date(date_obj: object) -> datetime.date:
     """
-    様々な形式の日付文字列を datetime.date に変換する。
-    対応形式: YYYY-MM-DD, YYYY/MM/DD, YYYY年MM月DD日, 和暦など
+    様々な形式の日付データ（文字列または日付オブジェクト）を datetime.date に変換する。
+    対応形式: YYYY-MM-DD, YYYY/MM/DD, 和暦, datetime.date, datetime.datetime
     """
-    if not date_str:
+    if date_obj is None:
         return None
     
-    s = date_str.strip()
+    # 既に date 型ならそのまま返す
+    if isinstance(date_obj, datetime.date):
+        return date_obj
+    
+    # datetime 型なら date に変換
+    if isinstance(date_obj, datetime.datetime):
+        return date_obj.date()
+
+    # 文字列でない場合は None (安全策)
+    if not isinstance(date_obj, str):
+        return None
+    
+    s = date_obj.strip()
     if not s:
         return None
 

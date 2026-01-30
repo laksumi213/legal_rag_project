@@ -112,7 +112,7 @@ def promote_to_formal_case_number(case_id: int) -> bool:
 
 
 # ==========================================
-# ★追加: 異体字展開ロジック (名寄せ強化)
+# ★異体字展開ロジック (名寄せ強化)
 # ==========================================
 def _expand_name_variants(name: str) -> Set[str]:
     """
@@ -122,11 +122,9 @@ def _expand_name_variants(name: str) -> Set[str]:
     if not name:
         return set()
 
-    # ベースの正規化（スペース除去）
     clean_base = name.replace(" ", "").replace("　", "")
     candidates = {clean_base}
 
-    # 異体字マップ
     variant_map = {
         "崎": ["崎", "﨑", "嵜"],
         "﨑": ["崎", "﨑", "嵜"],
@@ -145,7 +143,6 @@ def _expand_name_variants(name: str) -> Set[str]:
         "冨": ["富", "冨"],
     }
 
-    # 各文字について異体字があれば候補を増殖させる
     for char, variants in variant_map.items():
         if char in clean_base:
             current_list = list(candidates)
@@ -164,12 +161,6 @@ def find_cases_by_attributes(
     deceased_name: Optional[str] = None,
     case_number: Optional[str] = None
 ) -> List[Dict[str, Any]]:
-    """
-    属性検索（名寄せ）
-    - 異体字対応 (宮崎⇔宮﨑)
-    - 姓名分離検索 (Deceasedテーブル対応)
-    - スペース完全無視検索
-    """
     session = get_db_session()
     results = []
     
@@ -179,37 +170,26 @@ def find_cases_by_attributes(
         query = session.query(Case).outerjoin(Case.deceased_ref)
         conditions = []
 
-        # 1. 案件番号検索
         if case_number:
             c_num = case_number.strip()
             conditions.append(Case.case_number.ilike(f"%{c_num}%"))
 
-        # 2. 依頼者名検索 (Case.client_name: 氏名結合文字列)
         if client_name:
             c_variants = _expand_name_variants(client_name)
             if c_variants:
-                # DB側のスペースを除去したカラムと比較
                 db_client_clean = func.replace(func.replace(Case.client_name, ' ', ''), '　', '')
                 variant_conditions = [db_client_clean.contains(v) for v in c_variants]
                 conditions.append(or_(*variant_conditions))
 
-        # 3. 被相続人名検索 (Deceased: 姓・名 分離カラム)
         if deceased_name:
-            # A. 完全にスペースを除去した文字列を用意
             clean_search_key = deceased_name.replace(" ", "").replace("　", "")
-            
-            # B. 異体字展開
             d_variants = _expand_name_variants(clean_search_key)
-            
-            # C. DB側も姓+名を結合し、さらにスペースを除去して比較する条件を作成
             full_name_db = Deceased.name_last + Deceased.name_first
             full_name_clean = func.replace(func.replace(full_name_db, ' ', ''), '　', '')
             
             v_conds = []
             for v in d_variants:
-                # パターン1: 結合・正規化したDB値に、検索キーが含まれているか
                 v_conds.append(full_name_clean.contains(v))
-                # パターン2: 苗字だけ入力された場合用
                 v_conds.append(Deceased.name_last.contains(v))
             
             conditions.append(or_(*v_conds))
@@ -217,9 +197,7 @@ def find_cases_by_attributes(
         if not conditions:
             return []
 
-        # いずれかの条件にヒットするものを取得
         cases = query.filter(or_(*conditions)).limit(20).all()
-        
         logger.info(f"   -> Hits: {len(cases)} cases found.")
 
         for c in cases:
@@ -247,7 +225,6 @@ def find_cases_by_attributes(
 
 
 def add_new_case_for_client_registration(case_number, name, **kwargs) -> int:
-    """手動登録画面からの案件登録処理"""
     session = get_db_session()
     try:
         name_parts = name.replace("　", " ").split(" ", 1)
@@ -415,20 +392,14 @@ def get_deceased_by_id(deceased_id: int) -> Optional[Deceased]:
 
 
 def delete_case_and_all_related_data(case_number: str) -> bool:
-    """
-    案件とその関連データを削除する。
-    IncomingNoteBuffer等の外部キー制約があるデータを先に削除する。
-    """
     session = get_db_session()
     try:
         case = session.query(Case).filter(Case.case_number == case_number).first()
         if case:
-            # 外部キー制約回避のため、先に関連するIncomingNoteBufferを削除
             session.query(IncomingNoteBuffer).filter(
                 IncomingNoteBuffer.linked_case_id == case.case_id
             ).delete(synchronize_session=False)
 
-            # 案件本体の削除 (cascade設定により紐づくDeceased等は自動削除される想定)
             session.delete(case)
             session.commit()
             return True
@@ -568,20 +539,27 @@ def update_deceased(deceased_id: int, **kwargs) -> bool:
         d.name_last_kana = kwargs.get("kana_last", d.name_last_kana)
         d.name_first_kana = kwargs.get("kana_first", d.name_first_kana)
 
-        # 本籍地
         if "hometown" in kwargs:
             d.hometown = kwargs["hometown"]
 
+        # ★修正: 日付型のチェックを入れる
         if kwargs.get("dob"):
-            d.date_of_birth = parse_all_flexible_date(kwargs["dob"])
+            val = kwargs["dob"]
+            if isinstance(val, (datetime.date, datetime.datetime)):
+                d.date_of_birth = val
+            else:
+                d.date_of_birth = parse_all_flexible_date(val)
+        
         if kwargs.get("dod"):
-            d.date_of_death = parse_all_flexible_date(kwargs["dod"])
+            val = kwargs["dod"]
+            if isinstance(val, (datetime.date, datetime.datetime)):
+                d.date_of_death = val
+            else:
+                d.date_of_death = parse_all_flexible_date(val)
 
-        if (
-            kwargs.get("last_pref")
-            or kwargs.get("last_city")
-            or kwargs.get("last_street")
-        ):
+        # ★修正: 住所関連のキーが1つでも存在すれば更新処理に入る
+        address_keys = ["last_pref", "last_city", "last_street", "last_building", "last_zip_code"]
+        if any(k in kwargs for k in address_keys):
             if d.last_address_id:
                 addr = session.query(Address).get(d.last_address_id)
                 if addr:
@@ -592,11 +570,11 @@ def update_deceased(deceased_id: int, **kwargs) -> bool:
                     addr.building_name = kwargs.get("last_building", addr.building_name)
             else:
                 new_addr = Address(
-                    zip_code=kwargs.get("last_zip_code"),
-                    prefecture=kwargs.get("last_pref"),
-                    city_ward_town=kwargs.get("last_city"),
-                    street_address=kwargs.get("last_street"),
-                    building_name=kwargs.get("last_building"),
+                    zip_code=kwargs.get("last_zip_code", ""),
+                    prefecture=kwargs.get("last_pref", ""),
+                    city_ward_town=kwargs.get("last_city", ""),
+                    street_address=kwargs.get("last_street", ""),
+                    building_name=kwargs.get("last_building", ""),
                 )
                 session.add(new_addr)
                 session.flush()
@@ -613,15 +591,16 @@ def update_deceased(deceased_id: int, **kwargs) -> bool:
 
 
 def add_heir(deceased_id: int, name: str, rel: str, **kwargs) -> int:
-    """
-    相続人を追加する。
-    kwargsで occupation(職業), hometown(本籍), zip_code(郵便番号) を受け取る。
-    """
     session = get_db_session()
     try:
         parts = name.replace("　", " ").split(" ", 1)
         lname = parts[0]
         fname = parts[1] if len(parts) > 1 else ""
+        
+        # 日付変換
+        dob_val = kwargs.get("dob")
+        if dob_val and not isinstance(dob_val, (datetime.date, datetime.datetime)):
+            dob_val = parse_all_flexible_date(dob_val)
 
         new_heir = Heir(
             deceased_id=deceased_id,
@@ -631,27 +610,25 @@ def add_heir(deceased_id: int, name: str, rel: str, **kwargs) -> int:
             name_first_kana=kwargs.get("kana_first"),
             relationship_type=rel,
             is_contracting_party=kwargs.get("is_contracting_party", False),
-            # 追加項目
             occupation=kwargs.get("occupation"),
-            hometown=kwargs.get("hometown"), # 本籍
-            date_of_birth=parse_all_flexible_date(kwargs.get("dob"))
+            hometown=kwargs.get("hometown"),
+            date_of_birth=dob_val
         )
         session.add(new_heir)
         session.flush()
 
-        # 住所登録 (郵便番号と住所を分ける)
+        # 住所登録
         street = kwargs.get("street", "")
         pref = kwargs.get("pref", "")
-        city = kwargs.get("city", "")
         
-        if street or pref:
+        if street or pref or kwargs.get("city") or kwargs.get("building"):
             zip_val = kwargs.get("zip_code", "")
             
             new_addr = Address(
                 zip_code=zip_val,
                 prefecture=pref,
-                city_ward_town=city,
-                street_address=street, # streetに残りを入れる運用
+                city_ward_town=kwargs.get("city", ""),
+                street_address=street,
                 building_name=kwargs.get("building", "")
             )
             session.add(new_addr)
@@ -663,7 +640,7 @@ def add_heir(deceased_id: int, name: str, rel: str, **kwargs) -> int:
                 is_current_address=True
             ))
 
-        # 連絡先登録
+        # 連絡先
         if "phone_contacts" in kwargs:
             for c_data in kwargs["phone_contacts"]:
                 val = c_data.get("value")
@@ -700,16 +677,22 @@ def update_heir(heir_id: int, name: str, rel: str, **kwargs) -> bool:
         if "kana_first" in kwargs:
             heir.name_first_kana = kwargs["kana_first"]
 
+        # ★修正: 日付型のチェックを入れる
         if kwargs.get("dob"):
-            heir.date_of_birth = parse_all_flexible_date(kwargs["dob"])
+            val = kwargs["dob"]
+            if isinstance(val, (datetime.date, datetime.datetime)):
+                heir.date_of_birth = val
+            else:
+                heir.date_of_birth = parse_all_flexible_date(val)
             
-        # ★追加: 職業・本籍更新
         if "occupation" in kwargs:
             heir.occupation = kwargs["occupation"]
         if "hometown" in kwargs:
             heir.hometown = kwargs["hometown"]
 
-        if kwargs.get("pref") or kwargs.get("city") or kwargs.get("street"):
+        # ★修正: 住所関連のキーが1つでも存在すれば更新処理に入る
+        address_keys = ["pref", "city", "street", "building", "zip_code"]
+        if any(k in kwargs for k in address_keys):
             link = (
                 session.query(H_AddressHistory)
                 .filter(
@@ -728,11 +711,11 @@ def update_heir(heir_id: int, name: str, rel: str, **kwargs) -> bool:
                 addr.building_name = kwargs.get("building", addr.building_name)
             else:
                 new_addr = Address(
-                    zip_code=kwargs.get("zip_code"),
-                    prefecture=kwargs.get("pref"),
-                    city_ward_town=kwargs.get("city"),
-                    street_address=kwargs.get("street"),
-                    building_name=kwargs.get("building"),
+                    zip_code=kwargs.get("zip_code", ""),
+                    prefecture=kwargs.get("pref", ""),
+                    city_ward_town=kwargs.get("city", ""),
+                    street_address=kwargs.get("street", ""),
+                    building_name=kwargs.get("building", ""),
                 )
                 session.add(new_addr)
                 session.flush()
@@ -788,24 +771,18 @@ def delete_heir(heir_id: int) -> bool:
         session.close()
 
 def sync_heir_list(deceased_id: int, heir_data_list: List[Dict[str, Any]]) -> Dict[str, int]:
-    """
-    UIのst.data_editorから受け取ったリストとDBを同期する。
-    """
     session = get_db_session()
     result = {"added": 0, "updated": 0, "deleted": 0}
     
     try:
-        # 1. 既存レコードの取得
         existing_heirs = session.query(Heir).filter(Heir.deceased_id == deceased_id).all()
         existing_ids = {h.id for h in existing_heirs}
         
-        # 2. UIからのリストIDを収集 (削除判定用)
         incoming_ids = set()
         
         for data in heir_data_list:
             h_id = data.get("id")
             
-            # --- データの正規化 ---
             full_name = data.get("name", "").strip().replace("　", " ")
             parts = full_name.split(" ", 1)
             lname = parts[0]
@@ -818,7 +795,6 @@ def sync_heir_list(deceased_id: int, heir_data_list: List[Dict[str, Any]]) -> Di
             if pd.isnull(dob): dob = None
 
             if h_id and h_id in existing_ids:
-                # --- 更新 (Update) ---
                 incoming_ids.add(h_id)
                 target = session.query(Heir).get(h_id)
                 target.name_last = lname
@@ -828,8 +804,7 @@ def sync_heir_list(deceased_id: int, heir_data_list: List[Dict[str, Any]]) -> Di
                 target.is_contracting_party = role_flg
                 result["updated"] += 1
             else:
-                # --- 新規追加 (Create) ---
-                if not lname: continue # 名前がない行は無視
+                if not lname: continue
                 new_h = Heir(
                     deceased_id=deceased_id,
                     name_last=lname,
@@ -841,7 +816,6 @@ def sync_heir_list(deceased_id: int, heir_data_list: List[Dict[str, Any]]) -> Di
                 session.add(new_h)
                 result["added"] += 1
         
-        # 3. 削除 (Delete)
         ids_to_delete = existing_ids - incoming_ids
         if ids_to_delete:
             session.query(Heir).filter(Heir.id.in_(ids_to_delete)).delete(synchronize_session=False)
@@ -858,15 +832,10 @@ def sync_heir_list(deceased_id: int, heir_data_list: List[Dict[str, Any]]) -> Di
         session.close()
 
 
-# ==========================================
-# 5. 住所・郵便番号検索API
-# ==========================================
 def search_zip_by_address_api(address: str) -> Optional[str]:
-    """住所文字列から郵便番号を検索する"""
     if not address:
         return None
     try:
-        # HeartRails Geo API
         res = requests.get(
             "http://geoapi.heartrails.com/api/json",
             params={"method": "suggest", "matching": "like", "keyword": address},

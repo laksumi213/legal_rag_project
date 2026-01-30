@@ -16,6 +16,8 @@ if ROOT_DIR not in sys.path:
 from src.legal_system.core.database_manager import DatabaseManager
 from src.legal_system.models.tables import FileRegistry, Case, FinancialAsset, Heir, Deceased
 from src.legal_system.ui.components.document_viewer import render_enhanced_document_viewer
+from src.services.folder_service import open_local_folder
+from src.services.deceased_service import update_case_folder_path
 
 st.set_page_config(page_title="AI受信トレイ", layout="wide", page_icon="🤖")
 
@@ -88,7 +90,7 @@ def render_ai_inbox():
             # AI判定タイプ
             ai_detected_type = target_file.doc_type or ai_data.get('doc_type', 'other')
 
-            # 案件情報の取得
+            # 案件情報の取得 (DB上の関連付け)
             related_case = None
             if target_file.case_id:
                 related_case = db.query(Case).filter(Case.case_id == target_file.case_id).first()
@@ -103,31 +105,38 @@ def render_ai_inbox():
 
             st.markdown("#### データ確認・編集")
             
-            # 1. 書類種別の手動選択 (★追加機能)
-            # マッピング: 表示名 -> 内部キー
+            # 1. 書類種別の手動選択
             type_map = {
-                "銀行・金融資産 (デフォルト)": "balance_certificate", # 通帳も含む
+                "証券・金融商品 (明細あり)": "securities_statement",
+                "銀行・預金 (デフォルト)": "balance_certificate",
                 "通帳": "bank_passbook",
                 "推定相続人一覧": "heir_list",
                 "固定資産税・納税通知書": "tax_payment_notice",
                 "その他 (保存のみ)": "other"
             }
             
-            # 初期選択の決定
-            default_key = "その他 (保存のみ)"
-            if ai_detected_type == "heir_list": default_key = "推定相続人一覧"
-            elif ai_detected_type == "tax_payment_notice": default_key = "固定資産税・納税通知書"
-            elif ai_detected_type in ["balance_certificate", "bank_passbook", "transaction_detail"]: default_key = "銀行・金融資産 (デフォルト)"
+            # ★UI側での補正ロジック: 銀行名に「証券」が含まれていれば、DB値が何であれ証券モードを優先する
+            extracted_bank_name = ai_data.get('bank_name', '')
+            is_securities_detected = "証券" in extracted_bank_name or "證券" in extracted_bank_name
             
-            # セレクトボックス
+            default_key = "その他 (保存のみ)"
+            
+            if ai_detected_type == "heir_list": 
+                default_key = "推定相続人一覧"
+            elif ai_detected_type == "tax_payment_notice": 
+                default_key = "固定資産税・納税通知書"
+            elif ai_detected_type == "securities_statement" or (is_securities_detected and ai_detected_type == "balance_certificate"): 
+                # 証券モード優先
+                default_key = "証券・金融商品 (明細あり)"
+            elif ai_detected_type in ["balance_certificate", "bank_passbook", "transaction_detail"]: 
+                default_key = "銀行・預金 (デフォルト)"
+            
             selected_type_label = st.selectbox(
                 "書類種別 (手動修正)", 
                 list(type_map.keys()),
                 index=list(type_map.keys()).index(default_key),
                 key=f"type_sel_{target_file.file_hash}"
             )
-            
-            # 決定された内部doc_type
             current_doc_type = type_map[selected_type_label]
             
             # 2. 案件選択
@@ -145,10 +154,123 @@ def render_ai_inbox():
                 key=f"case_sel_{target_file.file_hash}"
             )
 
+            # 紐付け先案件へのクイックアクセス
+            target_case_obj = None
+            if selected_case_id:
+                target_case_obj = db.query(Case).get(selected_case_id)
+
+            if target_case_obj:
+                st.caption("🚀 紐付け先のクイックアクセス")
+                with st.container(border=True):
+                    qc1, qc2 = st.columns([1, 2], gap="small")
+                    
+                    with qc1:
+                        if target_case_obj.kintone_record_id:
+                            url = f"https://chester-tax.cybozu.com/k/242/show#record={target_case_obj.kintone_record_id}"
+                            st.link_button("🔗 Kintoneで開く", url, type="secondary", use_container_width=True)
+                        else:
+                            st.button("🔗 連携なし", disabled=True, use_container_width=True)
+                    
+                    with qc2:
+                        path_val = target_case_obj.folder_path or ""
+                        col_path_in, col_open_btn = st.columns([3, 1])
+                        new_path = col_path_in.text_input("Path", value=path_val, label_visibility="collapsed", key=f"fp_{target_file.file_hash}")
+                        if col_open_btn.button("📂 開く", key=f"btn_open_{target_file.file_hash}", use_container_width=True):
+                            if new_path: 
+                                open_local_folder(new_path)
+                                if new_path != path_val:
+                                    update_case_folder_path(target_case_obj.case_id, new_path)
+                                    st.rerun()
+                        if new_path != path_val:
+                            update_case_folder_path(target_case_obj.case_id, new_path)
+
+            st.divider()
+
             # --- 3. フォーム分岐 ---
             
-            # A. 推定相続人一覧
-            if current_doc_type == "heir_list":
+            # A. 証券・金融商品 (明細あり)
+            if current_doc_type == "securities_statement":
+                st.info("📈 証券会社の報告書として処理します。")
+                
+                col_s1, col_s2 = st.columns(2)
+                with col_s1:
+                    sec_name = st.text_input("証券会社名", value=ai_data.get('bank_name', ''), key=f"sec_n_{target_file.file_hash}")
+                    sec_branch = st.text_input("本支店名", value=meta.get('branch_name', ''), key=f"sec_b_{target_file.file_hash}")
+                with col_s2:
+                    sec_acc = st.text_input("口座番号 (英数可)", value=meta.get('account_number', ''), key=f"sec_a_{target_file.file_hash}")
+                    
+                    # --- ★修正ポイント: float値をintに変換してWarningを解消 ---
+                    raw_total = meta.get('balance', 0)
+                    sec_total = 0
+                    try:
+                        if isinstance(raw_total, str):
+                            sec_total = int(float(raw_total.replace(",", "").strip()))
+                        else:
+                            sec_total = int(float(raw_total))
+                    except:
+                        sec_total = 0
+                    
+                    # valueにint型を渡す
+                    sec_total = st.number_input("合計評価額 (円)", value=sec_total, format="%d", key=f"sec_t_{target_file.file_hash}")
+
+                st.markdown("###### 保有銘柄リスト (銘柄・数量・評価額)")
+                
+                holdings_data = meta.get("holdings", [])
+                if not holdings_data:
+                    holdings_data = [{"name": "", "quantity": "", "category": "株式", "valuation": 0}]
+                
+                df_holdings = pd.DataFrame(holdings_data)
+                
+                edited_holdings = st.data_editor(
+                    df_holdings,
+                    num_rows="dynamic",
+                    use_container_width=True,
+                    column_config={
+                        "name": st.column_config.TextColumn("銘柄名 (ファンド名)", required=True, width="large"),
+                        "quantity": st.column_config.TextColumn("数量/口数", width="medium"),
+                        "category": st.column_config.SelectboxColumn("種別", options=["株式", "投資信託", "債券", "MRF", "預り金", "その他"], width="small"),
+                        "valuation": st.column_config.NumberColumn("評価額", format="%d", width="small")
+                    },
+                    key=f"holdings_editor_{target_file.file_hash}"
+                )
+                
+                calc_total = 0
+                if not edited_holdings.empty and "valuation" in edited_holdings.columns:
+                    calc_total = edited_holdings["valuation"].sum()
+                
+                if calc_total > 0 and calc_total != sec_total:
+                    st.caption(f"💡 明細合計: {calc_total:,.0f} 円")
+
+                st.divider()
+                
+                if st.button("✅ 承認して登録 (証券資産+明細)", type="primary", use_container_width=True):
+                    ai_data['bank_name'] = sec_name
+                    ai_data['doc_type'] = "securities_statement" 
+                    ai_data.setdefault('meta', {})
+                    
+                    clean_holdings = edited_holdings.to_dict(orient="records")
+                    clean_holdings = [h for h in clean_holdings if h.get("name")]
+                    
+                    ai_data['meta'].update({
+                        'branch_name': sec_branch,
+                        'account_number': sec_acc,
+                        'balance': sec_total,
+                        'holdings': clean_holdings
+                    })
+                    
+                    target_file.doc_type = "securities_statement"
+                    target_file.extracted_data = json.dumps(ai_data, ensure_ascii=False)
+                    db.commit()
+
+                    from src.services.scanner_service import ScannerService
+                    svc = ScannerService()
+                    svc.process_pending_buffer(target_file.file_hash, selected_case_id, override_doc_type="securities_statement")
+                    
+                    st.success(f"登録完了！ 銘柄数: {len(clean_holdings)}")
+                    st.rerun()
+
+            # B. 推定相続人一覧
+            elif current_doc_type == "heir_list":
                 st.info("👨‍👩‍👧‍👦 相続人情報が検出されました。内容を確認・修正してください。")
                 heirs_data = meta.get("heirs", [])
                 if not heirs_data:
@@ -175,7 +297,6 @@ def render_ai_inbox():
 
                 st.divider()
                 if st.button("✅ 承認して登録 (相続人を追加)", type="primary", use_container_width=True):
-                    target_case_obj = db.query(Case).get(selected_case_id)
                     if not target_case_obj or not target_case_obj.deceased_ref:
                         st.error("案件に被相続人情報がありません。")
                     else:
@@ -207,7 +328,7 @@ def render_ai_inbox():
                         except Exception as e:
                             st.error(f"登録エラー: {e}")
 
-            # B. 固定資産税 (保存のみ)
+            # C. 固定資産税 (保存のみ)
             elif current_doc_type == "tax_payment_notice":
                 st.info("💴 固定資産税納税通知書として保存します。")
                 st.caption("※資産データの自動登録は行われません。")
@@ -223,7 +344,7 @@ def render_ai_inbox():
                     else:
                         st.error("保存に失敗しました。")
 
-            # C. その他 (保存のみ)
+            # D. その他 (保存のみ)
             elif current_doc_type == "other":
                 st.info("📁 「その他」書類として保存します。")
                 st.divider()
@@ -235,9 +356,9 @@ def render_ai_inbox():
                         st.success("保存完了！")
                         st.rerun()
 
-            # D. 銀行・金融資産 (デフォルト)
+            # E. 銀行・預金 (デフォルト)
             else:
-                st.caption("🏦 金融資産情報")
+                st.caption("🏦 銀行・預金情報")
                 edited_vals = {}
                 col_f1, col_f2 = st.columns(2)
                 
@@ -255,6 +376,7 @@ def render_ai_inbox():
                     except (ValueError, TypeError):
                         val_bal = 0.0
 
+                    # こちらはフォーマット指定がないのでfloatのままでOKだが、念のためintキャストも可
                     edited_vals['balance'] = st.number_input("金額/残高", value=val_bal, key=f"bal_{target_file.file_hash}")
                     edited_vals['account_number'] = st.text_input("口座番号", value=meta.get('account_number', ''), key=f"an_{target_file.file_hash}")
 
@@ -275,7 +397,6 @@ def render_ai_inbox():
 
                         from src.services.scanner_service import ScannerService
                         svc = ScannerService()
-                        # ★ここで手動選択した current_doc_type を渡す
                         svc.process_pending_buffer(target_file.file_hash, selected_case_id, override_doc_type=current_doc_type)
                         
                         st.success("処理完了！")

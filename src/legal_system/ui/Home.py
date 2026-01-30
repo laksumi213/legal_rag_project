@@ -156,7 +156,6 @@ def render_notifications(session):
             if total_pending == 0:
                 st.caption("✅ すべて処理済みです")
             else:
-                # ★修正: ボタンでページ遷移できるように変更
                 if pending_files > 0:
                     if st.button(f"📄 スキャン書類: {pending_files} 件 (AI処理へ)", type="primary", use_container_width=True):
                         st.switch_page("pages/00_AI受信トレイ.py")
@@ -191,10 +190,10 @@ def main():
     # 1. サイドバー
     menu = render_sidebar(db, current_user_info)
 
-    # 2. 通知エリア (New!)
+    # 2. 通知エリア
     render_notifications(session)
 
-    # 3. 受信トレイ (承認アクションの場)
+    # 3. 受信トレイ
     state = get_shared_state()
     if state["services_ready"]:
         gmail_svc = get_gmail_service_silent()
@@ -242,6 +241,11 @@ def main():
         from src.legal_system.ui.components.cases.asset_list import render_bank_account_list
         render_bank_account_list(session, target_case_id)
 
+    elif menu == "📈 証券・その他資産":
+        # ★機能追加: 証券・その他資産のCRUD画面
+        from src.legal_system.ui.components.cases.asset_list import render_securities_list
+        render_securities_list(session, target_case_id)
+
     elif menu == "🏘️ 不動産 登録":
         from src.legal_system.ui.components.cases.nayose_registration import render_nayose_registration
         render_nayose_registration(session, target_case_id)
@@ -254,7 +258,7 @@ def main():
         from src.legal_system.ui.components.label_printer_ui import render_label_printer
         render_label_printer(session, current_case, current_user_info)
 
-    elif menu == "📈 証券・その他資産" or menu == "✅ タスク管理":
+    elif menu == "✅ タスク管理":
         st.info(f"メニュー: {menu} は準備中です。")
 
     session.close()

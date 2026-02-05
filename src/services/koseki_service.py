@@ -275,106 +275,117 @@ class KosekiService:
 
             return s
 
-        def _try_json_load(text: str) -> Optional[Dict[str, Any]]:
-            try:
-                obj = json.loads(text)
-                return obj if isinstance(obj, dict) else None
-            except Exception:
+        def _get_scalar_str(raw: str, key: str) -> str:
+            m = re.search(rf'"{re.escape(key)}"\s*:\s*"([^\"]*)"', raw)
+            return m.group(1) if m else ""
+
+        def _get_scalar_str_or_none(raw: str, key: str) -> Optional[str]:
+            m = re.search(rf'"{re.escape(key)}"\s*:\s*"([^\"]*)"', raw)
+            if m:
+                return m.group(1)
+            m_null = re.search(rf'"{re.escape(key)}"\s*:\s*null', raw)
+            if m_null:
                 return None
+            return ""
 
-        def _salvage_partial(text: str) -> Optional[Dict[str, Any]]:
-            raw = text or ""
-            result: Dict[str, Any] = {}
-
-            scalar_keys = [
-                "doc_type",
-                "honseki",
-                "head_name",
-                "target_person",
-                "valid_from",
-                "valid_to",
-                "target_birth_date",
-                "target_death_date",
-            ]
-
-            for k in scalar_keys:
-                m = re.search(rf'"{re.escape(k)}"\s*:\s*"([^\"]*)"', raw)
-                if m:
-                    result[k] = m.group(1)
+        def _extract_person_objects(raw: str) -> List[Dict[str, Any]]:
+            text = raw or ""
+            persons: List[Dict[str, Any]] = []
+            seen: set[str] = set()
+            for m in re.finditer(r'"nm"\s*:', text):
+                start = text.rfind("{", 0, m.start())
+                if start < 0:
                     continue
-                m_null = re.search(rf'"{re.escape(k)}"\s*:\s*null', raw)
-                if m_null:
-                    result[k] = None
 
-            fam_match = re.search(r'"family_list"\s*:\s*\[', raw)
-            if fam_match:
-                start = fam_match.end() - 1
-                arr_text = raw[start:]
-
-                in_str = False
-                esc = False
+                in_string = False
+                escape = False
                 depth = 0
-                end_idx: Optional[int] = None
-                for i, ch in enumerate(arr_text):
-                    if in_str:
-                        if esc:
-                            esc = False
+                end: Optional[int] = None
+
+                for i in range(start, len(text)):
+                    ch = text[i]
+                    if in_string:
+                        if escape:
+                            escape = False
                             continue
                         if ch == "\\":
-                            esc = True
+                            escape = True
                             continue
                         if ch == '"':
-                            in_str = False
+                            in_string = False
                         continue
+
                     if ch == '"':
-                        in_str = True
+                        in_string = True
                         continue
-                    if ch == "[":
+                    if ch == "{":
                         depth += 1
                         continue
-                    if ch == "]":
+                    if ch == "}":
                         depth -= 1
                         if depth == 0:
-                            end_idx = i
+                            end = i
                             break
 
-                candidate = arr_text[: end_idx + 1] if end_idx is not None else arr_text
+                candidate = text[start : end + 1] if end is not None else text[start:]
                 candidate = _repair_truncated_json(candidate)
+                candidate = re.sub(r",\s*([}\]])", r"\1", candidate)
                 try:
-                    arr = json.loads(candidate)
-                    if isinstance(arr, list):
-                        result["family_list"] = arr
+                    obj = json.loads(candidate)
+                    if not isinstance(obj, dict):
+                        continue
+                    nm = str(obj.get("nm", "") or "")
+                    key = self._normalize_name(nm)
+                    if not key or key in seen:
+                        continue
+                    seen.add(key)
+                    persons.append(obj)
                 except Exception:
-                    pass
+                    continue
 
-            if "family_list" not in result:
-                result["family_list"] = []
-
-            return result if result else None
+            return persons
 
         try:
             cleaned = _strip_fences(content)
-            candidate = _extract_object_text(cleaned)
+            candidate = _extract_object_text(cleaned) or cleaned
+            raw = candidate
 
-            obj = _try_json_load(candidate) or _try_json_load(cleaned)
-            if obj is not None:
-                return obj
+            dt = _get_scalar_str(raw, "dt") or _get_scalar_str(raw, "doc_type")
+            hs = _get_scalar_str(raw, "hs") or _get_scalar_str(raw, "honseki")
+            hd = _get_scalar_str(raw, "hd") or _get_scalar_str(raw, "head_name")
+            tp = _get_scalar_str(raw, "tp") or _get_scalar_str(raw, "target_person")
+            vf = _get_scalar_str(raw, "vf") or _get_scalar_str(raw, "valid_from")
+            vt = _get_scalar_str(raw, "vt") or _get_scalar_str(raw, "valid_to")
+            tbd = _get_scalar_str(raw, "tbd") or _get_scalar_str(raw, "target_birth_date")
 
-            repaired_candidate = _repair_truncated_json(candidate)
-            obj = _try_json_load(repaired_candidate)
-            if obj is not None:
-                return obj
+            tdd = _get_scalar_str_or_none(raw, "tdd")
+            if tdd == "":
+                tdd = _get_scalar_str_or_none(raw, "target_death_date")
 
-            repaired_cleaned = _repair_truncated_json(cleaned)
-            obj = _try_json_load(repaired_cleaned)
-            if obj is not None:
-                return obj
+            people = _extract_person_objects(raw)
+            family_list: List[Dict[str, Any]] = []
+            for p in people:
+                family_list.append({
+                    "name": p.get("nm", ""),
+                    "rel": p.get("rl", p.get("rel", "")),
+                    "birth_date": p.get("dob", p.get("birth_date", "")),
+                    "death_date": p.get("dod", p.get("death_date", "")),
+                })
 
-            partial = _salvage_partial(cleaned)
-            if partial is not None:
-                return partial
+            if not any([dt, hs, hd, tp, vf, vt, tbd, (tdd not in ("", None)), family_list]):
+                return {"error": "JSON解析失敗: 解析可能なJSONが見つかりません"}
 
-            return {"error": "JSON解析失敗: 解析可能なJSONが見つかりません"}
+            return {
+                "doc_type": dt,
+                "honseki": hs,
+                "head_name": hd,
+                "target_person": tp,
+                "valid_from": vf,
+                "valid_to": vt,
+                "target_birth_date": tbd,
+                "target_death_date": tdd,
+                "family_list": family_list,
+            }
         except Exception as e:
             return {"error": f"JSON解析失敗: {str(e)}"}
 
@@ -435,18 +446,19 @@ class KosekiService:
         ### 抽出ルール
         - 記載されている人物を可能な限り列挙してください（筆頭者・対象者・配偶者・子・父母・養子など）。
         - 文字が判読不能な場合は空文字で構いません。
+        - nm(氏名) は個人名のみ。続柄語（長男/二男/長女/二女/母/父/妻/夫/本人/養子/養女/筆頭者/戸主 等）を nm に入れるのは固く禁ずる。
 
-        ### 出力JSONスキーマ（このキーのみ）
+        ### 出力JSONスキーマ（キーは短縮し、このキーのみ）
         {{
-          "doc_type": "現在戸籍|除籍謄本|改製原戸籍|住民票|不明",
-          "honseki": "本籍地（不明なら空文字）",
-          "head_name": "筆頭者氏名（不明なら空文字）",
-          "target_person": "対象者氏名（不明なら空文字）",
-          "valid_from": "YYYY-MM-DD（不明なら空文字）",
-          "valid_to": "YYYY-MM-DD（不明なら空文字）",
-          "target_birth_date": "YYYY-MM-DD（不明なら空文字）",
-          "target_death_date": "YYYY-MM-DD または null",
-          "family_list": [{{"name":"氏名","rel":"続柄","birth_date":"YYYY-MM-DD","death_date":"YYYY-MM-DD または null"}}]
+          "dt": "現在戸籍|除籍謄本|改製原戸籍|住民票|不明",
+          "hs": "本籍地（不明なら空文字）",
+          "hd": "筆頭者氏名（不明なら空文字）",
+          "tp": "対象者氏名（不明なら空文字）",
+          "vf": "YYYY-MM-DD（不明なら空文字）",
+          "vt": "YYYY-MM-DD（不明なら空文字）",
+          "tbd": "YYYY-MM-DD（不明なら空文字）",
+          "tdd": "YYYY-MM-DD または null",
+          "ppl": [{{"nm":"氏名(個人名のみ)","rl":"続柄","dob":"YYYY-MM-DD","dod":"YYYY-MM-DD または null"}}]
         }}
         """.strip()
 
@@ -461,25 +473,29 @@ class KosekiService:
         ※「旧字体」や「変体仮名」が含まれる場合がありますが、現代の常用漢字・現代仮名遣いに直して出力してください。
 
         ### 抽出ルール
-        1. **筆頭者との混同注意**: 戸籍の冒頭にある「筆頭者」ではなく、氏名欄がターゲット人物となっていいる箇所の情報を「対象者(target_person)」として抽出してください。
-        2. **全関係者の抽出 (family_list)**:
+        1. **筆頭者との混同注意**: 戸籍の冒頭にある「筆頭者」ではなく、氏名欄がターゲット人物となっている箇所の情報を「対象者(tp)」として抽出してください。
+        2. **全関係者の抽出 (ppl)**:
            - 対象者だけでなく、記載されている**すべて**の人物（配偶者、子、父母、養子、兄弟姉妹、孫、同居人など）を抽出してください。
            - 「除籍」されている人物も抽出してください。
            - 身分事項欄などから、それぞれの「続柄（長男、妻、養女など）」を特定してください。
-           - family_list は人物ごとに1要素とし、同一人物が複数回出てくる場合は統合して構いません。
-           - family_list が空にならないよう、判読できる氏名がある限り全て列挙してください。
+           - ppl は人物ごとに1要素とし、同一人物が複数回出てくる場合は統合して構いません。
+           - ppl が空にならないよう、判読できる氏名がある限り全て列挙してください。
+        3. **nm(氏名) の厳格ルール**:
+           - nm には個人名のみを入れてください。
+           - 続柄語（長男/二男/長女/二女/母/父/妻/夫/本人/養子/養女/筆頭者/戸主 等）を nm に入れるのは固く禁ずる。
+           - 続柄は必ず rl に入れてください。
 
-        ### 出力JSONスキーマ（このキーのみ）
+        ### 出力JSONスキーマ（キーは短縮し、このキーのみ）
         {{
-          "doc_type": "現在戸籍|除籍謄本|改製原戸籍|住民票|不明",
-          "honseki": "本籍地（不明なら空文字）",
-          "head_name": "筆頭者氏名（不明なら空文字）",
-          "target_person": "対象者氏名（不明なら空文字）",
-          "valid_from": "YYYY-MM-DD（不明なら空文字）",
-          "valid_to": "YYYY-MM-DD（不明なら空文字）",
-          "target_birth_date": "YYYY-MM-DD（不明なら空文字）",
-          "target_death_date": "YYYY-MM-DD または null",
-          "family_list": [{{"name":"氏名","rel":"続柄","birth_date":"YYYY-MM-DD","death_date":"YYYY-MM-DD または null"}}]
+          "dt": "現在戸籍|除籍謄本|改製原戸籍|住民票|不明",
+          "hs": "本籍地（不明なら空文字）",
+          "hd": "筆頭者氏名（不明なら空文字）",
+          "tp": "対象者氏名（不明なら空文字）",
+          "vf": "YYYY-MM-DD（不明なら空文字）",
+          "vt": "YYYY-MM-DD（不明なら空文字）",
+          "tbd": "YYYY-MM-DD（不明なら空文字）",
+          "tdd": "YYYY-MM-DD または null",
+          "ppl": [{{"nm":"氏名(個人名のみ)","rl":"続柄","dob":"YYYY-MM-DD","dod":"YYYY-MM-DD または null"}}]
         }}
         """.strip()
 

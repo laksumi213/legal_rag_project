@@ -150,6 +150,28 @@ def main():
                                     case_mode=case_mode,
                                 )
                                 if rows:
+                                    ng_words = {
+                                        "長男", "二男", "三男", "四男", "五男",
+                                        "長女", "二女", "三女", "四女", "五女",
+                                        "父", "母", "妻", "夫", "本人",
+                                        "養子", "養女", "筆頭者", "戸主",
+                                    }
+                                    invalid_rows = []
+                                    valid_rows = []
+                                    for r in rows:
+                                        nm = str(r.get("name", "") or "").strip().replace("　", " ")
+                                        nm_norm = nm.replace(" ", "").strip()
+                                        if nm_norm in ng_words:
+                                            invalid_rows.append({**r, "name": nm})
+                                        else:
+                                            valid_rows.append(r)
+
+                                    if invalid_rows:
+                                        st.warning(
+                                            f"⚠️ AI抽出結果に続柄語が氏名として混入したため除外しました（{len(invalid_rows)}件）: "
+                                            + "、".join([str(x.get("name", "")) for x in invalid_rows])
+                                        )
+
                                     df_people = pd.DataFrame([
                                         {
                                             "氏名": r.get("name", ""),
@@ -157,7 +179,7 @@ def main():
                                             "生年月日": r.get("birth_date", ""),
                                             "相続人判定（○/×）": "○" if bool(r.get("is_heir")) else "×",
                                         }
-                                        for r in rows
+                                        for r in valid_rows
                                     ])
                                     with st.expander("👤 抽出された人物一覧", expanded=True):
                                         st.dataframe(df_people, use_container_width=True, hide_index=True)

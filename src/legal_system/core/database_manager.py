@@ -6,7 +6,11 @@ from typing import Any, Dict, List, Optional
 
 from sqlalchemy import create_engine, desc
 from sqlalchemy.engine import Engine
-from sqlalchemy.orm import scoped_session, sessionmaker
+from sqlalchemy.orm import (  # Added relationship for eager loading
+    relationship,
+    scoped_session,
+    sessionmaker,
+)
 
 # テーブル定義
 from src.legal_system.models.tables import (
@@ -14,12 +18,16 @@ from src.legal_system.models.tables import (
     Base,
     Case,
     Coordinate,
+    Deceased,
     FileRegistry,
+    FinancialAsset,
+    Heir,
     User,
 )
 
 # Config
 from .config import Config
+
 
 # ==========================================
 # エンジン生成の共通ロジック
@@ -31,7 +39,11 @@ def _create_new_engine() -> Engine:
         pool_size=20,
         max_overflow=10,
         pool_pre_ping=True,
+<<<<<<< HEAD
         connect_args={"client_encoding": "utf8", "connect_timeout": 5}
+=======
+        connect_args={"client_encoding": "utf8"},
+>>>>>>> 8813aafa92902738f10e875077848bddf958cba0
     )
     try:
         Base.metadata.create_all(engine)
@@ -40,6 +52,7 @@ def _create_new_engine() -> Engine:
         if os.environ.get("IS_WATCHER_PROCESS") != "true":
             try:
                 import streamlit as st
+
                 st.error(msg)
             except ImportError:
                 print(msg)
@@ -47,6 +60,7 @@ def _create_new_engine() -> Engine:
             print(msg)
         raise e
     return engine
+
 
 # ==========================================
 # 公開アクセサ (環境判定ロジック付き)
@@ -62,15 +76,16 @@ def get_db_engine() -> Engine:
     else:
         try:
             import streamlit as st
-            
+
             # キャッシュ衝突を避けるため、関数内部で定義
             @st.cache_resource(show_spinner="データベースに接続中...")
             def _get_cached_engine() -> Engine:
                 return _create_new_engine()
-                
+
             return _get_cached_engine()
         except ImportError:
             return _create_new_engine()
+
 
 class DatabaseManager:
     def __init__(self):
@@ -121,7 +136,9 @@ class DatabaseManager:
         finally:
             session.close()
 
-    def register_user(self, windows_id: str, display_name: str, department: str, phone: str):
+    def register_user(
+        self, windows_id: str, display_name: str, department: str, phone: str
+    ):
         session = self._get_session()
         try:
             user = session.query(User).filter_by(windows_id=windows_id).first()
@@ -186,19 +203,21 @@ class DatabaseManager:
         filename: str,
         doc_type: str = "その他",
         case_id: Optional[int] = None,
-        status: str = "CONFIRMED", # デフォルトは確認済(手動アップロード等)
+        status: str = "CONFIRMED",  # デフォルトは確認済(手動アップロード等)
         ai_confidence: float = 0.0,
-        extracted_data: str = None
+        extracted_data: str = None,
     ):
         session = self._get_session()
         try:
-            file_reg = session.query(FileRegistry).filter_by(file_hash=file_hash).first()
+            file_reg = (
+                session.query(FileRegistry).filter_by(file_hash=file_hash).first()
+            )
             if file_reg:
                 file_reg.filename = filename
                 file_reg.doc_type = doc_type
                 if case_id is not None:
                     file_reg.case_id = case_id
-                
+
                 # 更新
                 file_reg.status = status
                 file_reg.extracted_data = extracted_data
@@ -212,7 +231,7 @@ class DatabaseManager:
                     registered_at=datetime.now(),
                     status=status,
                     ai_confidence=ai_confidence,
-                    extracted_data=extracted_data
+                    extracted_data=extracted_data,
                 )
                 session.add(file_reg)
             session.commit()
@@ -234,17 +253,21 @@ class DatabaseManager:
             output = []
             for f, c in results:
                 case_label = f"{c.case_number}" if c else "（共通雛形）"
-                output.append({
-                    "filename": f.filename,
-                    "date": f.registered_at.strftime("%Y-%m-%d %H:%M:%S") if f.registered_at else "",
-                    "hash": f.file_hash,
-                    "type": f.doc_type if f.doc_type else "その他",
-                    "case": case_label,
-                    "doc_type": f.doc_type,
-                    "uploaded_at": f.registered_at,
-                    "status": f.status,
-                    "ai_confidence": f.ai_confidence
-                })
+                output.append(
+                    {
+                        "filename": f.filename,
+                        "date": f.registered_at.strftime("%Y-%m-%d %H:%M:%S")
+                        if f.registered_at
+                        else "",
+                        "hash": f.file_hash,
+                        "type": f.doc_type if f.doc_type else "その他",
+                        "case": case_label,
+                        "doc_type": f.doc_type,
+                        "uploaded_at": f.registered_at,
+                        "status": f.status,
+                        "ai_confidence": f.ai_confidence,
+                    }
+                )
             return output
         finally:
             session.close()
@@ -295,10 +318,29 @@ class DatabaseManager:
     # ---------------------------------------------------------
     # 座標管理
     # ---------------------------------------------------------
+<<<<<<< HEAD
     def register_coordinate(self, file_hash, label, x, y, width=None, height=None, page_number=1, description="", font_size=10, color="black", test_value=""):
+=======
+    def register_coordinate(
+        self,
+        file_hash,
+        label,
+        x,
+        y,
+        page_number=1,
+        description="",
+        font_size=10,
+        color="black",
+        test_value="",
+    ):
+>>>>>>> 8813aafa92902738f10e875077848bddf958cba0
         session = self._get_session()
         try:
-            coord = session.query(Coordinate).filter_by(file_hash=file_hash, label=label).first()
+            coord = (
+                session.query(Coordinate)
+                .filter_by(file_hash=file_hash, label=label)
+                .first()
+            )
             if not coord:
                 coord = Coordinate(file_hash=file_hash, label=label)
                 session.add(coord)
@@ -324,6 +366,7 @@ class DatabaseManager:
         session = self._get_session()
         try:
             coords = session.query(Coordinate).filter_by(file_hash=file_hash).all()
+<<<<<<< HEAD
             return [{
                 "id": c.id,
                 "label": c.label,
@@ -337,6 +380,22 @@ class DatabaseManager:
                 "color": c.color,
                 "value": c.value,
             } for c in coords]
+=======
+            return [
+                {
+                    "id": c.id,
+                    "label": c.label,
+                    "x": c.x_point,
+                    "y": c.y_point,
+                    "page": c.page_number,
+                    "desc": c.description,
+                    "font_size": c.font_size,
+                    "color": c.color,
+                    "value": c.value,
+                }
+                for c in coords
+            ]
+>>>>>>> 8813aafa92902738f10e875077848bddf958cba0
         finally:
             session.close()
 
@@ -346,12 +405,23 @@ class DatabaseManager:
             coord = session.query(Coordinate).filter_by(id=coord_id).first()
             if coord:
                 for k, v in updates.items():
+<<<<<<< HEAD
                     if k == "x": coord.x_point = v
                     elif k == "y": coord.y_point = v
                     elif k == "width": coord.width = v
                     elif k == "height": coord.height = v
                     elif k == "desc": coord.description = v
                     elif hasattr(coord, k): setattr(coord, k, v)
+=======
+                    if k == "x":
+                        coord.x_point = v
+                    elif k == "y":
+                        coord.y_point = v
+                    elif k == "desc":
+                        coord.description = v
+                    elif hasattr(coord, k):
+                        setattr(coord, k, v)
+>>>>>>> 8813aafa92902738f10e875077848bddf958cba0
                 session.commit()
                 return True
             return False
@@ -370,5 +440,74 @@ class DatabaseManager:
         except Exception:
             session.rollback()
             return False
+        finally:
+            session.close()
+
+    # ---------------------------------------------------------
+    # 案件・資産情報取得
+    # ---------------------------------------------------------
+    def get_all_cases(self) -> List[Case]:
+        session = self._get_session()
+        try:
+            return session.query(Case).order_by(desc(Case.created_at)).all()
+        finally:
+            session.close()
+
+    def get_case_with_details(self, case_id: int) -> Optional[Case]:
+        session = self._get_session()
+        try:
+            return (
+                session.query(Case)
+                .filter(Case.case_id == case_id)
+                .outerjoin(Deceased)
+                .outerjoin(Heir)
+                .first()
+            )
+        finally:
+            session.close()
+
+    def get_financial_assets_by_case_id(self, case_id: int) -> List[FinancialAsset]:
+        session = self._get_session()
+        try:
+            return (
+                session.query(FinancialAsset)
+                .filter(FinancialAsset.case_id == case_id)
+                .options(  # eager loading
+                    relationship(FinancialAsset.bank_ref),
+                    relationship(FinancialAsset.branch_ref),
+                    relationship(FinancialAsset.account_type_ref),
+                )
+                .all()
+            )
+        finally:
+            session.close()
+
+    def get_financial_asset_details(
+        self, financial_asset_id: int
+    ) -> Optional[FinancialAsset]:
+        session = self._get_session()
+        try:
+            return (
+                session.query(FinancialAsset)
+                .filter(FinancialAsset.id == financial_asset_id)
+                .options(
+                    relationship(FinancialAsset.bank_ref),
+                    relationship(FinancialAsset.branch_ref),
+                    relationship(FinancialAsset.account_type_ref),
+                    relationship(FinancialAsset.case_ref),
+                )
+                .first()
+            )
+        finally:
+            session.close()
+
+    def get_file_registry_by_hash(self, file_hash: str) -> Optional[FileRegistry]:
+        session = self._get_session()
+        try:
+            return (
+                session.query(FileRegistry)
+                .filter(FileRegistry.file_hash == file_hash)
+                .first()
+            )
         finally:
             session.close()

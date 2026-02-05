@@ -9,7 +9,11 @@ dependencies = [
     "streamlit>=1.34.0",
     "streamlit-autorefresh>=1.0.1",
     # ★追加: 自動更新用ライブラリ
+<<<<<<< HEAD
     "langchain>=1.2.7",
+=======
+    "langchain>=0.1.0",
+>>>>>>> 8813aafa92902738f10e875077848bddf958cba0
     "langchain-community>=0.0.20",
     "langchain-core>=0.1.25",
     "langchain-google-genai>=4.2.0",

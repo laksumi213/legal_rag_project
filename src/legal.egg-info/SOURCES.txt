@@ -58,15 +58,21 @@ src/legal_system/ui/pages/08_残高証明書_読取.py
 src/legal_system/ui/pages/09_相続書類_作成フォーム.py
 src/legal_system/ui/pages/10_公証役場・送付セット作成.py
 src/legal_system/ui/pages/11_公正証書遺言_ドラフト作成.py
+<<<<<<< HEAD
 src/legal_system/ui/pages/12_遺言書AI解析デモ.py
+=======
+>>>>>>> 8813aafa92902738f10e875077848bddf958cba0
 src/legal_system/ui/pages/90_預貯金口座入力フォーム.py
 src/legal_system/ui/pages/97_書式座標登録ツール.py
 src/legal_system/ui/pages/98_書類内容チェック_AI.py
 src/legal_system/ui/pages/99_マスタ管理.py
 src/legal_system/ui/utils/__init__.py
 src/legal_system/ui/utils/js_helper.py
+<<<<<<< HEAD
 src/legal_system/utils/document_loaders.py
 src/legal_system/utils/pdf_utils.py
+=======
+>>>>>>> 8813aafa92902738f10e875077848bddf958cba0
 src/services/__init__.py
 src/services/case_service.py
 src/services/deceased_service.py

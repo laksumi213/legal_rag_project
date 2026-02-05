@@ -51,6 +51,8 @@ from services.deceased_service import update_case_folder_path
 try:
     from services.logistics_service import LogisticsService
     from services.rag_search_service import RagSearchService
+    # 共通コンポーネントのインポート
+    from legal_system.ui.components.document_viewer import render_enhanced_document_viewer
 except ImportError:
     st.error("新機能サービス(logistics_service, rag_search_service)が見つかりません。src/services/に配置してください。")
     LogisticsService = None
@@ -302,8 +304,25 @@ def main():
                         for doc in docs:
                             with st.expander(f"📄 {doc['filename']}"):
                                 st.caption(f"登録日: {doc['registered_at']} | 種別: {doc['doc_type']}")
-                                # ダウンロードボタン等のアクション
-                                st.button("プレビュー", key=f"prev_{doc['file_hash']}")
+                                
+                                # --- 多機能PDFビューア表示 ---
+                                pdf_path = os.path.join(ROOT_DIR, "data", "demo_bank_docs", doc['filename'])
+                                if os.path.exists(pdf_path):
+                                    try:
+                                        with open(pdf_path, "rb") as f:
+                                            pdf_bytes = f.read()
+                                        
+                                        # 共通ビューアを呼び出す
+                                        render_enhanced_document_viewer(
+                                            file_bytes=pdf_bytes,
+                                            file_type="application/pdf",
+                                            # ファイルごとにユニークなキーを設定
+                                            key_prefix=f"rag_viewer_{doc['filename']}"
+                                        )
+                                    except Exception as e:
+                                        st.error(f"プレビュー生成中にエラーが発生しました: {e}")
+                                else:
+                                    st.warning(f"ファイルが見つかりません: {doc['filename']}")
                     else:
                         st.caption("該当する過去書類は見つかりませんでした。")
 

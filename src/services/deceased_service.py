@@ -161,6 +161,9 @@ def find_cases_by_attributes(
     deceased_name: Optional[str] = None,
     case_number: Optional[str] = None
 ) -> List[Dict[str, Any]]:
+    # 循環参照エラーを回避するため、ここでモデルをインポート
+    from legal_system.models.tables import Case, Deceased
+    
     session = get_db_session()
     results = []
     

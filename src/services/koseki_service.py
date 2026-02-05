@@ -4,8 +4,9 @@ import logging
 import base64
 import json
 import re
+import time
 import datetime
-from typing import List, Dict, Any, Optional, Tuple, Union
+from typing import List, Dict, Any, Optional, Tuple, Union, Literal
 from io import BytesIO
 from dateutil.relativedelta import relativedelta
 
@@ -28,18 +29,352 @@ class KosekiService:
         # 構造化データ抽出のため temperature=0.0
         self.llm = AIFactory.get_llm(mode="cloud", temperature=0.0)
 
-    def _extract_json_safe(self, content: str) -> Dict[str, Any]:
-        """AIの回答からJSON部分だけを安全に切り出すヘルパー関数"""
+    def _invoke_llm_with_timeout(self, messages: List[HumanMessage], timeout_sec: int = 300):
+        try:
+            return self.llm.invoke(messages, config={"timeout": timeout_sec})
+        except TypeError:
+            return self.llm.invoke(messages)
+
+    def _normalize_name(self, name: str) -> str:
+        return (name or "").replace(" ", "").replace("　", "").strip()
+
+    def _format_date_yyyy_mm_dd(self, date_str: Optional[str]) -> str:
+        if not date_str:
+            return ""
+        d = parse_all_flexible_date(date_str)
+        return d.strftime("%Y-%m-%d") if d else ""
+
+    def _extract_json_list_safe(self, content: str) -> List[Dict[str, Any]]:
         try:
             content = content.replace("```json", "").replace("```", "").strip()
-            match = re.search(r'(\{.*\})', content, re.DOTALL)
+            match = re.search(r'(\[.*\])', content, re.DOTALL)
             if match:
                 candidate = match.group(1)
                 try:
-                    return json.loads(candidate)
+                    parsed = json.loads(candidate)
+                    return parsed if isinstance(parsed, list) else []
                 except json.JSONDecodeError:
                     pass
-            return json.loads(content)
+            parsed = json.loads(content)
+            return parsed if isinstance(parsed, list) else []
+        except Exception:
+            return []
+
+    def _build_all_persons(self, data: Dict[str, Any]) -> List[Dict[str, Any]]:
+        persons: List[Dict[str, Any]] = []
+
+        for member in data.get("family_list", []) or []:
+            raw_name = member.get("name", "")
+            clean_name = self._normalize_name(raw_name)
+            if not clean_name:
+                continue
+            persons.append({
+                "name": raw_name,
+                "rel": member.get("rel", ""),
+                "birth_date": self._format_date_yyyy_mm_dd(member.get("birth_date")),
+                "death_date": self._format_date_yyyy_mm_dd(member.get("death_date")),
+            })
+
+        head_name = data.get("head_name")
+        if head_name and self._normalize_name(head_name):
+            persons.append({
+                "name": head_name,
+                "rel": "筆頭者",
+                "birth_date": "",
+                "death_date": "",
+            })
+
+        target_person = data.get("target_person")
+        if target_person and self._normalize_name(target_person):
+            persons.append({
+                "name": target_person,
+                "rel": "対象者",
+                "birth_date": self._format_date_yyyy_mm_dd(data.get("target_birth_date")),
+                "death_date": self._format_date_yyyy_mm_dd(data.get("target_death_date")),
+            })
+
+        dedup: Dict[str, Dict[str, Any]] = {}
+        for p in persons:
+            key = self._normalize_name(p.get("name", ""))
+            if not key:
+                continue
+            if key not in dedup:
+                dedup[key] = p
+                continue
+
+            current = dedup[key]
+            if not current.get("rel") and p.get("rel"):
+                current["rel"] = p.get("rel")
+            if not current.get("birth_date") and p.get("birth_date"):
+                current["birth_date"] = p.get("birth_date")
+            if not current.get("death_date") and p.get("death_date"):
+                current["death_date"] = p.get("death_date")
+
+        return list(dedup.values())
+
+    def _heuristic_is_heir(self, rel: str, death_date: str) -> bool:
+        if death_date:
+            return False
+        rel_norm = (rel or "").strip()
+        if not rel_norm:
+            return False
+
+        keywords = [
+            "妻", "夫", "配偶者",
+            "子", "長男", "次男", "三男", "四男", "五男",
+            "長女", "次女", "三女", "四女", "五女",
+            "養子", "養女",
+            "父", "母", "実父", "実母",
+            "兄", "弟", "姉", "妹",
+        ]
+        return any(k in rel_norm for k in keywords)
+
+    def mark_inheritors(
+        self,
+        persons: List[Dict[str, Any]],
+        base_person_name: str,
+        case_mode: Literal["will", "inheritance"],
+    ) -> List[Dict[str, Any]]:
+        base_key = self._normalize_name(base_person_name)
+
+        items_for_llm = [
+            {
+                "name": p.get("name", ""),
+                "rel": p.get("rel", ""),
+                "birth_date": p.get("birth_date", ""),
+                "death_date": p.get("death_date", ""),
+            }
+            for p in persons
+        ]
+
+        system_prompt = """
+あなたは相続実務に精通した行政書士の補助者です。
+以下の戸籍の人物一覧について、基準人物の推定相続人に該当する人物を判定し、各人物に is_heir(true/false) を付与してください。
+
+判断方針:
+- case_mode が inheritance の場合: 基準人物は被相続人。
+- case_mode が will の場合: 基準人物は遺言者(契約者)。
+- death_date がある人物は原則として相続人ではないものとして is_heir=false。
+- 代襲相続等の複雑な判断は行わず、判断不能の場合は false。
+
+出力は JSON 配列のみ。
+要素は {"name": "氏名", "is_heir": true/false } のみ。
+""".strip()
+
+        user_prompt = json.dumps(
+            {
+                "case_mode": case_mode,
+                "base_person": base_person_name,
+                "persons": items_for_llm,
+            },
+            ensure_ascii=False,
+        )
+
+        try:
+            prompt = ChatPromptTemplate.from_messages([
+                ("system", system_prompt),
+                ("human", "{payload}"),
+            ])
+            chain = prompt | self.llm | StrOutputParser()
+            resp_text = chain.invoke({"payload": user_prompt})
+            flags = self._extract_json_list_safe(resp_text)
+            flag_map: Dict[str, bool] = {}
+            for f in flags:
+                name_key = self._normalize_name(str(f.get("name", "")))
+                if not name_key:
+                    continue
+                flag_map[name_key] = bool(f.get("is_heir", False))
+
+            marked: List[Dict[str, Any]] = []
+            for p in persons:
+                key = self._normalize_name(p.get("name", ""))
+                is_heir = flag_map.get(key)
+                if is_heir is None:
+                    is_heir = self._heuristic_is_heir(p.get("rel", ""), p.get("death_date", ""))
+                if key and base_key and key == base_key:
+                    is_heir = False
+                marked.append({**p, "is_heir": bool(is_heir)})
+            return marked
+        except Exception:
+            marked: List[Dict[str, Any]] = []
+            for p in persons:
+                key = self._normalize_name(p.get("name", ""))
+                is_heir = self._heuristic_is_heir(p.get("rel", ""), p.get("death_date", ""))
+                if key and base_key and key == base_key:
+                    is_heir = False
+                marked.append({**p, "is_heir": bool(is_heir)})
+            return marked
+
+    def extract_people_table_rows(
+        self,
+        analysis_result: Dict[str, Any],
+        base_person_name: str,
+        case_mode: Literal["will", "inheritance"],
+    ) -> List[Dict[str, Any]]:
+        persons = self._build_all_persons(analysis_result)
+        return self.mark_inheritors(persons, base_person_name=base_person_name, case_mode=case_mode)
+
+    def _extract_json_safe(self, content: str) -> Dict[str, Any]:
+        """AIの回答からJSON部分だけを安全に切り出すヘルパー関数"""
+        def _strip_fences(text: str) -> str:
+            return (text or "").replace("```json", "").replace("```", "").strip()
+
+        def _extract_object_text(text: str) -> str:
+            s = text or ""
+            start = s.find("{")
+            if start < 0:
+                return ""
+            end = s.rfind("}")
+            if end > start:
+                return s[start : end + 1]
+            return s[start:]
+
+        def _repair_truncated_json(text: str) -> str:
+            s = (text or "").strip()
+            if not s:
+                return s
+
+            in_string = False
+            escape = False
+            stack: List[str] = []
+
+            for ch in s:
+                if in_string:
+                    if escape:
+                        escape = False
+                        continue
+                    if ch == "\\":
+                        escape = True
+                        continue
+                    if ch == '"':
+                        in_string = False
+                    continue
+
+                if ch == '"':
+                    in_string = True
+                    continue
+                if ch in "{[":
+                    stack.append(ch)
+                    continue
+                if ch == "}" and stack and stack[-1] == "{":
+                    stack.pop()
+                    continue
+                if ch == "]" and stack and stack[-1] == "[":
+                    stack.pop()
+                    continue
+
+            if in_string and escape and s.endswith("\\"):
+                s = s[:-1]
+                escape = False
+
+            if in_string:
+                s += '"'
+
+            for opener in reversed(stack):
+                s += "}" if opener == "{" else "]"
+
+            return s
+
+        def _try_json_load(text: str) -> Optional[Dict[str, Any]]:
+            try:
+                obj = json.loads(text)
+                return obj if isinstance(obj, dict) else None
+            except Exception:
+                return None
+
+        def _salvage_partial(text: str) -> Optional[Dict[str, Any]]:
+            raw = text or ""
+            result: Dict[str, Any] = {}
+
+            scalar_keys = [
+                "doc_type",
+                "honseki",
+                "head_name",
+                "target_person",
+                "valid_from",
+                "valid_to",
+                "target_birth_date",
+                "target_death_date",
+            ]
+
+            for k in scalar_keys:
+                m = re.search(rf'"{re.escape(k)}"\s*:\s*"([^\"]*)"', raw)
+                if m:
+                    result[k] = m.group(1)
+                    continue
+                m_null = re.search(rf'"{re.escape(k)}"\s*:\s*null', raw)
+                if m_null:
+                    result[k] = None
+
+            fam_match = re.search(r'"family_list"\s*:\s*\[', raw)
+            if fam_match:
+                start = fam_match.end() - 1
+                arr_text = raw[start:]
+
+                in_str = False
+                esc = False
+                depth = 0
+                end_idx: Optional[int] = None
+                for i, ch in enumerate(arr_text):
+                    if in_str:
+                        if esc:
+                            esc = False
+                            continue
+                        if ch == "\\":
+                            esc = True
+                            continue
+                        if ch == '"':
+                            in_str = False
+                        continue
+                    if ch == '"':
+                        in_str = True
+                        continue
+                    if ch == "[":
+                        depth += 1
+                        continue
+                    if ch == "]":
+                        depth -= 1
+                        if depth == 0:
+                            end_idx = i
+                            break
+
+                candidate = arr_text[: end_idx + 1] if end_idx is not None else arr_text
+                candidate = _repair_truncated_json(candidate)
+                try:
+                    arr = json.loads(candidate)
+                    if isinstance(arr, list):
+                        result["family_list"] = arr
+                except Exception:
+                    pass
+
+            if "family_list" not in result:
+                result["family_list"] = []
+
+            return result if result else None
+
+        try:
+            cleaned = _strip_fences(content)
+            candidate = _extract_object_text(cleaned)
+
+            obj = _try_json_load(candidate) or _try_json_load(cleaned)
+            if obj is not None:
+                return obj
+
+            repaired_candidate = _repair_truncated_json(candidate)
+            obj = _try_json_load(repaired_candidate)
+            if obj is not None:
+                return obj
+
+            repaired_cleaned = _repair_truncated_json(cleaned)
+            obj = _try_json_load(repaired_cleaned)
+            if obj is not None:
+                return obj
+
+            partial = _salvage_partial(cleaned)
+            if partial is not None:
+                return partial
+
+            return {"error": "JSON解析失敗: 解析可能なJSONが見つかりません"}
         except Exception as e:
             return {"error": f"JSON解析失敗: {str(e)}"}
 
@@ -78,43 +413,149 @@ class KosekiService:
         if family_name_hint:
             name_hint_str += f"- 名字のヒント: 「{family_name_hint}」 (手書き文字の認識優先度を上げてください)\n"
 
-        prompt = f"""
+        def _build_prompt(strict_level: Literal["full", "lite"] = "full") -> str:
+            forbid = """
+        【重要: 出力制約】
+        - 絶対に禁止: 戸籍の全文書き起こし、原文の貼り付け、ページごとのテキスト化、raw text/raw_text/transcriptionキーの出力
+        - 絶対に禁止: 解説文、手順説明、根拠説明、Markdown、コードフェンス(```)
+        - 出力は JSONオブジェクト1つのみ（前後に一切の文字を付けない）
+        - 指定したキー以外は出力しない（余計なキーは禁止）
+        """.strip()
+
+            if strict_level == "lite":
+                return f"""
         あなたは日本の戸籍解読のエキスパートAIです。
-        提示された戸籍謄本・除籍謄本・改製原戸籍・住民票（複数ページの場合あり）を読み取り、情報を統合してJSONで抽出してください。
+        提示された画像から、人物情報の抽出に必要な最小限の情報だけをJSONで返してください。
+
+        {forbid}
 
         【読取精度向上のためのヒント】
         {name_hint_str}
-        ※上記の名字や人物名が含まれている可能性が高いです。
+
+        ### 抽出ルール
+        - 記載されている人物を可能な限り列挙してください（筆頭者・対象者・配偶者・子・父母・養子など）。
+        - 文字が判読不能な場合は空文字で構いません。
+
+        ### 出力JSONスキーマ（このキーのみ）
+        {{
+          "doc_type": "現在戸籍|除籍謄本|改製原戸籍|住民票|不明",
+          "honseki": "本籍地（不明なら空文字）",
+          "head_name": "筆頭者氏名（不明なら空文字）",
+          "target_person": "対象者氏名（不明なら空文字）",
+          "valid_from": "YYYY-MM-DD（不明なら空文字）",
+          "valid_to": "YYYY-MM-DD（不明なら空文字）",
+          "target_birth_date": "YYYY-MM-DD（不明なら空文字）",
+          "target_death_date": "YYYY-MM-DD または null",
+          "family_list": [{{"name":"氏名","rel":"続柄","birth_date":"YYYY-MM-DD","death_date":"YYYY-MM-DD または null"}}]
+        }}
+        """.strip()
+
+            return f"""
+        あなたは日本の戸籍解読のエキスパートAIです。
+        提示された戸籍謄本・除籍謄本・改製原戸籍・住民票（複数ページの場合あり）を読み取り、人物情報を統合してJSONで抽出してください。
+
+        {forbid}
+
+        【読取精度向上のためのヒント】
+        {name_hint_str}
         ※「旧字体」や「変体仮名」が含まれる場合がありますが、現代の常用漢字・現代仮名遣いに直して出力してください。
 
         ### 抽出ルール
-        1. **筆頭者との混同注意**: 戸籍の冒頭にある「筆頭者」ではなく、氏名欄がターゲット人物となっている箇所の情報を「対象者(target_person)」として抽出してください。
-        2. **全関係者の抽出 (family_list)**: 
+        1. **筆頭者との混同注意**: 戸籍の冒頭にある「筆頭者」ではなく、氏名欄がターゲット人物となっていいる箇所の情報を「対象者(target_person)」として抽出してください。
+        2. **全関係者の抽出 (family_list)**:
            - 対象者だけでなく、記載されている**すべて**の人物（配偶者、子、父母、養子、兄弟姉妹、孫、同居人など）を抽出してください。
            - 「除籍」されている人物も抽出してください。
            - 身分事項欄などから、それぞれの「続柄（長男、妻、養女など）」を特定してください。
+           - family_list は人物ごとに1要素とし、同一人物が複数回出てくる場合は統合して構いません。
+           - family_list が空にならないよう、判読できる氏名がある限り全て列挙してください。
 
-        ### 抽出項目 (JSON keys)
-        1. **doc_type**: "現在戸籍", "除籍謄本", "改製原戸籍", "住民票" のいずれか。
-        2. **honseki**: 本籍地。
-        3. **head_name**: 筆頭者の氏名。
-        4. **target_person**: 対象者の氏名。
-        5. **valid_from**: 編製日または入籍日 (YYYY-MM-DD)。
-        6. **valid_to**: 除籍日、または現在戸籍の場合は「発行日」 (YYYY-MM-DD)。
-        7. **target_birth_date**: 対象者本人の生年月日 (YYYY-MM-DD)。
-        8. **target_death_date**: 対象者の死亡日 (YYYY-MM-DD)。生存ならnull。
-        9. **family_list**: [{{ "name": "氏名", "rel": "続柄", "birth_date": "YYYY-MM-DD", "death_date": "YYYY-MM-DD" }}, ...]
+        ### 出力JSONスキーマ（このキーのみ）
+        {{
+          "doc_type": "現在戸籍|除籍謄本|改製原戸籍|住民票|不明",
+          "honseki": "本籍地（不明なら空文字）",
+          "head_name": "筆頭者氏名（不明なら空文字）",
+          "target_person": "対象者氏名（不明なら空文字）",
+          "valid_from": "YYYY-MM-DD（不明なら空文字）",
+          "valid_to": "YYYY-MM-DD（不明なら空文字）",
+          "target_birth_date": "YYYY-MM-DD（不明なら空文字）",
+          "target_death_date": "YYYY-MM-DD または null",
+          "family_list": [{{"name":"氏名","rel":"続柄","birth_date":"YYYY-MM-DD","death_date":"YYYY-MM-DD または null"}}]
+        }}
+        """.strip()
 
-        ### 出力形式
-        JSONのみ出力してください。
-        """
+        prompt = _build_prompt("full")
 
         content_list = [{"type": "text", "text": prompt}] + image_contents
         msg = HumanMessage(content=content_list)
 
         try:
-            resp = self.llm.invoke([msg])
-            return self._extract_json_safe(resp.content)
+            timeout_sec = 360
+
+            resp = self._invoke_llm_with_timeout([msg], timeout_sec=timeout_sec)
+            parsed = self._extract_json_safe(getattr(resp, "content", ""))
+            if "error" not in parsed:
+                return parsed
+
+            time.sleep(0.5)
+            retry_prompt = _build_prompt("lite")
+            retry_content_list = [{"type": "text", "text": retry_prompt}] + image_contents
+            retry_msg = HumanMessage(content=retry_content_list)
+            resp2 = self._invoke_llm_with_timeout([retry_msg], timeout_sec=timeout_sec)
+            parsed2 = self._extract_json_safe(getattr(resp2, "content", ""))
+            if "error" not in parsed2:
+                return parsed2
+
+            if len(image_contents) > 1:
+                merged: Dict[str, Any] = {
+                    "doc_type": "",
+                    "honseki": "",
+                    "head_name": "",
+                    "target_person": "",
+                    "valid_from": "",
+                    "valid_to": "",
+                    "target_birth_date": "",
+                    "target_death_date": None,
+                    "family_list": [],
+                }
+                seen: set[str] = set()
+
+                for img_item in image_contents:
+                    page_content_list = [{"type": "text", "text": retry_prompt}, img_item]
+                    page_msg = HumanMessage(content=page_content_list)
+                    page_resp = self._invoke_llm_with_timeout([page_msg], timeout_sec=timeout_sec)
+                    page_parsed = self._extract_json_safe(getattr(page_resp, "content", ""))
+                    if "error" in page_parsed:
+                        continue
+
+                    for k in [
+                        "doc_type",
+                        "honseki",
+                        "head_name",
+                        "target_person",
+                        "valid_from",
+                        "valid_to",
+                        "target_birth_date",
+                    ]:
+                        if not merged.get(k) and page_parsed.get(k):
+                            merged[k] = page_parsed.get(k)
+
+                    if merged.get("target_death_date") in (None, "") and page_parsed.get("target_death_date") not in (None, ""):
+                        merged["target_death_date"] = page_parsed.get("target_death_date")
+
+                    for member in page_parsed.get("family_list", []) or []:
+                        if not isinstance(member, dict):
+                            continue
+                        raw_name = str(member.get("name", ""))
+                        key = self._normalize_name(raw_name)
+                        if not key or key in seen:
+                            continue
+                        seen.add(key)
+                        merged["family_list"].append(member)
+
+                if merged.get("family_list"):
+                    return merged
+
+            return {"error": parsed.get("error") or parsed2.get("error") or "JSON解析失敗"}
         except Exception as e:
             logger.error(f"Koseki Analysis Error: {e}")
             return {"error": str(e)}

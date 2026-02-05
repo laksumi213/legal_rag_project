@@ -36,7 +36,10 @@ from legal_system.models.tables import (
     Case,
     FinancialAsset,
 )
-from utils.date_utils import parse_all_flexible_date
+from src.utils.date_utils import parse_all_flexible_date
+# 共通コンポーネントのインポート
+from legal_system.ui.components.document_viewer import render_enhanced_document_viewer
+
 
 # Zenginデータのパス
 ZENGIN_DATA_DIR = os.path.join(ROOT_DIR, "data", "zengin")
@@ -360,35 +363,47 @@ def main():
     col_left, col_right = st.columns([1, 1.5])
 
     with col_left:
-        st.subheader("1. 書類アップロード")
-        st.caption("複数ページ・複数支店に対応。全銀データ照合あり。")
-        uploaded_file = st.file_uploader("残高証明書 (PDF/画像)", type=["pdf", "png", "jpg", "jpeg"])
+        st.subheader("1. 書類アップロード＆自動解析")
+        st.caption("書類をアップロードすると、自動的にAI解析が開始されます。")
+        
+        uploaded_file = st.file_uploader(
+            "残高証明書 (PDF/画像)",
+            type=["pdf", "png", "jpg", "jpeg"],
+            key="balance_cert_uploader"
+        )
 
+        # ファイルがアップロードされたら、プレビューと自動解析を実行
         if uploaded_file:
             file_bytes = uploaded_file.getvalue()
             
-            display_image = None
-            if uploaded_file.type == "application/pdf":
-                try:
-                    images = convert_from_bytes(file_bytes, dpi=150, first_page=1, last_page=1)
-                    if images: display_image = images[0]
-                except Exception as e:
-                    st.error(f"PDFプレビューエラー: {e}")
-            else:
-                display_image = Image.open(BytesIO(file_bytes))
+            # --- 多機能ビューア表示 ---
+            render_enhanced_document_viewer(
+                file_bytes=file_bytes,
+                file_type=uploaded_file.type,
+                key_prefix="zandaka_viewer"
+            )
             
-            if display_image:
-                st.image(display_image, caption="プレビュー (1ページ目)", use_container_width=True)
-
-            if st.button("🚀 AI解析を開始", type="primary", use_container_width=True):
-                with st.spinner("Geminiが全ページを解析中..."):
+            # --- 自動AI解析ロジック ---
+            # session_state を使って、同じファイルでの重複実行を防ぐ
+            # ファイルの識別子として (ファイル名, サイズ) を使用
+            current_file_identifier = (uploaded_file.name, uploaded_file.size)
+            if st.session_state.get("last_uploaded_file_identifier") != current_file_identifier:
+                with st.spinner("書類の内容をAIが解析しています..."):
                     result = analyze_balance_cert_with_ai(file_bytes, uploaded_file.type)
                     
                     if "error" in result:
-                        st.error(result["error"])
+                        st.error(f"AI解析エラー: {result['error']}")
+                        # エラーが発生した場合は、前回成功した結果をクリアする
+                        if "zandaka_result" in st.session_state:
+                            del st.session_state["zandaka_result"]
                     else:
                         st.session_state["zandaka_result"] = result
-                        st.success("解析完了！")
+                        st.success("AI解析が完了しました。右側で結果を確認・編集してください。")
+                
+                # 処理済みのファイル識別子を記録
+                st.session_state["last_uploaded_file_identifier"] = current_file_identifier
+                # 結果表示エリアにフォーカスさせるため再実行
+                st.rerun()
 
     with col_right:
         st.subheader("2. 抽出結果・編集")

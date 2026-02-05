@@ -27,6 +27,10 @@ from legal_system.models.tables import (
     ContactLog, IncomingNoteBuffer, Liability, Deceased, FileRegistry, Heir
 )
 from services.deceased_service import find_cases_by_attributes, search_zip_by_address_api, search_address_by_zip_api
+from src.utils.date_utils import json_serial
+from legal_system.utils.document_loaders import DocumentLoader
+from langchain_text_splitters import RecursiveCharacterTextSplitter
+from langchain_chroma import Chroma
 
 logger = logging.getLogger(__name__)
 logger.setLevel(logging.INFO)
@@ -98,7 +102,7 @@ class DocumentHandler(ABC):
         g_number = case.case_number or "G不明"
         client_full = case.client_name or "不明"
         client_last = client_full.replace("　", " ").split(" ")[0]
-        today_str = datetime.datetime.now().strftime('%Y%m%d')
+        today_str = datetime.datetime.now().strftime("%Y%m%d")
         id_part = f"_{identifier}" if identifier else ""
         return f"{g_number}{client_last}様_{doc_name}{id_part}_{today_str}.pdf"
 
@@ -189,7 +193,7 @@ class DocumentHandler(ABC):
                     file_bytes = f.read()
                 file_hash = hashlib.md5(file_bytes).hexdigest()
             
-            extracted_json = json.dumps(analysis_data, ensure_ascii=False) if analysis_data else None
+            extracted_json = json.dumps(analysis_data, ensure_ascii=False, default=json_serial) if analysis_data else None
             
             existing = session.query(FileRegistry).filter_by(file_hash=file_hash).first()
             
@@ -367,14 +371,35 @@ class BankPassbookHandler(DocumentHandler):
 
 class BalanceCertificateHandler(DocumentHandler):
     def handle(self, session, case: Case, analysis_data: dict, original_path: Path, file_hash: str = None):
-        bank_name = analysis_data.get("bank_name", "不明銀行").strip()
-        logger.info(f"🏦 残高証明書ハンドラー起動: {bank_name}")
+        
+        # AI応答がリスト形式の場合に対応
+        if isinstance(analysis_data, list):
+            accounts = analysis_data
+            # ファイル名には最初の口座情報から銀行名を取得しようと試みる
+            first_account = accounts[0] if accounts else {}
+            bank_name = first_account.get("bank_name") or first_account.get("meta", {}).get("bank_name", "不明銀行")
+        elif isinstance(analysis_data, dict):
+            accounts = [analysis_data] # リストにラップして統一的に処理
+            bank_name = analysis_data.get("bank_name") or analysis_data.get("meta", {}).get("bank_name", "不明銀行")
+        else:
+            accounts = []
+            bank_name = "不明銀行"
+
+        logger.info(f"🏦 残高証明書ハンドラー起動: {len(accounts)}件の口座情報を検出 (ファイル名用銀行: {bank_name})")
+
         new_filename = self._generate_filename(case, "残高証明書", bank_name)
         
+        # 保存先ロジックを修正・ログ追加
+        logger.info(f"   -> 保存先フォルダを検索 (優先: '残高証明書')")
         dest_dir = self._find_folder(case.folder_path, "残高証明書")
-        if not dest_dir:
+        if dest_dir:
+            logger.info(f"      -> '残高証明書' フォルダを発見: {dest_dir}")
+        else:
+            logger.info(f"      -> '残高証明書' フォルダが見つからないため、'受領資料' フォルダを探します。")
             dest_dir = self._ensure_folder(case.folder_path, "受領資料")
-        
+            if dest_dir:
+                logger.info(f"      -> '受領資料' フォルダを使用: {dest_dir}")
+
         if dest_dir:
             saved_path = self._save_file_copy(original_path, dest_dir, new_filename)
             if saved_path:
@@ -384,8 +409,17 @@ class BalanceCertificateHandler(DocumentHandler):
         else:
             logger.warning(f"   ⚠️ 保存先フォルダが見つかりません: {case.folder_path}")
 
-        balance = analysis_data.get("meta", {}).get("balance", 0)
-        if balance: self._upsert_asset(session, case.case_id, bank_name, balance)
+        # 検出された全口座を資産登録
+        for i, account_info in enumerate(accounts):
+            meta = account_info.get("meta", {})
+            loop_bank_name = account_info.get("bank_name") or meta.get("bank_name", bank_name) # 各口座の銀行名もチェック
+            balance = meta.get("balance", 0)
+            
+            logger.info(f"   -> 口座 {i+1}/{len(accounts)} の資産登録処理を開始: Bank='{loop_bank_name}', Balance='{balance}'")
+            if balance is not None: # 残高0円でも登録
+                self._upsert_asset(session, case.case_id, loop_bank_name, balance)
+            else:
+                logger.warning(f"      -> 残高が取得できなかったため、資産登録をスキップします。")
 
     def _upsert_asset(self, session, case_id, bank_name, balance):
         try:
@@ -430,7 +464,7 @@ class SecuritiesStatementHandler(DocumentHandler):
             saved_path = self._save_file_copy(original_path, dest_dir, new_filename)
             if saved_path:
                 self._update_or_create_registry(session, case.case_id, saved_path, "証券取引報告書", analysis_data, file_hash, status="CONFIRMED")
-                session.add(ContactLog(case_id=case.case_id, contact_content=f"【自動処理】{sec_company_name}の報告書を保存しました: {saved_path.name}")
+                session.add(ContactLog(case_id=case.case_id, contact_content=f"【自動処理】{sec_company_name}の報告書を保存しました: {saved_path.name}"))
         else:
             logger.warning(f"   ⚠️ 保存先フォルダが見つかりません: {case.folder_path}")
 
@@ -478,6 +512,7 @@ class SecuritiesStatementHandler(DocumentHandler):
                     case_id=case_id, 
                     bank_id=bank.id, 
                     branch_id=branch.id if branch else None, 
+                    account_type_id=ac_type.id, 
                     account_number=search_num, 
                     balance=balance, 
                     status="証券明細確認済", 
@@ -509,22 +544,59 @@ class InvoiceHandler(DocumentHandler):
         sender = meta.get("sender_name", "不明な請求元")
         amount = meta.get("amount", 0)
         due_date = meta.get("due_date", "")
-        identifier = sender.replace(" ", "").replace("　", "")
-        new_filename = self._generate_filename(case, "請求書", identifier)
         
+        # --- ★修正ここから: 「着手金」判定とファイル名の生成 ---
+        
+        # デフォルトの書類名
+        doc_label = "請求書"
+        
+        # AI解析データ全体（JSON文字列）または抽出された送信元名に「着手」が含まれるかチェック
+        # ※OCRで「着手金請求書」というタイトルをsenderとして拾うケースなどを想定
+        if "着手" in str(analysis_data) or "着手" in sender:
+            doc_label = "着手金請求書"
+
+        # 第2引数に判定した名前(doc_label)を渡し、第3引数(請求元)は削除
+        new_filename = self._generate_filename(case, doc_label)
+        
+        # --- ★修正ここまで ---
+
+        logger.info(f"   📂 処理対象案件のフォルダ設定: '{case.folder_path}'")
+
+        # フォルダ名は「請求書」のままで統一（管理しやすくするため）
         dest_dir = self._ensure_folder(case.folder_path, "請求書", force_name="請求書")
         
-        if dest_dir:
-            saved_path = self._save_file_copy(original_path, dest_dir, new_filename)
-            if saved_path:
-                self._update_or_create_registry(session, case.case_id, saved_path, "請求書", analysis_data, file_hash)
-                msg = f"【自動処理】請求書を保存しました。\n請求元: {sender}\n金額: {amount:,}円\n保存先: {saved_path.name}"
-                session.add(ContactLog(case_id=case.case_id, contact_content=msg))
+        if not dest_dir:
+            error_msg = f"保存先フォルダを作成・特定できませんでした。案件({case.case_number})の『フォルダパス』を確認してください。"
+            logger.error(f"   ❌ {error_msg}")
+            raise RuntimeError(error_msg)
+
+        saved_path = self._save_file_copy(original_path, dest_dir, new_filename)
         
+        if not saved_path:
+            error_msg = f"ファイルのコピーに失敗しました。保存先: {dest_dir}"
+            logger.error(f"   ❌ {error_msg}")
+            raise RuntimeError(error_msg)
+
+        self._update_or_create_registry(session, case.case_id, saved_path, doc_label, analysis_data, file_hash)
+        
+        # 履歴にも反映
+        # フォルダ名を取得
+        folder_name = dest_dir.name
+
+        # 1行目にフォルダ名を入れ、詳細にフルパス(saved_path)を入れる
+        msg = f"【自動処理】{doc_label}を「{folder_name}」フォルダに保存しました。\n請求元: {sender}\n金額: {amount:,}円\n保存先パス: {saved_path}"
+        session.add(ContactLog(case_id=case.case_id, contact_content=msg))
+        logger.info(f"   ✅ ファイル保存＆履歴登録完了: {saved_path}")
+        
+        # 債務データ登録（詳細説明にも反映）
         existing_debt = session.query(Liability).filter(Liability.case_id == case.case_id, Liability.description.like(f"%{sender}%"), Liability.amount == amount).first()
         if not existing_debt:
-            new_liability = Liability(case_id=case.case_id, is_debt=True, description=f"【請求書】{sender} (期限: {due_date})", amount=amount, is_funeral_cost=False)
+            # 債務の説明文にも「着手金」と入るように修正
+            desc_text = f"【{doc_label}】{sender} (期限: {due_date})"
+            new_liability = Liability(case_id=case.case_id, is_debt=True, description=desc_text, amount=amount, is_funeral_cost=False)
             session.add(new_liability)
+            logger.info(f"   💰 債務データを登録しました: {amount}円")
+
 
 class RegistryDocumentHandler(DocumentHandler):
     def handle(self, session, case: Case, analysis_data: dict, original_path: Path, file_hash: str = None):
@@ -567,6 +639,28 @@ class HeirListHandler(DocumentHandler):
                 log = ContactLog(case_id=case.case_id, contact_content=f"【自動処理】推定相続人連絡先一覧を保存しました: {saved_path.name}")
                 session.add(log)
 
+# ★新規: 汎用的な受領資料ハンドラー
+class GenericReceivedDocumentHandler(DocumentHandler):
+    def __init__(self, db_manager: DatabaseManager, doc_name: str, target_folder_keyword: str):
+        super().__init__(db_manager)
+        self.base_doc_name = doc_name
+        self.target_folder_keyword = target_folder_keyword
+
+    def handle(self, session, case: Case, analysis_data: dict, original_path: Path, file_hash: str = None):
+        logger.info(f"📄 汎用受領資料ハンドラー起動: {self.base_doc_name}")
+        new_filename = self._generate_filename(case, self.base_doc_name)
+        
+        dest_dir = self._ensure_folder(case.folder_path, self.target_folder_keyword)
+        
+        if dest_dir:
+            saved_path = self._save_file_copy(original_path, dest_dir, new_filename)
+            if saved_path:
+                self._update_or_create_registry(session, case.case_id, saved_path, self.base_doc_name, analysis_data, file_hash, status="CONFIRMED")
+                log = ContactLog(case_id=case.case_id, contact_content=f"【自動処理】{self.base_doc_name}を保存しました: {saved_path.name}")
+                session.add(log)
+        else:
+            logger.warning(f"   ⚠️ 保存先フォルダが見つかりません: {case.folder_path}")
+
 # ---------------------------------------------------------
 # メインサービスクラス
 # ---------------------------------------------------------
@@ -577,6 +671,8 @@ class ScannerService:
         else: self.processed_root = Config.DATA_DIR / "cases"
         self.db = DatabaseManager()
         self.llm = AIFactory.get_llm(mode="cloud", temperature=0.0)
+        self.embeddings = AIFactory.get_embeddings()
+        self.vectorstore = AIFactory.get_vector_store()
         self.handlers = {
             "corporate_registry": CorporateRegistryHandler(self.db), # ★新規
             "balance_certificate": BalanceCertificateHandler(self.db),
@@ -587,6 +683,9 @@ class ScannerService:
             "registry_document": RegistryDocumentHandler(self.db),
             "heir_list": HeirListHandler(self.db),
             "tax_payment_notice": TaxPaymentNoticeHandler(self.db),
+            "contract_document": GenericReceivedDocumentHandler(self.db, doc_name="契約書", target_folder_keyword="受領資料"),
+            "power_of_attorney": GenericReceivedDocumentHandler(self.db, doc_name="委任状", target_folder_keyword="受領資料"),
+            "agreement": GenericReceivedDocumentHandler(self.db, doc_name="約定書", target_folder_keyword="受領資料"),
             "other": OtherDocumentHandler(self.db)
         }
 
@@ -617,8 +716,14 @@ class ScannerService:
                 # 条件: 候補が1件だけ かつ 書類種別が明確
                 # ※ 商業登記(corporate_registry)は誤紐付け防止のため自動処理から除外する
                 # ----------------------------------------------------------------
-                is_high_confidence = (len(candidates) == 1) and \
-                                     (doc_type not in ["other", "unknown", "corporate_registry"])
+                # 銀行関連の書類で、銀行名がAIによって抽出できなかった場合は、自動処理から除外する
+                bank_name = analysis.get("bank_name") or analysis.get("meta", {}).get("bank_name")
+                if doc_type in ["balance_certificate", "bank_passbook", "securities_statement", "transaction_detail"] and not bank_name:
+                    logger.info(f"   ⚠️ 銀行名が不明のため、高信頼度でも自動処理から除外します。")
+                    is_high_confidence = False
+                else:
+                    is_high_confidence = (len(candidates) == 1) and \
+                                         (doc_type not in ["other", "unknown", "corporate_registry"])
                 
                 if is_high_confidence:
                     target_case_id = candidates[0]['case_id']
@@ -667,7 +772,7 @@ class ScannerService:
         with open(file_path, "rb") as f: file_bytes = f.read()
         f_hash = hashlib.md5(file_bytes).hexdigest()
         
-        extracted_json = json.dumps(analysis_data, ensure_ascii=False) if analysis_data else None
+        extracted_json = json.dumps(analysis_data, ensure_ascii=False, default=json_serial) if analysis_data else None
         
         existing = session.query(FileRegistry).filter_by(file_hash=f_hash).first()
         conf = 1.0 if status == "CONFIRMED" else 0.0
@@ -747,6 +852,52 @@ class ScannerService:
         finally:
             session.close()
 
+    def ingest_will_for_rag(self, file_path: Path):
+        """
+        RAGシステム向けに遺言書関連ファイルを処理し、ChromaDBに格納する。
+        """
+        logger.info(f"📚 [RAG Ingestion] 処理開始: {file_path.name}")
+        
+        # 1. ドキュメントローダーでテキストを抽出
+        loader = DocumentLoader(str(file_path))
+        text_content = loader.load_and_extract_text()
+        
+        if not text_content:
+            logger.warning(f"   ⚠️ テキスト抽出失敗または空: {file_path.name}")
+            return
+
+        logger.info(f"   📄 テキスト抽出完了 (一部表示): {text_content[:200]}...")
+
+        # 2. テキスト前処理・チャンキング
+        # シンプルな前処理: 複数スペースの除去、改行の正規化など
+        preprocessed_text = " ".join(text_content.split())
+
+        text_splitter = RecursiveCharacterTextSplitter(
+            chunk_size=1000,  # Example chunk size (adjust as needed based on token limits)
+            chunk_overlap=100, # Example overlap (adjust as needed)
+            length_function=len,
+            add_start_index=True,
+        )
+        chunks = text_splitter.create_documents([preprocessed_text])
+        
+        logger.info(f"   ✂️ テキストチャンク生成完了: {len(chunks)} 個のチャンク")
+
+        # 3. エンベディング生成 (実際には次のステップでChromaDBに格納時に生成されます)
+        logger.info(f"   🧠 エンベディング生成準備完了")
+
+        # 4. ChromaDBに格納
+        # メタデータを追加
+        for chunk in chunks:
+            chunk.metadata["source"] = str(file_path)
+            chunk.metadata["filename"] = file_path.name
+            chunk.metadata["last_modified"] = datetime.datetime.now().isoformat()
+            # 他にもケースID、ドキュメントタイプなどがあれば追加
+        
+        # LangChainのChromaは、documentsをaddする際に内部でembeddingを生成してくれます。
+        self.vectorstore.add_documents(chunks)
+        
+        logger.info(f"   ✅ [RAG Ingestion] {len(chunks)} 個のチャンクをChromaDBに格納完了: {file_path.name}")
+
     def _analyze_document(self, file_bytes: bytes) -> dict:
         mime = "application/pdf" if file_bytes.startswith(b"%PDF") else "image/jpeg"
         doc_b64 = base64.b64encode(file_bytes).decode("utf-8")
@@ -768,6 +919,9 @@ class ScannerService:
         - balance_certificate: 残高証明書。
         - transaction_detail: 取引明細。
         - invoice: 請求書。
+        - contract_document: 「公正証書遺言作成」を含む書類。契約に関する書類。
+        - power_of_attorney: 「委任状」または「委　任　状」（スペースを含む委任状）を含む書類。
+        - agreement: 「約定書」を含む書類。
         - other: その他。
 
         # 3. メタデータ (meta) の抽出
@@ -780,8 +934,25 @@ class ScannerService:
         - branch_name, account_number, balance, holdings.
 
         **【C】balance_certificate / bank_passbook (銀行関連) の場合**
+        - **bank_name**: 金融機関名。必須項目です。
         - branch_name, account_number, balance, holder_name, account_type.
 
+        # 出力JSON例 (残高証明書)
+        {
+            "names": ["山田 太郎"],
+            "doc_type": "balance_certificate",
+            "bank_name": "みずほ銀行",
+            "meta": {
+                "bank_name": "みずほ銀行",
+                "branch_name": "渋谷支店",
+                "account_number": "1234567",
+                "balance": 100000,
+                "holder_name": "山田 太郎",
+                "account_type": "普通預金"
+            },
+            "case_candidates": []
+        }
+        
         # 出力JSON例 (商業登記)
         {
             "names": [],
@@ -797,8 +968,22 @@ class ScannerService:
         msg = HumanMessage(content=[{"type": "text", "text": prompt}, {"type": "image_url", "image_url": f"data:{mime};base64,{doc_b64}"}])
         try:
             resp = self.llm.invoke([msg])
-            ai_data = json.loads(resp.content.replace("```json", "").replace("```", "").strip())
-        except: return {}
+            raw_content = resp.content.replace("```json", "").replace("```", "").strip()
+            ai_data = json.loads(raw_content)
+
+            # AIがリストを返すことがあるため、辞書であることを確認
+            if isinstance(ai_data, list) and ai_data:
+                logger.warning(f"   ⚠️ AIレスポンスがリスト形式でした。最初の要素を使用します。Data: {raw_content}")
+                ai_data = ai_data[0]
+            
+            # それでも辞書でない場合はエラーとして扱う
+            if not isinstance(ai_data, dict):
+                logger.error(f"   ❌ AIレスポンスが予期せぬ形式です (辞書ではありません)。Data: {raw_content}")
+                return {}
+
+        except Exception as e:
+            logger.error(f"   ❌ AIレスポンスの解析に失敗しました: {e}", exc_info=True)
+            return {}
         
         # --- Pythonによる後処理 ---
         bank_name = ai_data.get("bank_name", "")
@@ -812,10 +997,12 @@ class ScannerService:
              ai_data["doc_type"] = "securities_statement"
 
         # 名前クレンジング & 案件検索
-        names = ai_data.get("names", [])
+        names = ai_data.get("names") or []
         holder = ai_data.get("meta", {}).get("holder_name")
         if holder and holder not in names: names.append(holder)
-        cleaned_names = [n.replace("様", "").replace("殿", "").strip() for n in names]
+        
+        # NoneTypeが含まれていてもエラーにならないように修正
+        cleaned_names = [n.replace("様", "").replace("殿", "").strip() for n in names if n]
 
         candidates = []
         if cleaned_names:

@@ -9,14 +9,21 @@ import logging
 import os
 import base64
 import tempfile
+import io # BytesIO 用に明示的にインポート
 from typing import List, Dict, Any, Optional, Union
 
 # PyMuPDF (fitz)
 import fitz
 
+# Pillow for Image processing
+from PIL import Image
+
 # LangChain (Gemini用)
 from langchain_core.messages import HumanMessage
 from src.legal_system.core.ai_factory import AIFactory
+
+# ユーティリティ関数
+from src.legal_system.utils.pdf_utils import extract_region_from_pdf_page
 
 # PaddleOCR / OpenCV (Optional - Import Errorを許容)
 try:
@@ -56,6 +63,19 @@ class OCREngine:
                 self.is_available = True
             except Exception as e:
                 logger.error(f"PaddleOCR init failed: {e}")
+
+    def _pil_to_cv2(self, pil_image: Image.Image) -> np.ndarray:
+        """
+        PIL Image を OpenCV の numpy array (BGR) に変換する。
+        """
+        if cv2 is None or np is None:
+            raise RuntimeError("OpenCV and numpy must be available for image conversion.")
+        
+        # PIL Image を NumPy 配列に変換 (RGB)
+        img_np = np.array(pil_image)
+        # RGB から BGR に変換 (OpenCVの標準フォーマット)
+        return cv2.cvtColor(img_np, cv2.COLOR_RGB2BGR)
+
 
     def process_pdf(self, pdf_path: str) -> List[Dict[str, Any]]:
         """
@@ -109,6 +129,84 @@ class OCREngine:
             if doc:
                 doc.close()
             
+        return results
+
+    def process_pdf_region(
+        self,
+        pdf_bytes: bytes,
+        coordinates: List[Dict[str, Any]],
+        dpi: int = 200
+    ) -> List[Dict[str, Any]]:
+        """
+        PDFバイナリデータと座標リスト（矩形領域）を受け取り、指定された領域のみOCRを実行する。
+
+        Args:
+            pdf_bytes (bytes): 元のPDFファイルのバイナリデータ。
+            coordinates (List[Dict[str, Any]]): 適用する座標情報のリスト。
+                                              `{"x": float, "y": float, "page": int, "value": "RECT:WxH"}` の形式のものを想定。
+            dpi (int): OCRに渡す画像のDPI。
+
+        Returns:
+            List[Dict]: 抽出結果のリスト。
+        """
+        if not self.is_available:
+            logger.warning("OCR Engine is not available. Skipping region OCR.")
+            return []
+
+        results = []
+        doc = None
+        try:
+            doc = fitz.open(stream=pdf_bytes, filetype="pdf")
+
+            for coord in coordinates:
+                if not str(coord.get("value", "")).startswith("RECT:"):
+                    continue # 矩形座標ではない場合はスキップ
+
+                page_num = coord.get("page")
+                if page_num is None or page_num <= 0 or page_num > len(doc):
+                    logger.warning(f"Invalid page number {page_num} for coordinate: {coord}")
+                    continue
+
+                page_obj = doc.load_page(page_num - 1) # fitzは0-indexed
+
+                # 座標情報の解析
+                x = float(coord.get("x", 0))
+                y = float(coord.get("y", 0))
+                dims_str = str(coord["value"]).replace("RECT:", "").split("x")
+                width_pt = float(dims_str[0])
+                height_pt = float(dims_str[1])
+
+                # 指定領域の画像を抽出
+                region_image = extract_region_from_pdf_page(
+                    page_obj, x, y, width_pt, height_pt, dpi=dpi
+                )
+
+                if region_image:
+                    # PIL ImageをOpenCV形式に変換
+                    cv2_image = self._pil_to_cv2(region_image)
+
+                    # PaddleOCRでOCR実行
+                    page_result = self.ocr.ocr(cv2_image, cls=True)
+
+                    if page_result and page_result[0]:
+                        for line in page_result[0]:
+                            if not line: continue
+                            # 座標は抽出画像内での相対座標になるため、元のPDF座標に変換する必要がある
+                            # ただし、OCR結果のcoordsは抽出された画像内での座標
+                            # ここでは便宜的にOCRで抽出されたテキストのみを返す
+                            # より詳細な統合が必要な場合は、ここで座標変換ロジックを追加する
+                            results.append({
+                                "page": page_num,
+                                "text": line[1][0],
+                                "confidence": line[1][1]
+                            })
+        except Exception as e:
+            logger.error(f"Region OCR Error: {e}")
+            return []
+        finally:
+            if doc:
+                doc.close()
+
         return results
 
 

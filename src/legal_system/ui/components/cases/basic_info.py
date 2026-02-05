@@ -15,6 +15,8 @@ from src.services.deceased_service import (
     sync_heir_list, search_zip_by_address_api
 )
 from src.utils.date_utils import convert_seireki_to_wareki
+from src.legal_system.ui.utils.scroll_helper import maintain_scroll_position
+
 
 def _get_date_input(label, current_value, key=None):
     """
@@ -108,6 +110,16 @@ def render_basic_info(session, case_id: int):
     """
     基本情報（依頼者・被相続人・相続人）の編集画面を描画する
     """
+    # スクロール位置維持のJavaScriptを注入
+    maintain_scroll_position()
+    
+    # 案件削除Expanderの状態をセッションで管理
+    if 'danger_zone_expanded' not in st.session_state:
+        st.session_state.danger_zone_expanded = False
+
+    def _toggle_danger_zone():
+        st.session_state.danger_zone_expanded = not st.session_state.danger_zone_expanded
+
     # データをリロード（最新状態を取得）
     case = session.query(Case).options(
         joinedload(Case.deceased_ref).joinedload(Deceased.heirs),
@@ -347,11 +359,32 @@ def render_basic_info(session, case_id: int):
     # 4. 案件削除 (Danger Zone)
     # ---------------------------------------------------------
     st.divider()
-    with st.expander("🗑️ 案件の削除 (Danger Zone)"):
+    # Expanderの状態をst.session_stateで制御
+    with st.expander("🗑️ 案件の削除 (Danger Zone)", expanded=st.session_state.danger_zone_expanded):
         st.warning("この操作は取り消せません。案件に関する全てのデータ（資産、履歴、ファイル）が削除されます。")
-        if st.checkbox("削除を確認しました"):
+        
+        # チェックボックスの状態もセッションで管理
+        if 'delete_confirmed' not in st.session_state:
+            st.session_state.delete_confirmed = False
+
+        def _confirm_delete_and_keep_expander_open():
+            # チェックボックスの状態を更新し、Expanderを開いたままにする
+            st.session_state.delete_confirmed = st.session_state.confirm_checkbox
+            st.session_state.danger_zone_expanded = True
+
+        st.checkbox(
+            "削除を確認しました",
+            key="confirm_checkbox",
+            value=st.session_state.delete_confirmed,
+            on_change=_confirm_delete_and_keep_expander_open
+        )
+
+        if st.session_state.delete_confirmed:
             if st.button("案件を完全に削除する", type="primary"):
                 if delete_case_and_all_related_data(case.case_number):
+                    # 削除成功時は状態をリセット
+                    st.session_state.danger_zone_expanded = False
+                    st.session_state.delete_confirmed = False
                     st.success("削除しました。Homeに戻ります。")
                     st.session_state["selected_case_id"] = None
                     time.sleep(2)

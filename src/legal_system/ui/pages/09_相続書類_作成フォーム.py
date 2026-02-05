@@ -30,7 +30,7 @@ from legal_system.models.tables import (
     FinancialAsset,   # 追加
     RealEstateAsset   # 追加
 )
-from utils.date_utils import convert_seireki_to_wareki # 和暦変換用
+from src.utils.date_utils import convert_seireki_to_wareki # 和暦変換用
 
 # フォント設定 (変更なし)
 FONT_PATH = os.path.join(ROOT_DIR, "data", "fonts", "ipaexg.ttf")
@@ -340,7 +340,12 @@ def main():
     # ------------------------------------
     with col_tpl:
         st.markdown("##### 2. テンプレートを選択")
-        files = session.query(FileRegistry).filter(FileRegistry.filename.like("%.pdf")).all()
+        # 'data/templates/' ディレクトリ内のPDFファイルのみをテンプレートとして抽出
+        template_dir_path_prefix = os.path.join("data", "templates") + os.sep # os.sep を追加してディレクトリとしてのマッチを厳密にする
+        files = session.query(FileRegistry).filter(
+            FileRegistry.file_path.startswith(template_dir_path_prefix),
+            FileRegistry.filename.ilike("%.pdf") # 大文字・小文字を区別しないPDFフィルタ
+        ).all()
 
         if not files:
             st.warning("テンプレートがありません。")

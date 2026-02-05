@@ -4,6 +4,7 @@ import streamlit as st
 from sqlalchemy import or_
 from sqlalchemy.orm import joinedload
 from src.legal_system.models.tables import Case, Deceased
+from src.services.search_service import search_cases_enhanced
 import streamlit.components.v1 as components
 
 def render_case_search(session):
@@ -121,16 +122,7 @@ def render_case_search(session):
         clean_query = search_query.replace("　", " ").strip()
         
         if clean_query:
-            cases = session.query(Case).outerjoin(Case.deceased_ref).filter(
-                or_(
-                    Case.case_number.ilike(f"%{clean_query}%"),
-                    Case.client_name.contains(clean_query),
-                    Case.client_name_kana.contains(clean_query),
-                    Deceased.name_last.contains(clean_query),
-                    Deceased.name_first.contains(clean_query),
-                    (Deceased.name_last + Deceased.name_first).contains(clean_query)
-                )
-            ).limit(10).all()
+            cases = search_cases_enhanced(session, clean_query)
 
             if cases:
                 # 1件ヒットなら自動選択
@@ -146,10 +138,17 @@ def render_case_search(session):
                 st.caption(f"検索結果: {len(cases)}件")
                 
                 options = {
-                    c.case_id: f"【{c.case_number or '未番'}】 {c.client_name} 様 (被: {c.deceased_ref.name_last if c.deceased_ref else ''})"
+                    c.case_id: (
+                        f"【{c.case_number or '未番'}】" +
+                        "　" + (c.client_name.replace(' ', '　') if c.client_name else '') + "　様" +
+                        "　(被相続人:　" + \
+                        ((c.deceased_ref.name_last.replace(' ', '　') if c.deceased_ref.name_last else '') + "　" + \
+                         (c.deceased_ref.name_first.replace(' ', '　') if c.deceased_ref.name_first else '')) if c.deceased_ref else '' \
+                        + "　様）"
+                    )
                     for c in cases
                 }
-                
+
                 default_idx = 0
                 current_id = st.session_state.get("selected_case_id")
                 if current_id in options:
@@ -165,11 +164,10 @@ def render_case_search(session):
                 )
                 
                 if selected_val:
-                    selected_case_id = selected_val
-                    if st.button("この案件を開く", key="btn_open_searched_case", use_container_width=True, type="primary"):
-                        if st.session_state.get("selected_case_id") != selected_case_id:
-                            st.session_state["selected_case_id"] = selected_case_id
-                            st.rerun()
+                    # 検索結果が選択されたら、即座に案件を更新
+                    if st.session_state.get("selected_case_id") != selected_val:
+                        st.session_state["selected_case_id"] = selected_val
+                        st.rerun()
             else:
                 st.warning("該当する案件が見つかりません")
     

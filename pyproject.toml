@@ -7,20 +7,21 @@ authors = [
 ]
 dependencies = [
     "streamlit>=1.34.0",
-    "streamlit-autorefresh>=1.0.1", # ★追加: 自動更新用ライブラリ
-    "langchain>=0.1.0",
+    "streamlit-autorefresh>=1.0.1",
+    # ★追加: 自動更新用ライブラリ
+    "langchain>=1.2.7",
     "langchain-community>=0.0.20",
     "langchain-core>=0.1.25",
-    "langchain-google-genai>=0.0.9",
+    "langchain-google-genai>=4.2.0",
     "langchain-google-vertexai>=3.2.1",
     "google-cloud-aiplatform>=1.38.0",
     "langchain-huggingface>=0.0.1",
-    "langchain-chroma>=0.1.0",
+    "langchain-chroma>=1.1.0",
     "chromadb>=0.4.24",
     "pypdf>=4.0.1",
     "pdf2image>=1.17.0",
     "pytesseract>=0.3.10",
-    "python-dotenv>=1.0.1",
+    "python-dotenv>=1.2.1",
     "pandas>=2.3.3",
     "openpyxl>=3.1.2",
     "sentence-transformers>=5.2.0",
@@ -44,6 +45,8 @@ dependencies = [
     "google-auth-oauthlib>=1.2.4",
     "google-api-python-client>=2.188.0",
     "google-generativeai>=0.8.6",
+    "pypdf2>=3.0.1",
+    "langchain-text-splitters>=1.1.0",
 ]
 readme = "README.md"
 requires-python = ">= 3.10"
@@ -53,6 +56,6 @@ managed = true
 dev-dependencies = []
 
 [tool.rye.scripts]
-start = "rye run python src/legal_system/main.py"
+start = "python src/legal_system/main.py"
 pdf = "rye run streamlit run src/legal_system/tools/coord_tool.py"
 exp = "rye run python export_code.py"

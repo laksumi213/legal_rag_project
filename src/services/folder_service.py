@@ -4,7 +4,7 @@ import os
 import platform
 import subprocess
 from pathlib import Path
-from typing import Optional
+from typing import Optional, List
 import pyautogui
 
 # サーバーの基準パス
@@ -12,25 +12,39 @@ SERVER_BASE_PATH = r"\\192.168.11.20\行政書士法人チェスター\01.個別
 
 def find_case_folder(search_term: str) -> Optional[str]:
     """
-    基準パス配下からフォルダを検索してパスを返す。
+    基準パス配下からフォルダを検索して、最初に見つかったパスを返す（既存互換用）。
+    """
+    results = find_all_case_folders(search_term)
+    return results[0] if results else None
+
+def find_all_case_folders(search_term: str) -> List[str]:
+    """
+    基準パス配下から検索条件に一致するフォルダを全て探し、リストで返す。
     """
     if not search_term:
-        return None
+        return []
 
     target_path = Path(SERVER_BASE_PATH)
     if not target_path.exists():
-        return None
+        return []
 
+    hits = []
     try:
+        # 空白除去してマッチング
         query = search_term.replace(" ", "").replace("　", "")
+        
         for item in target_path.iterdir():
             if item.is_dir():
-                folder_name = item.name.replace(" ", "").replace("　", "")
-                if query in folder_name:
-                    return str(item.absolute())
+                # フォルダ名も空白除去して比較
+                folder_name_clean = item.name.replace(" ", "").replace("　", "")
+                if query in folder_name_clean:
+                    hits.append(str(item.absolute()))
+                    
     except Exception as e:
         print(f"Folder search error: {e}")
-        return None
+        return []
+    
+    return hits
 
 def open_local_folder(path: str) -> bool:
     """

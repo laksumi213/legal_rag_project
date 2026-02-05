@@ -12,19 +12,23 @@ def main():
     current_dir = Path(__file__).parent.absolute()
     app_path = current_dir / "ui" / "Home.py"
 
-    print("🚀 Legal RAG System 起動中...")
+    print("Legal RAG System 起動中...", flush=True)
     
     # Streamlitをメインプロセスとして即座に起動
     cmd = [sys.executable, "-m", "streamlit", "run", str(app_path)]
 
-    if len(sys.argv) > 1:
-        cmd.extend(sys.argv[1:])
+    args = sys.argv[1:]
+    if args and args[0] == "--":
+        args = args[1:]
+    if args:
+        cmd.extend(args)
 
     try:
-        # このプロセスが終了するまでブロック
+        print("EXEC:", " ".join(cmd), flush=True)
+        # このプロセスが終了するまでブロック (Streamlitが常駐するため通常は戻らない)
         subprocess.run(cmd, check=True)
     except KeyboardInterrupt:
-        print("\n🛑 システムを終了しました。")
+        print("\nシステムを終了しました。")
     except Exception as e:
         print(f"❌ エラーが発生しました: {e}")
 

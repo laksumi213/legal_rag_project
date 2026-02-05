@@ -7,6 +7,9 @@ import time
 import threading
 import traceback
 from pathlib import Path
+from dotenv import load_dotenv # NEW IMPORT
+
+load_dotenv() # Load environment variables from .env file
 
 # ==========================================
 # ログ設定
@@ -112,15 +115,19 @@ class DebouncedEventHandler(FileSystemEventHandler):
         filename = os.path.basename(filepath)
         
         # 除外ファイル
-        if filename.startswith(".") or filename.startswith("~$"): return False
-        if filename.lower().endswith((".tmp", ".crdownload", ".part", ".lock")): return False
+        if filename.startswith(".") or filename.startswith("~$"):
+            logger.info(f"   -> 無視 (システムファイル): {filename}")
+            return False
+        if filename.lower().endswith((".tmp", ".crdownload", ".part", ".lock")):
+            logger.info(f"   -> 無視 (一時ファイル): {filename}")
+            return False
 
         # クールダウン判定
         if filepath in self._processed_cache:
             last_time = self._processed_cache[filepath]
             if current_time - last_time < self._cooldown:
-                # logger.debug(f"Skip duplicate: {filename}")
-                return False 
+                logger.info(f"   -> 無視 (クールダウン中): {filename}")
+                return False
         
         # 処理許可 & 時刻更新
         self._processed_cache[filepath] = current_time
@@ -206,13 +213,81 @@ class ScanHandler(DebouncedEventHandler):
                 except Exception as e:
                     logger.error(f"   ❌ 解析エラー: {e}")
                     logger.error(traceback.format_exc())
+        else:
+            logger.info(f"   -> 無視 (対象外の拡張子): {filename}")
 
     def on_created(self, event):
-        if not event.is_directory: self._process(event.src_path)
+        if not event.is_directory:
+            logger.info(f"H-CREATE: Event detected for {event.src_path}")
+            self._process(event.src_path)
     def on_moved(self, event):
-        if not event.is_directory: self._process(event.dest_path)
-    # スキャンフォルダはModified監視を除外（二重起動防止）
-    # def on_modified(self, event): ...
+        if not event.is_directory:
+            logger.info(f"H-MOVE: Event detected for {event.dest_path}")
+            self._process(event.dest_path)
+    def on_modified(self, event):
+        if not event.is_directory:
+            logger.info(f"H-MODIFY: Event detected for {event.src_path}")
+            self._process(event.src_path)
+
+# ==========================================
+# 3. Will RAG Source Handler (新規追加)
+# ==========================================
+# Z Drive path for RAG
+Z_DRIVE_PATH = Path("Z:/") # Assuming Z: is the drive letter
+
+class WillRAGSourceHandler(DebouncedEventHandler):
+    def __init__(self):
+        super().__init__(cooldown=30.0) # Longer cooldown for RAG ingestion
+        self.scanner_service = ScannerService() if ScannerService else None # Instantiate ScannerService
+        logger.info("👀 WillRAGSourceHandler 準備完了")
+
+    def _is_will_document(self, filepath: Path) -> bool:
+        """
+        ファイルが遺言書関連ドキュメント（文案または公正証書）であるか判定する。
+        親ディレクトリに「遺言」が含まれ、かつファイル名に「遺言書」または「公正証書」が含まれるDOCX/PDFファイルを対象とする。
+        """
+        filename = filepath.name.lower()
+        if filepath.suffix.lower() not in [".docx", ".pdf"]:
+            return False
+
+        # 親ディレクトリを遡って「遺言」を含むか確認
+        current_path = filepath.parent
+        while current_path != current_path.parent and current_path != Z_DRIVE_PATH.parent:
+            if "遺言" in current_path.name:
+                # ファイル名が「遺言書案文」または「公正証書」に関連するかをチェック
+                if "遺言書" in filename or "公正証書" in filename:
+                    return True
+            current_path = current_path.parent
+        return False
+
+    def _process(self, filepath: Path):
+        if not self._should_process(str(filepath)): return
+        if not filepath.exists(): return
+
+        # フォルダ名およびファイル名でフィルタリング
+        if not self._is_will_document(filepath):
+            logger.debug(f"🔍 [Will RAG] 遺言関連ファイルではないためスキップ: {filepath.name}")
+            return
+
+        logger.info(f"🔍 [Will RAG] 遺言関連ファイル検知: {filepath.name}")
+        time.sleep(2.0) # ファイル書き込み待ち
+
+        if self.scanner_service: # Ensure ScannerService is loaded
+            try:
+                # ScannerService に RAG 用の取り込みメソッドを呼び出す
+                self.scanner_service.ingest_will_for_rag(filepath)
+                logger.info(f"   📥 RAG取り込み処理を ScannerService に委譲: {filepath.name}")
+            except Exception as e:
+                logger.error(f"   ❌ RAG取り込みエラー: {e}")
+                logger.error(traceback.format_exc())
+
+    def on_created(self, event):
+        if not event.is_directory: self._process(Path(event.src_path))
+    def on_moved(self, event):
+        if not event.is_directory: self._process(Path(event.dest_path))
+    def on_modified(self, event):
+        if not event.is_directory: self._process(Path(event.src_path))
+
 
 # ==========================================
 # Main
@@ -228,6 +303,44 @@ def run_gmail_watcher():
             time.sleep(600)
     except Exception as e:
         logger.error(f"Gmail Watcher Error: {e}")
+
+
+def manual_poll_folder(handler, directory, interval=10):
+    """
+    watchdogが機能しないネットワークドライブ用のフォールバック手動ポーリング関数
+    """
+    logger.info(f"  -> 起動: 手動フォールバック監視 (間隔: {interval}秒)")
+    
+    # 初回のファイルリストを取得
+    try:
+        seen_files = set(os.listdir(directory))
+    except FileNotFoundError:
+        logger.error(f"[手動監視] 致命的エラー: 監視対象フォルダが見つかりません: {directory}")
+        return
+
+    while True:
+        try:
+            time.sleep(interval)
+            current_files = set(os.listdir(directory))
+            new_files = current_files - seen_files
+
+            if new_files:
+                logger.info(f"[手動監視] {len(new_files)}件の新規ファイルを検知")
+                for filename in new_files:
+                    filepath = os.path.join(directory, filename)
+                    logger.info(f"  -> 手動検知: {filepath}")
+                    # _processの中でDebounce処理が呼ばれるため、ここでは直接呼び出す
+                    handler._process(filepath)
+            
+            seen_files = current_files
+
+        except FileNotFoundError:
+            logger.warning(f"[手動監視] 監視対象フォルダが見つかりません: {directory} (60秒後に再試行)")
+            time.sleep(60)
+        except Exception as e:
+            logger.error(f"[手動監視] ポーリング中にエラー: {e}", exc_info=True)
+            time.sleep(30)
+
 
 if __name__ == "__main__":
     print("\n\n")
@@ -252,7 +365,24 @@ if __name__ == "__main__":
     if ScannerService and os.path.exists(scan_dir):
         scan_handler = ScanHandler(inbox_path=scan_dir, processed_root=CASES_ROOT)
         observer.schedule(scan_handler, scan_dir, recursive=False)
-        logger.info(f"✅ Scan監視: {scan_dir}")
+        logger.info(f"✅ [watchdog] Scan監視: {scan_dir}")
+
+        # --- フォールバックの手動監視スレッドを開始 ---
+        manual_poll_thread = threading.Thread(
+            target=manual_poll_folder,
+            args=(scan_handler, scan_dir),
+            daemon=True
+        )
+        manual_poll_thread.start()
+        logger.info(f"✅ [Fallback] 手動スキャン監視を開始しました。")
+
+    # Z: Drive RAG watch
+    if Z_DRIVE_PATH.exists():
+        rag_will_handler = WillRAGSourceHandler()
+        observer.schedule(rag_will_handler, str(Z_DRIVE_PATH), recursive=True) # Recursive for subfolders
+        logger.info(f"✅ Z:ドライブ RAG監視: {Z_DRIVE_PATH} (遺言フォルダ内のみ)")
+    else:
+        logger.warning(f"⚠️ Z:ドライブ ({Z_DRIVE_PATH}) が見つかりません。RAG監視はスキップされます。")
 
     # Gmail
     t = threading.Thread(target=run_gmail_watcher, daemon=True)

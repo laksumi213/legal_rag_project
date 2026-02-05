@@ -31,7 +31,7 @@ def _create_new_engine() -> Engine:
         pool_size=20,
         max_overflow=10,
         pool_pre_ping=True,
-        connect_args={"client_encoding": "utf8"}
+        connect_args={"client_encoding": "utf8", "connect_timeout": 5}
     )
     try:
         Base.metadata.create_all(engine)
@@ -260,10 +260,42 @@ class DatabaseManager:
         finally:
             session.close()
 
+    def get_template_files(self) -> List[Dict[str, Any]]:
+        session = self._get_session()
+        try:
+            # case_id が None であるファイル（共通雛形）のみをフィルタリング
+            results = (
+                session.query(FileRegistry, Case)
+                .outerjoin(Case, FileRegistry.case_id == Case.case_id)
+                .filter(FileRegistry.case_id == None)
+                .filter(FileRegistry.file_path.like("data/templates/%"))
+                .order_by(desc(FileRegistry.registered_at))
+                .all()
+            )
+            output = []
+            for f, c in results:
+                # テンプレートなので case_label は常に「（共通雛形）」
+                case_label = "（共通雛形）"
+                output.append({
+                    "filename": f.filename,
+                    "date": f.registered_at.strftime("%Y-%m-%d %H:%M:%S") if f.registered_at else "",
+                    "hash": f.file_hash,
+                    "file_path": f.file_path,
+                    "type": f.doc_type if f.doc_type else "その他",
+                    "case": case_label,
+                    "doc_type": f.doc_type,
+                    "uploaded_at": f.registered_at,
+                    "status": f.status,
+                    "ai_confidence": f.ai_confidence
+                })
+            return output
+        finally:
+            session.close()
+
     # ---------------------------------------------------------
     # 座標管理
     # ---------------------------------------------------------
-    def register_coordinate(self, file_hash, label, x, y, page_number=1, description="", font_size=10, color="black", test_value=""):
+    def register_coordinate(self, file_hash, label, x, y, width=None, height=None, page_number=1, description="", font_size=10, color="black", test_value=""):
         session = self._get_session()
         try:
             coord = session.query(Coordinate).filter_by(file_hash=file_hash, label=label).first()
@@ -273,6 +305,8 @@ class DatabaseManager:
 
             coord.x_point = x
             coord.y_point = y
+            coord.width = width
+            coord.height = height
             coord.page_number = page_number
             coord.description = description
             coord.font_size = font_size
@@ -295,6 +329,8 @@ class DatabaseManager:
                 "label": c.label,
                 "x": c.x_point,
                 "y": c.y_point,
+                "width": c.width,
+                "height": c.height,
                 "page": c.page_number,
                 "desc": c.description,
                 "font_size": c.font_size,
@@ -312,6 +348,8 @@ class DatabaseManager:
                 for k, v in updates.items():
                     if k == "x": coord.x_point = v
                     elif k == "y": coord.y_point = v
+                    elif k == "width": coord.width = v
+                    elif k == "height": coord.height = v
                     elif k == "desc": coord.description = v
                     elif hasattr(coord, k): setattr(coord, k, v)
                 session.commit()

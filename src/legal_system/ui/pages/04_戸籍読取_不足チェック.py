@@ -79,6 +79,7 @@ def main():
             return
 
     person_full_name = f"{target_person.name_last}{target_person.name_first}"
+    case_mode = "inheritance" if is_inheritance else "will"
 
     # 基本情報表示
     with st.container(border=True):
@@ -129,6 +130,7 @@ def main():
                 with st.status(f"🚀 {len(files_to_process)}件を一括解析中...", expanded=True) as status:
                     for i, file_obj in enumerate(files_to_process):
                         st.write(f"📄 [{i+1}/{len(files_to_process)}] 解析中: {file_obj.name}")
+                        fid = f"{file_obj.name}_{file_obj.size}"
                         try:
                             file_bytes = file_obj.getvalue()
                             # AI解析実行 (ヒント付き)
@@ -140,18 +142,38 @@ def main():
                             )
                             if "error" in result:
                                 st.error(f"❌ {file_obj.name}: {result['error']}")
+                                st.session_state["processed_koseki_ids"].add(fid)
                             else:
+                                rows = service.extract_people_table_rows(
+                                    analysis_result=result,
+                                    base_person_name=person_full_name,
+                                    case_mode=case_mode,
+                                )
+                                if rows:
+                                    df_people = pd.DataFrame([
+                                        {
+                                            "氏名": r.get("name", ""),
+                                            "続柄": r.get("rel", ""),
+                                            "生年月日": r.get("birth_date", ""),
+                                            "相続人判定（○/×）": "○" if bool(r.get("is_heir")) else "×",
+                                        }
+                                        for r in rows
+                                    ])
+                                    with st.expander("👤 抽出された人物一覧", expanded=True):
+                                        st.dataframe(df_people, use_container_width=True, hide_index=True)
+
                                 status_msg = service.register_koseki_record(
                                     case.case_id, target_person.id, target_type, result
                                 )
                                 if status_msg.startswith("Success"):
                                     st.write(f"✅ {file_obj.name}: 登録完了")
-                                    fid = f"{file_obj.name}_{file_obj.size}"
                                     st.session_state["processed_koseki_ids"].add(fid)
                                 else:
                                     st.error(f"❌ 保存失敗: {status_msg}")
+                                    st.session_state["processed_koseki_ids"].add(fid)
                         except Exception as e:
                             st.error(f"❌ システムエラー: {e}")
+                            st.session_state["processed_koseki_ids"].add(fid)
                     status.update(label="🎉 完了しました！", state="complete", expanded=False)
                 time.sleep(1.5)
                 st.rerun()

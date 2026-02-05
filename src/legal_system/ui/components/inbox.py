@@ -24,7 +24,7 @@ def render_inbox(session, gmail_service=None, scanner_service=None):
 
         st.warning(f"📨 未処理の通知が {len(pendings)} 件あります")
         
-        with st.expander("📥 受信トレイを確認 (未紐付け)", expanded=True):
+        with st.expander("📥 受信トレイを確認 (未紐付け)", expanded=bool(len(pendings) > 0)):
             for n in pendings:
                 is_file = n.message_id and n.message_id.startswith("FILE-")
                 icon = "📄" if is_file else "🎙️" if "録音" in (n.subject or "") else "✉️"

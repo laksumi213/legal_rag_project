@@ -8,6 +8,7 @@ authors = [
 dependencies = [
     "streamlit>=1.34.0",
     "streamlit-autorefresh>=1.0.1",
+    "sqlalchemy>=2.0.45",
     "langchain>=1.2.7",
     "langchain-community>=0.0.20",
     "langchain-core>=0.1.25",

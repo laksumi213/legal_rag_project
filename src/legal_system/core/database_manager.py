@@ -39,11 +39,7 @@ def _create_new_engine() -> Engine:
         pool_size=20,
         max_overflow=10,
         pool_pre_ping=True,
-<<<<<<< HEAD
         connect_args={"client_encoding": "utf8", "connect_timeout": 5}
-=======
-        connect_args={"client_encoding": "utf8"},
->>>>>>> 8813aafa92902738f10e875077848bddf958cba0
     )
     try:
         Base.metadata.create_all(engine)
@@ -318,22 +314,20 @@ class DatabaseManager:
     # ---------------------------------------------------------
     # 座標管理
     # ---------------------------------------------------------
-<<<<<<< HEAD
-    def register_coordinate(self, file_hash, label, x, y, width=None, height=None, page_number=1, description="", font_size=10, color="black", test_value=""):
-=======
     def register_coordinate(
         self,
         file_hash,
         label,
         x,
         y,
+        width=None,
+        height=None,
         page_number=1,
         description="",
         font_size=10,
         color="black",
         test_value="",
     ):
->>>>>>> 8813aafa92902738f10e875077848bddf958cba0
         session = self._get_session()
         try:
             coord = (
@@ -366,27 +360,14 @@ class DatabaseManager:
         session = self._get_session()
         try:
             coords = session.query(Coordinate).filter_by(file_hash=file_hash).all()
-<<<<<<< HEAD
-            return [{
-                "id": c.id,
-                "label": c.label,
-                "x": c.x_point,
-                "y": c.y_point,
-                "width": c.width,
-                "height": c.height,
-                "page": c.page_number,
-                "desc": c.description,
-                "font_size": c.font_size,
-                "color": c.color,
-                "value": c.value,
-            } for c in coords]
-=======
             return [
                 {
                     "id": c.id,
                     "label": c.label,
                     "x": c.x_point,
                     "y": c.y_point,
+                    "width": c.width,
+                    "height": c.height,
                     "page": c.page_number,
                     "desc": c.description,
                     "font_size": c.font_size,
@@ -395,7 +376,6 @@ class DatabaseManager:
                 }
                 for c in coords
             ]
->>>>>>> 8813aafa92902738f10e875077848bddf958cba0
         finally:
             session.close()
 
@@ -405,23 +385,18 @@ class DatabaseManager:
             coord = session.query(Coordinate).filter_by(id=coord_id).first()
             if coord:
                 for k, v in updates.items():
-<<<<<<< HEAD
-                    if k == "x": coord.x_point = v
-                    elif k == "y": coord.y_point = v
-                    elif k == "width": coord.width = v
-                    elif k == "height": coord.height = v
-                    elif k == "desc": coord.description = v
-                    elif hasattr(coord, k): setattr(coord, k, v)
-=======
                     if k == "x":
                         coord.x_point = v
                     elif k == "y":
                         coord.y_point = v
+                    elif k == "width":
+                        coord.width = v
+                    elif k == "height":
+                        coord.height = v
                     elif k == "desc":
                         coord.description = v
                     elif hasattr(coord, k):
                         setattr(coord, k, v)
->>>>>>> 8813aafa92902738f10e875077848bddf958cba0
                 session.commit()
                 return True
             return False

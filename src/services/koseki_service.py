@@ -651,14 +651,18 @@ class KosekiService:
 
                 added_count = 0
                 for member in family_list:
-                    raw_name = member.get("name", "")
-                    clean_name = raw_name.replace(" ", "").replace("　", "")
+                    raw_name = str(member.get("name") or "")
+                    raw_name = raw_name.replace("\u3000", " ").strip()
+                    raw_name = re.sub(r"\s+", " ", raw_name)
+                    clean_name = raw_name.replace(" ", "")
                     if not clean_name or clean_name in existing_names: continue
 
                     # 氏名の分割 (全角スペース前提)
-                    parts = raw_name.replace("　", " ").split(" ", 1)
-                    lname = parts[0]
-                    fname = parts[1] if len(parts) > 1 else ""
+                    parts = raw_name.split(" ", 1)
+                    lname = (parts[0] or "").strip()
+                    fname = (parts[1] if len(parts) > 1 else "").strip()
+                    if not lname:
+                        continue
                     
                     b_date = parse_all_flexible_date(member.get("birth_date"))
                     d_date = parse_all_flexible_date(member.get("death_date"))

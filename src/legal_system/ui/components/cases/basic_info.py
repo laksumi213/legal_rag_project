@@ -121,10 +121,17 @@ def render_basic_info(session, case_id: int):
         st.session_state.danger_zone_expanded = not st.session_state.danger_zone_expanded
 
     # データをリロード（最新状態を取得）
-    case = session.query(Case).options(
-        joinedload(Case.deceased_ref).joinedload(Deceased.heirs),
-        joinedload(Case.deceased_ref).joinedload(Deceased.last_address)
-    ).get(case_id)
+    session.expire_all()
+    case = (
+        session.query(Case)
+        .options(
+            joinedload(Case.deceased_ref).joinedload(Deceased.heirs),
+            joinedload(Case.deceased_ref).joinedload(Deceased.last_address),
+        )
+        .populate_existing()
+        .filter(Case.case_id == case_id)
+        .one_or_none()
+    )
 
     if not case:
         st.error("案件データが見つかりません。")
@@ -302,6 +309,14 @@ def render_basic_info(session, case_id: int):
     st.subheader("👪 相続人・関係者リスト")
     
     if deceased:
+        heir_editor_key = "heir_list_editor"
+        heir_ids = [h.id for h in (deceased.heirs or [])]
+        heir_sig = ",".join(map(str, heir_ids))
+        if st.session_state.get("_heir_list_sig") != heir_sig:
+            if heir_editor_key in st.session_state:
+                del st.session_state[heir_editor_key]
+            st.session_state["_heir_list_sig"] = heir_sig
+
         current_heirs_data = []
         if deceased.heirs:
             for h in deceased.heirs:
@@ -332,7 +347,7 @@ def render_basic_info(session, case_id: int):
             },
             num_rows="dynamic", 
             use_container_width=True,
-            key="heir_list_editor",
+            key=heir_editor_key,
             hide_index=True
         )
 

@@ -8,12 +8,12 @@ import string
 import tempfile  # ★追加: 一時フォルダ作成用
 from io import BytesIO
 from pathlib import Path
+from typing import Any, Iterable
 
 import streamlit as st
 # import pyzipper  <-- 削除またはコメントアウト
 from PIL import Image
 from pdf2image import convert_from_bytes
-from sqlalchemy.orm import joinedload
 
 # ==========================================
 # 1. パス解決 & インポート
@@ -45,6 +45,33 @@ if "force_rerun_checkboxes" not in st.session_state:
 # ==========================================
 # 2. ロジッククラス定義
 # ==========================================
+
+def _iter_detected_files(detected_files_map: dict[str, list[Path]]) -> Iterable[Path]:
+    for _, path_list in detected_files_map.items():
+        for p in path_list:
+            yield p
+
+
+def _get_selected_auto_files_from_state(detected_files_map: dict[str, list[Path]]) -> list[Path]:
+    selected: list[Path] = []
+    for p in _iter_detected_files(detected_files_map):
+        key_str = f"auto_{p}"
+        if bool(st.session_state.get(key_str, False)):
+            selected.append(p)
+    return selected
+
+
+def _get_selected_company_docs_from_state(primary_docs: list[str], other_docs: list[str]) -> list[str]:
+    selected: list[str] = []
+    for doc in primary_docs:
+        key_str = f"chk_{doc}"
+        if bool(st.session_state.get(key_str, True)):
+            selected.append(doc)
+    for doc in other_docs:
+        key_str = f"chk_other_{doc}"
+        if bool(st.session_state.get(key_str, False)):
+            selected.append(doc)
+    return selected
 
 class AutoFileCollector:
     """フォルダから関連ファイルを自動収集・分類するクラス"""
@@ -357,6 +384,7 @@ class EmailGenerator:
 # 3. メイン画面 UI
 # ==========================================
 def main():
+
     # コールバックからの強制再実行トリガー
     if st.session_state.get("force_rerun_checkboxes", False):
         st.session_state["force_rerun_checkboxes"] = False
@@ -423,18 +451,16 @@ def main():
         st.markdown("###### ① フォルダから自動検出されたファイル")
         case_folder_path = current_case.folder_path
         
-        detected_files_map = {}
+        detected_files_map: dict[str, list[Path]] = {}
         if case_folder_path and os.path.exists(case_folder_path):
-            root_path = Path(case_folder_path) # ここでroot_pathを定義
+            root_path = Path(case_folder_path)
             st.caption(f"検索先: `{case_folder_path}`")
             detected_files_map = AutoFileCollector.collect_files(case_folder_path)
             
             if not detected_files_map:
                 st.info("関連しそうなファイルは見つかりませんでした。")
             
-            selected_auto_files = [] 
-            
-            st.session_state["all_detected_files_keys"] = [] # ここで毎回クリアする
+            st.session_state["all_detected_files_keys"] = []
             for category, path_list in detected_files_map.items():
                 with st.expander(f"📁 {category} ({len(path_list)}件)", expanded=True):
                     for p in path_list:
@@ -444,12 +470,11 @@ def main():
                         key_str = f"auto_{p}"
                         st.session_state["all_detected_files_keys"].append(key_str)
                         if st.checkbox(label, value=st.session_state.get(key_str, False), key=key_str):
-                            selected_auto_files.append(p)
+                            pass
                             
         else:
             st.warning("⚠️ 案件フォルダパスが登録されていないか、アクセスできません。Home画面で設定してください。")
-            selected_auto_files = []
-            st.session_state["all_detected_files_keys"] = [] # フォルダがない場合もクリア
+            st.session_state["all_detected_files_keys"] = []
 
         # === B. 手動アップロード ===
         st.markdown("###### ② 手動追加（フォルダにない場合）")
@@ -458,18 +483,19 @@ def main():
             type=["pdf", "png", "jpg", "jpeg", "docx", "doc", "xlsx", "xls"], 
             accept_multiple_files=True
         )
-        
+        uploaded_files_list: list[Any] = uploaded_files or []
+
         use_strong_compression = st.checkbox("🔥 強力圧縮 (画質を落としてサイズ優先)", value=False)
 
         # === C. 会社書類・身分証の自動同梱 ===
         st.markdown("###### ③ 会社書類・身分証の同梱")
-        company_docs_selected = []
+        company_docs_selected: list[str] = []
         if os.path.exists(TEMPLATES_DIR):
             all_templates = [f for f in os.listdir(TEMPLATES_DIR) if f.lower().endswith(".pdf")]
             clean_user_name = user_name.replace(" ", "").replace("　", "")
             
-            primary_docs = []
-            other_docs = []
+            primary_docs: list[str] = []
+            other_docs: list[str] = []
             
             for tpl in all_templates:
                 clean_tpl = tpl.replace(" ", "").replace("　", "")
@@ -481,24 +507,26 @@ def main():
                 if is_target: primary_docs.append(tpl)
                 else: other_docs.append(tpl)
             
-            st.session_state["all_company_docs_keys"] = [] # ここで毎回クリアする
+            st.session_state["all_company_docs_keys"] = []
             for doc in primary_docs:
                 key_str = f"chk_{doc}"
                 st.session_state["all_company_docs_keys"].append(key_str)
                 if st.checkbox(f"📄 {doc}", value=st.session_state.get(key_str, True), key=key_str):
-                    company_docs_selected.append(doc)
+                    pass
             
             with st.expander("その他のファイルを選択"):
-                st.session_state["all_other_docs_keys"] = [] # ここで毎回クリアする
+                st.session_state["all_other_docs_keys"] = []
                 for doc in other_docs:
                     key_str = f"chk_other_{doc}"
                     st.session_state["all_other_docs_keys"].append(key_str)
                     if st.checkbox(f"📄 {doc}", value=st.session_state.get(key_str, False), key=key_str):
-                        company_docs_selected.append(doc)
+                        pass
         else:
             st.warning("テンプレートフォルダなし")
-            st.session_state["all_company_docs_keys"] = [] # フォルダがない場合もクリア
-            st.session_state["all_other_docs_keys"] = [] # フォルダがない場合もクリア
+            st.session_state["all_company_docs_keys"] = []
+            st.session_state["all_other_docs_keys"] = []
+            primary_docs = []
+            other_docs = []
 
         # === D. 設定 ===
         st.markdown("###### ④ 送付設定")
@@ -518,16 +546,21 @@ def main():
         
         # 実行ボタン
         if st.button("🚀 送付セットを作成する", type="primary", use_container_width=True):
-            if not uploaded_files and not company_docs_selected and not selected_auto_files:
+            # ボタン押下時点のチェック状態を、session_stateから確定させる
+            # （描画時に作った一時リストが古い状態のまま混入するのを防ぐ）
+            selected_auto_files = _get_selected_auto_files_from_state(detected_files_map)
+            company_docs_selected = _get_selected_company_docs_from_state(primary_docs, other_docs)
+
+            if not uploaded_files_list and not company_docs_selected and not selected_auto_files:
                 st.error("ファイルが1つも選択されていません。")
             else:
                 progress_text = "処理中..."
                 my_bar = st.progress(0, text=progress_text)
 
-                files_to_zip = {}
+                files_to_zip: dict[str, bytes] = {}
                 processor = DocumentProcessor()
                 
-                total_files = len(uploaded_files) + len(company_docs_selected) + len(selected_auto_files)
+                total_files = len(uploaded_files_list) + len(company_docs_selected) + len(selected_auto_files)
                 processed_cnt = 0
 
                 # 1. 自動収集ファイルの読み込み & 軽量化
@@ -556,7 +589,7 @@ def main():
                     my_bar.progress(processed_cnt / total_files, text=f"処理中: {p.name}")
 
                 # 2. 手動アップロードファイルの処理
-                for f in uploaded_files:
+                for f in uploaded_files_list:
                     bytes_data = f.getvalue()
                     fname_lower = f.name.lower()
                     
@@ -623,7 +656,7 @@ def main():
             
             for i, z_info in enumerate(zip_list):
                 col_z1, col_z2 = st.columns([3, 1])
-                col_z1.write(f"**{z_info["name"]}** ({len(z_info["data"])/1024/1024:.1f} MB)")
+                col_z1.write(f"**{z_info['name']}** ({len(z_info['data'])/1024/1024:.1f} MB)")
                 with col_z2:
                     st.download_button(
                         label="📥 DL",

@@ -3290,13 +3290,14 @@ import uuid
 import unicodedata
 from datetime import datetime
 from io import BytesIO
+from typing import Dict, List, Optional, Tuple, Any
 
 import pandas as pd
 import streamlit as st
 from langchain_core.messages import HumanMessage
 from pdf2image import convert_from_bytes
 from PIL import Image
-from sqlalchemy.orm import joinedload
+from sqlalchemy.orm import Session, joinedload
 
 # ==========================================
 # 1. パス解決 & インポート
@@ -3316,9 +3317,9 @@ from legal_system.models.tables import (
     BranchMaster,
     Case,
     FinancialAsset,
+    FileRegistry,
 )
 from src.utils.date_utils import parse_all_flexible_date
-# 共通コンポーネントのインポート
 from legal_system.ui.components.document_viewer import render_enhanced_document_viewer
 
 
@@ -3336,17 +3337,12 @@ def normalize_name(text: str) -> str:
     """検索用に銀行名・支店名を正規化する (全角統一、スペース除去、'銀行'削除)"""
     if not text:
         return ""
-    # NFKC正規化（半角カナ→全角、全角英数→半角 など）
     normalized = unicodedata.normalize("NFKC", str(text))
-    # スペース除去
     normalized = normalized.replace(" ", "").replace("　", "")
-    # '銀行' '支店' などの接尾辞を一時的に除去して比較（完全一致率を高めるため）
     return normalized.replace("銀行", "").replace("支店", "")
 
-def find_bank_in_zengin(search_name: str):
-    """
-    Zenginデータから銀行を検索し、(code, name) を返す
-    """
+def find_bank_in_zengin(search_name: str) -> Tuple[Optional[str], Optional[str]]:
+    """Zenginデータから銀行を検索し、(code, name) を返す"""
     banks_path = os.path.join(ZENGIN_DATA_DIR, "banks.json")
     if not os.path.exists(banks_path):
         return None, None
@@ -3357,13 +3353,11 @@ def find_bank_in_zengin(search_name: str):
         with open(banks_path, "r", encoding="utf-8") as f:
             banks = json.load(f)
             
-        # 1. 完全一致・部分一致検索
         for code, info in banks.items():
             db_name_norm = normalize_name(info["name"])
             if search_key == db_name_norm:
                 return code, info["name"]
         
-        # 2. 逆包含検索 ("三菱UFJ" で "三菱UFJ銀行" をヒットさせる)
         for code, info in banks.items():
             db_name_norm = normalize_name(info["name"])
             if search_key in db_name_norm:
@@ -3373,10 +3367,8 @@ def find_bank_in_zengin(search_name: str):
         pass
     return None, None
 
-def find_branch_in_zengin(bank_code: str, branch_search_name: str):
-    """
-    指定された銀行コード内の支店を検索し、(code, name) を返す
-    """
+def find_branch_in_zengin(bank_code: str, branch_search_name: str) -> Tuple[Optional[str], Optional[str]]:
+    """指定された銀行コード内の支店を検索し、(code, name) を返す"""
     if not bank_code or not branch_search_name:
         return None, None
         
@@ -3390,13 +3382,11 @@ def find_branch_in_zengin(bank_code: str, branch_search_name: str):
         with open(branch_path, "r", encoding="utf-8") as f:
             branches = json.load(f)
 
-        # 支店検索
         for code, info in branches.items():
             db_name_norm = normalize_name(info["name"])
             if search_key == db_name_norm:
                 return code, info["name"]
         
-        # 部分一致 ("本店" で "本店営業部" など)
         for code, info in branches.items():
             db_name_norm = normalize_name(info["name"])
             if search_key in db_name_norm:
@@ -3408,12 +3398,13 @@ def find_branch_in_zengin(bank_code: str, branch_search_name: str):
 
 
 # ==========================================
-# 3. AI解析ロジック (Gemini Vision)
+# 3. AI解析ロジック (Gemini Vision) - 証券会社対応
 # ==========================================
-def analyze_balance_cert_with_ai(file_bytes: bytes, mime_type: str) -> dict:
+def analyze_balance_cert_with_ai(file_bytes: bytes, mime_type: str) -> Dict[str, Any]:
+    """残高証明書（銀行・証券会社）をAIで解析"""
     llm = AIFactory.get_llm(mode="cloud", temperature=0.0)
 
-    image_data_list = []
+    image_data_list: List[bytes] = []
     if mime_type == "application/pdf":
         try:
             images = convert_from_bytes(file_bytes, dpi=200)
@@ -3428,27 +3419,38 @@ def analyze_balance_cert_with_ai(file_bytes: bytes, mime_type: str) -> dict:
 
     prompt_text = """
     あなたは金融機関の書類に精通した「データ入力専門家」です。
-    提供された「残高証明書（複数ページの可能性あり）」の全画像を読み取り、情報を統合してJSON形式で出力してください。
+    提供された「残高証明書または取引残高報告書（複数ページの可能性あり）」の全画像を読み取り、情報を統合してJSON形式で出力してください。
+
+    【重要】書類の種類を自動判定してください:
+    - **銀行の残高証明書**: 支店名、口座番号、残高が記載されている
+    - **証券会社の取引残高報告書**: 銘柄名、数量、評価額が記載されている
 
     【抽出ルール】
     1. **基本情報**:
-       - bank_name: 銀行名（「株式会社」などは省く。例: 三菱UFJ銀行）
-       - reference_date: 証明基準日（YYYY-MM-DD形式に変換）。複数の日付がある場合は、最も新しい「証明日（死亡日）」を採用してください。
+       - type: "BANK" または "SECURITY" のいずれか（必須）
+       - bank_name: 銀行の場合の銀行名（"BANK" のとき推奨）
+       - securities_company: 証券会社の場合の証券会社名（"SECURITY" のとき推奨）
+       - reference_date: 証明基準日（YYYY-MM-DD形式に変換）
 
-    2. **口座リスト (accounts)**:
-       - 全ページの表形式部分から、すべての口座明細を抽出してください。
-       - **branch_name**: 各口座が属する「支店名」を抽出してください。
-         - 表の中に支店名列がある場合はそこから取得。
-         - 表の外（ヘッダー部分）に支店名が記載されている場合は、そのページ内の全口座にその支店名を適用してください。
-       - type: 預金種別（普通、定期、貯蓄、当座、投資信託、外貨など）
-       - number: 口座番号（記号やスペースは除去）
-       - balance: 残高（円単位の数値。カンマは除去。マイナス表記「△」は負の値にする）
-       - holder: 名義人（カタカナまたは漢字。記載があれば抽出）
+    2. **銀行の場合 (accounts)**:
+       - branch_name: 支店名
+       - type: 預金種別（普通、定期、貯蓄、当座など）
+       - number: 口座番号
+       - balance: 残高（円単位の数値）
+       - holder: 名義人
 
-    【出力JSONスキーマ】
+    3. **証券会社の場合 (holdings)**:
+       - name: 銘柄名（株式、投資信託、国債など）
+       - quantity: 数量（例: "100株", "10口"）
+       - unit_price: 単価（あれば）
+       - amount: 評価額（円単位の数値）
+       - asset_category: 資産区分（株式、投資信託、債券など）
+
+    【出力JSONスキーマ - 銀行の場合】
     {
-        "bank_name": "銀行名",
-        "reference_date": "YYYY-MM-DD",
+        "type": "BANK",
+        "bank_name": "三菱UFJ銀行",
+        "reference_date": "2026-02-09",
         "accounts": [
             {
                 "branch_name": "東京支店",
@@ -3456,6 +3458,29 @@ def analyze_balance_cert_with_ai(file_bytes: bytes, mime_type: str) -> dict:
                 "number": "1234567",
                 "balance": 1000000,
                 "holder": "メイギジン"
+            }
+        ]
+    }
+
+    【出力JSONスキーマ - 証券会社の場合】
+    {
+        "type": "SECURITY",
+        "securities_company": "野村證券",
+        "reference_date": "2026-02-09",
+        "holdings": [
+            {
+                "name": "トヨタ自動車",
+                "quantity": "100株",
+                "unit_price": 2500,
+                "amount": 250000,
+                "asset_category": "株式"
+            },
+            {
+                "name": "日経225インデックスファンド",
+                "quantity": "50口",
+                "unit_price": 15000,
+                "amount": 750000,
+                "asset_category": "投資信託"
             }
         ]
     }
@@ -3477,7 +3502,8 @@ def analyze_balance_cert_with_ai(file_bytes: bytes, mime_type: str) -> dict:
         start = json_str.find("{")
         end = json_str.rfind("}") + 1
         if start != -1 and end != 0:
-            return json.loads(json_str[start:end])
+            parsed = json.loads(json_str[start:end])
+            return normalize_ai_result(parsed)
         else:
             return {"error": "AIからの応答がJSON形式ではありませんでした。"}
 
@@ -3485,39 +3511,70 @@ def analyze_balance_cert_with_ai(file_bytes: bytes, mime_type: str) -> dict:
         return {"error": str(e)}
 
 
+def normalize_ai_result(raw: Dict[str, Any]) -> Dict[str, Any]:
+    """AI応答の表記ゆれを吸収し、UI/保存処理が扱いやすい形に正規化する"""
+    data: Dict[str, Any] = dict(raw or {})
+
+    # type / institution_type の吸収
+    doc_type = str(data.get("type") or data.get("institution_type") or "").strip().upper()
+    if not doc_type:
+        # holdingsがあればSECURITY優先
+        doc_type = "SECURITY" if isinstance(data.get("holdings"), list) and data.get("holdings") else "BANK"
+    data["institution_type"] = "SECURITY" if doc_type == "SECURITY" else "BANK"
+
+    # institution_name の統一（UIでは institution_name を参照）
+    if data["institution_type"] == "SECURITY":
+        inst = data.get("securities_company") or data.get("institution_name") or data.get("bank_name")
+    else:
+        inst = data.get("bank_name") or data.get("institution_name")
+    data["institution_name"] = str(inst or "").strip()
+
+    # 旧スキーマ互換: bank_name/accounts はそのまま受け入れる
+    if "accounts" not in data and isinstance(data.get("account"), list):
+        data["accounts"] = data.get("account")
+    if "holdings" not in data and isinstance(data.get("holding"), list):
+        data["holdings"] = data.get("holding")
+
+    # 日付の柔軟パース（失敗しても落とさない）
+    ref = str(data.get("reference_date") or "").strip()
+    if ref:
+        try:
+            parsed_dates = parse_all_flexible_date(ref)
+            if parsed_dates:
+                data["reference_date"] = parsed_dates[0].strftime("%Y-%m-%d")
+        except Exception:
+            pass
+
+    # holdings/accounts の型保証
+    if not isinstance(data.get("accounts"), list):
+        data["accounts"] = []
+    if not isinstance(data.get("holdings"), list):
+        data["holdings"] = []
+
+    return data
+
+
 # ==========================================
-# 4. DB保存ヘルパー (Zengin連携版)
+# 4. DB保存ヘルパー - 銀行用
 # ==========================================
-def save_assets_to_db_with_zengin(session, case_id: int, data: dict):
-    """
-    抽出データをDBに保存（Zengin検索によるマスタ登録機能付き）
-    """
-    # ------------------------------------
-    # A. 銀行マスタの特定・登録
-    # ------------------------------------
-    # ★修正: None対策 (str() or "" を挟んでからstrip)
-    raw_bank_name = str(data.get("bank_name") or "").strip()
+def save_bank_assets_to_db(session: Session, case_id: int, data: Dict[str, Any]) -> int:
+    """銀行口座データをDBに保存"""
+    raw_bank_name = str(data.get("institution_name") or data.get("bank_name") or "").strip()
     bank = None
     
-    # 1. DB内検索 (名前一致)
     bank = session.query(BankMaster).filter(BankMaster.bank_name == raw_bank_name).first()
     
-    # 2. Zengin検索
     if not bank:
         z_code, z_name = find_bank_in_zengin(raw_bank_name)
         if z_code:
-            # Zenginで見つかった -> コードを使ってDB内を再検索 (既にコードはあるが名前が違う場合など)
             bank = session.query(BankMaster).filter(BankMaster.bank_code == z_code).first()
             if not bank:
-                # DBになければZenginの正しい名前とコードで新規登録
                 bank = BankMaster(bank_name=z_name, bank_code=z_code)
                 session.add(bank)
                 session.flush()
                 st.toast(f"ℹ️ 全銀データから銀行マスタを登録しました: {z_name} ({z_code})", icon="🏦")
     
-    # 3. それでもなければ仮コード発行
     if not bank:
-        # 重複しないユニークな仮コード
         unique_code = f"TMP-{uuid.uuid4().hex[:6]}"
         bank = BankMaster(bank_name=raw_bank_name, bank_code=unique_code)
         session.add(bank)
@@ -3525,47 +3582,34 @@ def save_assets_to_db_with_zengin(session, case_id: int, data: dict):
 
     saved_count = 0
     
-    # ------------------------------------
-    # B. 口座ごとの登録ループ
-    # ------------------------------------
     for acc in data.get("accounts", []):
-        # ★修正: None対策 (str() or "" を挟んでからstrip)
-        # st.data_editorから空セルがNoneとして渡ってくる可能性があるため
         raw_branch_name = str(acc.get("branch_name") or "").strip()
         branch = None
 
-        # --- 支店マスタの特定・登録 ---
         if raw_branch_name:
-            # 1. DB内検索
             branch = session.query(BranchMaster).filter(
                 BranchMaster.bank_id == bank.id, 
                 BranchMaster.branch_name == raw_branch_name
             ).first()
 
-            # 2. Zengin検索 (銀行が正規コードを持っている場合のみ)
             if not branch and not bank.bank_code.startswith("TMP"):
                 bz_code, bz_name = find_branch_in_zengin(bank.bank_code, raw_branch_name)
                 if bz_code:
-                    # コードで再検索
                     branch = session.query(BranchMaster).filter(
                         BranchMaster.bank_id == bank.id,
                         BranchMaster.branch_code == bz_code
                     ).first()
                     if not branch:
-                        # 新規登録
                         branch = BranchMaster(bank_id=bank.id, branch_name=bz_name, branch_code=bz_code)
                         session.add(branch)
                         session.flush()
             
-            # 3. 仮登録
             if not branch:
-                # 支店コードもユニーク制約がある場合に備えてランダム化
                 tmp_br_code = f"T{uuid.uuid4().hex[:3]}"
                 branch = BranchMaster(bank_id=bank.id, branch_name=raw_branch_name, branch_code=tmp_br_code)
                 session.add(branch)
                 session.flush()
 
-        # --- 口座種別 ---
         t_name = str(acc.get("type") or "普通").strip()
         ac_type = session.query(AccountTypeMaster).filter_by(type_name=t_name).first()
         if not ac_type:
@@ -3573,7 +3617,6 @@ def save_assets_to_db_with_zengin(session, case_id: int, data: dict):
             session.add(ac_type)
             session.flush()
 
-        # --- 資産データUpsert ---
         acc_num = str(acc.get("number") or "").strip()
         
         query = session.query(FinancialAsset).filter(
@@ -3616,15 +3659,82 @@ def save_assets_to_db_with_zengin(session, case_id: int, data: dict):
 
 
 # ==========================================
-# 5. メイン画面 UI
+# 5. DB保存ヘルパー - 証券会社用
 # ==========================================
-def main():
+def save_security_assets_to_db(session: Session, case_id: int, data: Dict[str, Any]) -> int:
+    """証券会社の銘柄データをDBに保存"""
+    raw_company_name = str(
+        data.get("securities_company") or data.get("institution_name") or data.get("bank_name") or ""
+    ).strip()
+    
+    securities_company = session.query(BankMaster).filter(
+        BankMaster.bank_name == raw_company_name
+    ).first()
+    
+    if not securities_company:
+        sec_code = f"SEC-{uuid.uuid4().hex[:6]}"
+        securities_company = BankMaster(bank_name=raw_company_name, bank_code=sec_code)
+        session.add(securities_company)
+        session.flush()
+        st.toast(f"ℹ️ 証券会社マスタを登録しました: {raw_company_name}", icon="📈")
+    
+    holdings = data.get("holdings", [])
+    total_amount = sum(float(h.get("amount", 0)) for h in holdings)
+    
+    existing = session.query(FinancialAsset).filter(
+        FinancialAsset.case_id == case_id,
+        FinancialAsset.bank_id == securities_company.id,
+        FinancialAsset.asset_type == "SECURITY"
+    ).first()
+    
+    if existing:
+        existing.balance = total_amount
+        existing.status = "残高証明確認済"
+    else:
+        new_asset = FinancialAsset(
+            case_id=case_id,
+            bank_id=securities_company.id,
+            branch_id=None,
+            account_type_id=None,
+            account_number="",
+            balance=total_amount,
+            status="証券残高取込",
+            asset_type="SECURITY"
+        )
+        session.add(new_asset)
+        session.flush()
+    
+    file_hash = f"SEC-{case_id}-{securities_company.id}-{datetime.now().strftime('%Y%m%d%H%M%S')}"
+    file_reg = session.query(FileRegistry).filter(FileRegistry.file_hash == file_hash).first()
+    
+    holdings_json = json.dumps(holdings, ensure_ascii=False, indent=2)
+    
+    if file_reg:
+        file_reg.extracted_data = holdings_json
+    else:
+        file_reg = FileRegistry(
+            file_hash=file_hash,
+            filename=f"{raw_company_name}_銘柄明細.json",
+            bank_id=securities_company.id,
+            case_id=case_id,
+            doc_type="証券残高証明",
+            extracted_data=holdings_json,
+            status="CONFIRMED"
+        )
+        session.add(file_reg)
+    
+    return len(holdings)
+
+
+# ==========================================
+# 6. メイン画面 UI
+# ==========================================
+def main() -> None:
     st.title("🏦 残高証明書 読取エージェント")
 
     db = DatabaseManager()
     session = db._get_session()
 
-    # 案件ID取得 (Home共有)
     target_case_id = st.session_state.get("selected_case_id")
 
     if not target_case_id:
@@ -3649,7 +3759,6 @@ def main():
 
     st.divider()
 
-    # UIレイアウト
     col_left, col_right = st.columns([1, 1.5])
 
     with col_left:
@@ -3662,20 +3771,15 @@ def main():
             key="balance_cert_uploader"
         )
 
-        # ファイルがアップロードされたら、プレビューと自動解析を実行
         if uploaded_file:
             file_bytes = uploaded_file.getvalue()
             
-            # --- 多機能ビューア表示 ---
             render_enhanced_document_viewer(
                 file_bytes=file_bytes,
                 file_type=uploaded_file.type,
                 key_prefix="zandaka_viewer"
             )
             
-            # --- 自動AI解析ロジック ---
-            # session_state を使って、同じファイルでの重複実行を防ぐ
-            # ファイルの識別子として (ファイル名, サイズ) を使用
             current_file_identifier = (uploaded_file.name, uploaded_file.size)
             if st.session_state.get("last_uploaded_file_identifier") != current_file_identifier:
                 with st.spinner("書類の内容をAIが解析しています..."):
@@ -3683,67 +3787,109 @@ def main():
                     
                     if "error" in result:
                         st.error(f"AI解析エラー: {result['error']}")
-                        # エラーが発生した場合は、前回成功した結果をクリアする
                         if "zandaka_result" in st.session_state:
                             del st.session_state["zandaka_result"]
                     else:
                         st.session_state["zandaka_result"] = result
                         st.success("AI解析が完了しました。右側で結果を確認・編集してください。")
                 
-                # 処理済みのファイル識別子を記録
                 st.session_state["last_uploaded_file_identifier"] = current_file_identifier
-                # 結果表示エリアにフォーカスさせるため再実行
                 st.rerun()
 
     with col_right:
         st.subheader("2. 抽出結果・編集")
         
         if "zandaka_result" in st.session_state:
-            res = st.session_state["zandaka_result"]
+            res = normalize_ai_result(st.session_state["zandaka_result"])
+            institution_type = res.get("institution_type", "BANK")
             
             with st.form("save_assets_form"):
                 c1, c2 = st.columns([2, 1])
-                b_name = c1.text_input("銀行名", value=res.get("bank_name", ""), help="全銀データと照合されます")
+                inst_name = c1.text_input(
+                    "金融機関名", 
+                    value=res.get("institution_name", ""),
+                    help="銀行名または証券会社名"
+                )
                 ref_date = c2.text_input("基準日", value=res.get("reference_date", ""))
                 
-                st.markdown("###### 口座明細リスト")
-                
-                accounts = res.get("accounts", [])
-                if not accounts:
-                    st.warning("口座情報が見つかりませんでした。")
-                    df = pd.DataFrame(columns=["branch_name", "type", "number", "balance", "holder"])
+                if institution_type == "SECURITY":
+                    st.info("📈 **証券会社の取引残高報告書** として認識されました")
+                    st.markdown("###### 銘柄明細リスト")
+                    
+                    holdings = res.get("holdings", [])
+                    if not holdings:
+                        st.warning("銘柄情報が見つかりませんでした。")
+                        df = pd.DataFrame(columns=["name", "quantity", "unit_price", "amount", "asset_category"])
+                    else:
+                        df = pd.DataFrame(holdings)
+                    
+                    edited_df = st.data_editor(
+                        df,
+                        column_config={
+                            "name": st.column_config.TextColumn("銘柄名", width="large"),
+                            "quantity": st.column_config.TextColumn("数量", width="small"),
+                            "unit_price": st.column_config.NumberColumn("単価", format="%d"),
+                            "amount": st.column_config.NumberColumn("評価額", format="%d"),
+                            "asset_category": st.column_config.TextColumn("資産区分", width="small")
+                        },
+                        num_rows="dynamic",
+                        use_container_width=True
+                    )
+                    
+                    total_amount = edited_df["amount"].sum() if "amount" in edited_df.columns else 0
+                    st.metric("合計評価額", f"¥{total_amount:,.0f}")
+                    
                 else:
-                    df = pd.DataFrame(accounts)
-                
-                edited_df = st.data_editor(
-                    df,
-                    column_config={
-                        "branch_name": st.column_config.TextColumn("支店名", width="medium"),
-                        "type": st.column_config.TextColumn("種別", width="small"),
-                        "number": st.column_config.TextColumn("口座番号", width="medium"),
-                        "balance": st.column_config.NumberColumn("残高", format="%d"),
-                        "holder": st.column_config.TextColumn("名義人")
-                    },
-                    num_rows="dynamic",
-                    use_container_width=True
-                )
+                    st.info("🏦 **銀行の残高証明書** として認識されました")
+                    st.markdown("###### 口座明細リスト")
+                    
+                    accounts = res.get("accounts", [])
+                    if not accounts:
+                        st.warning("口座情報が見つかりませんでした。")
+                        df = pd.DataFrame(columns=["branch_name", "type", "number", "balance", "holder"])
+                    else:
+                        df = pd.DataFrame(accounts)
+                    
+                    edited_df = st.data_editor(
+                        df,
+                        column_config={
+                            "branch_name": st.column_config.TextColumn("支店名", width="medium"),
+                            "type": st.column_config.TextColumn("種別", width="small"),
+                            "number": st.column_config.TextColumn("口座番号", width="medium"),
+                            "balance": st.column_config.NumberColumn("残高", format="%d"),
+                            "holder": st.column_config.TextColumn("名義人")
+                        },
+                        num_rows="dynamic",
+                        use_container_width=True
+                    )
                 
                 st.markdown("---")
                 if st.form_submit_button("💾 データベースに登録"):
                     try:
-                        final_data = {
-                            "bank_name": b_name,
-                            "reference_date": ref_date,
-                            "accounts": edited_df.to_dict(orient="records")
-                        }
+                        if institution_type == "SECURITY":
+                            final_data = {
+                                "institution_name": inst_name,
+                                "institution_type": "SECURITY",
+                                "securities_company": inst_name,
+                                "reference_date": ref_date,
+                                "holdings": edited_df.to_dict(orient="records")
+                            }
+                            count = save_security_assets_to_db(session, target_case_id, final_data)
+                            session.commit()
+                            st.toast(f"登録完了: {count}銘柄の証券資産を保存しました！", icon="✅")
+                        else:
+                            final_data = {
+                                "institution_name": inst_name,
+                                "institution_type": "BANK",
+                                "bank_name": inst_name,
+                                "reference_date": ref_date,
+                                "accounts": edited_df.to_dict(orient="records")
+                            }
+                            count = save_bank_assets_to_db(session, target_case_id, final_data)
+                            session.commit()
+                            st.toast(f"登録完了: {count}件の資産を保存しました！", icon="✅")
                         
-                        # ★ここが変更点: Zengin対応の保存関数を使用
-                        count = save_assets_to_db_with_zengin(session, target_case_id, final_data)
-                        session.commit()
-                        
-                        st.toast(f"登録完了: {count}件の資産を保存しました！", icon="✅")
                         st.balloons()
-                        
                         del st.session_state["zandaka_result"]
                         time.sleep(2)
                         st.rerun()
@@ -3754,7 +3900,6 @@ def main():
         else:
             st.info("👈 左側で書類をアップロードしてください。")
             
-            # Zenginデータのステータス表示
             zengin_path = os.path.join(ZENGIN_DATA_DIR, "banks.json")
             if os.path.exists(zengin_path):
                 st.caption(f"✅ 全銀データ連携: 有効 ({len(json.load(open(zengin_path, encoding='utf-8')))}行)")
@@ -4181,12 +4326,12 @@ import string
 import tempfile  # ★追加: 一時フォルダ作成用
 from io import BytesIO
 from pathlib import Path
+from typing import Any, Iterable
 
 import streamlit as st
 # import pyzipper  <-- 削除またはコメントアウト
 from PIL import Image
 from pdf2image import convert_from_bytes
-from sqlalchemy.orm import joinedload
 
 # ==========================================
 # 1. パス解決 & インポート
@@ -4218,6 +4363,33 @@ if "force_rerun_checkboxes" not in st.session_state:
 # ==========================================
 # 2. ロジッククラス定義
 # ==========================================
+
+def _iter_detected_files(detected_files_map: dict[str, list[Path]]) -> Iterable[Path]:
+    for _, path_list in detected_files_map.items():
+        for p in path_list:
+            yield p
+
+
+def _get_selected_auto_files_from_state(detected_files_map: dict[str, list[Path]]) -> list[Path]:
+    selected: list[Path] = []
+    for p in _iter_detected_files(detected_files_map):
+        key_str = f"auto_{p}"
+        if bool(st.session_state.get(key_str, False)):
+            selected.append(p)
+    return selected
+
+
+def _get_selected_company_docs_from_state(primary_docs: list[str], other_docs: list[str]) -> list[str]:
+    selected: list[str] = []
+    for doc in primary_docs:
+        key_str = f"chk_{doc}"
+        if bool(st.session_state.get(key_str, True)):
+            selected.append(doc)
+    for doc in other_docs:
+        key_str = f"chk_other_{doc}"
+        if bool(st.session_state.get(key_str, False)):
+            selected.append(doc)
+    return selected
 
 class AutoFileCollector:
     """フォルダから関連ファイルを自動収集・分類するクラス"""
@@ -4530,6 +4702,7 @@ class EmailGenerator:
 # 3. メイン画面 UI
 # ==========================================
 def main():
+
     # コールバックからの強制再実行トリガー
     if st.session_state.get("force_rerun_checkboxes", False):
         st.session_state["force_rerun_checkboxes"] = False
@@ -4596,18 +4769,16 @@ def main():
         st.markdown("###### ① フォルダから自動検出されたファイル")
         case_folder_path = current_case.folder_path
         
-        detected_files_map = {}
+        detected_files_map: dict[str, list[Path]] = {}
         if case_folder_path and os.path.exists(case_folder_path):
-            root_path = Path(case_folder_path) # ここでroot_pathを定義
+            root_path = Path(case_folder_path)
             st.caption(f"検索先: `{case_folder_path}`")
             detected_files_map = AutoFileCollector.collect_files(case_folder_path)
             
             if not detected_files_map:
                 st.info("関連しそうなファイルは見つかりませんでした。")
             
-            selected_auto_files = [] 
-            
-            st.session_state["all_detected_files_keys"] = [] # ここで毎回クリアする
+            st.session_state["all_detected_files_keys"] = []
             for category, path_list in detected_files_map.items():
                 with st.expander(f"📁 {category} ({len(path_list)}件)", expanded=True):
                     for p in path_list:
@@ -4617,12 +4788,11 @@ def main():
                         key_str = f"auto_{p}"
                         st.session_state["all_detected_files_keys"].append(key_str)
                         if st.checkbox(label, value=st.session_state.get(key_str, False), key=key_str):
-                            selected_auto_files.append(p)
+                            pass
                             
         else:
             st.warning("⚠️ 案件フォルダパスが登録されていないか、アクセスできません。Home画面で設定してください。")
-            selected_auto_files = []
-            st.session_state["all_detected_files_keys"] = [] # フォルダがない場合もクリア
+            st.session_state["all_detected_files_keys"] = []
 
         # === B. 手動アップロード ===
         st.markdown("###### ② 手動追加（フォルダにない場合）")
@@ -4631,18 +4801,19 @@ def main():
             type=["pdf", "png", "jpg", "jpeg", "docx", "doc", "xlsx", "xls"], 
             accept_multiple_files=True
         )
-        
+        uploaded_files_list: list[Any] = uploaded_files or []
+
         use_strong_compression = st.checkbox("🔥 強力圧縮 (画質を落としてサイズ優先)", value=False)
 
         # === C. 会社書類・身分証の自動同梱 ===
         st.markdown("###### ③ 会社書類・身分証の同梱")
-        company_docs_selected = []
+        company_docs_selected: list[str] = []
         if os.path.exists(TEMPLATES_DIR):
             all_templates = [f for f in os.listdir(TEMPLATES_DIR) if f.lower().endswith(".pdf")]
             clean_user_name = user_name.replace(" ", "").replace("　", "")
             
-            primary_docs = []
-            other_docs = []
+            primary_docs: list[str] = []
+            other_docs: list[str] = []
             
             for tpl in all_templates:
                 clean_tpl = tpl.replace(" ", "").replace("　", "")
@@ -4654,24 +4825,26 @@ def main():
                 if is_target: primary_docs.append(tpl)
                 else: other_docs.append(tpl)
             
-            st.session_state["all_company_docs_keys"] = [] # ここで毎回クリアする
+            st.session_state["all_company_docs_keys"] = []
             for doc in primary_docs:
                 key_str = f"chk_{doc}"
                 st.session_state["all_company_docs_keys"].append(key_str)
                 if st.checkbox(f"📄 {doc}", value=st.session_state.get(key_str, True), key=key_str):
-                    company_docs_selected.append(doc)
+                    pass
             
             with st.expander("その他のファイルを選択"):
-                st.session_state["all_other_docs_keys"] = [] # ここで毎回クリアする
+                st.session_state["all_other_docs_keys"] = []
                 for doc in other_docs:
                     key_str = f"chk_other_{doc}"
                     st.session_state["all_other_docs_keys"].append(key_str)
                     if st.checkbox(f"📄 {doc}", value=st.session_state.get(key_str, False), key=key_str):
-                        company_docs_selected.append(doc)
+                        pass
         else:
             st.warning("テンプレートフォルダなし")
-            st.session_state["all_company_docs_keys"] = [] # フォルダがない場合もクリア
-            st.session_state["all_other_docs_keys"] = [] # フォルダがない場合もクリア
+            st.session_state["all_company_docs_keys"] = []
+            st.session_state["all_other_docs_keys"] = []
+            primary_docs = []
+            other_docs = []
 
         # === D. 設定 ===
         st.markdown("###### ④ 送付設定")
@@ -4691,16 +4864,21 @@ def main():
         
         # 実行ボタン
         if st.button("🚀 送付セットを作成する", type="primary", use_container_width=True):
-            if not uploaded_files and not company_docs_selected and not selected_auto_files:
+            # ボタン押下時点のチェック状態を、session_stateから確定させる
+            # （描画時に作った一時リストが古い状態のまま混入するのを防ぐ）
+            selected_auto_files = _get_selected_auto_files_from_state(detected_files_map)
+            company_docs_selected = _get_selected_company_docs_from_state(primary_docs, other_docs)
+
+            if not uploaded_files_list and not company_docs_selected and not selected_auto_files:
                 st.error("ファイルが1つも選択されていません。")
             else:
                 progress_text = "処理中..."
                 my_bar = st.progress(0, text=progress_text)
 
-                files_to_zip = {}
+                files_to_zip: dict[str, bytes] = {}
                 processor = DocumentProcessor()
                 
-                total_files = len(uploaded_files) + len(company_docs_selected) + len(selected_auto_files)
+                total_files = len(uploaded_files_list) + len(company_docs_selected) + len(selected_auto_files)
                 processed_cnt = 0
 
                 # 1. 自動収集ファイルの読み込み & 軽量化
@@ -4729,7 +4907,7 @@ def main():
                     my_bar.progress(processed_cnt / total_files, text=f"処理中: {p.name}")
 
                 # 2. 手動アップロードファイルの処理
-                for f in uploaded_files:
+                for f in uploaded_files_list:
                     bytes_data = f.getvalue()
                     fname_lower = f.name.lower()
                     
@@ -4796,7 +4974,7 @@ def main():
             
             for i, z_info in enumerate(zip_list):
                 col_z1, col_z2 = st.columns([3, 1])
-                col_z1.write(f"**{z_info["name"]}** ({len(z_info["data"])/1024/1024:.1f} MB)")
+                col_z1.write(f"**{z_info['name']}** ({len(z_info['data'])/1024/1024:.1f} MB)")
                 with col_z2:
                     st.download_button(
                         label="📥 DL",
@@ -8474,67 +8652,6 @@ def main():
 
 if __name__ == "__main__":
     main()
-````
-
-## File: requirements.txt
-````
-# 📂 遺言・遺産整理業務支援システム 要件定義書 (Ver 1.0)
-
-## 1. プロジェクト概要
-* **目的:** 遺言書作成および遺産整理業務の効率化。
-* **コアコンセプト:** 「個人情報の完全オフライン管理」と「生成AIによる業務支援」のハイブリッド構成。
-* **利用規模:** 本社20名で開始、将来的には全拠点100名以上（年間1000件規模）。
-
-## 2. 技術スタック選定
-以下のライブラリ・ツールを標準とする。
-
-| カテゴリ | 技術名 | 選定理由 |
-| :--- | :--- | :--- |
-| **言語** | **Python 3.10+** | AI/データ処理のエコシステムが最強であるため。 |
-| **アプリFW** | **Streamlit** | 社内Webアプリ化が高速。各PCへのインストール不要。 |
-| **DB** | **PostgreSQL** | 100人規模の同時接続・排他制御に耐える堅牢性（無料）。 |
-| **ORM** | **SQLAlchemy** | DB操作の抽象化。保守性向上のため必須。 |
-| **OCR** | **PaddleOCR** | 金融機関書類（日本語・罫線あり）の認識精度が高いため。 |
-| **生成AI** | **Google Gemini API** | マニュアル検索、文書案作成用。(google-generativeai) |
-| **PDF処理** | **PyMuPDF (fitz)** | PDFの読み込み、加工用。 |
-
-## 3. システムアーキテクチャ
-物理的なデータ保管場所と、外部AIへのデータフローを厳密に分離する。
-
-* **サーバー構成:** オンプレミス（社内）サーバー1台にDockerコンテナ等でDBとアプリをホスト。
-* **クライアント:** 社員PCのブラウザからイントラネット経由でアクセス。
-* **ネットワーク分離:**
-    * **Zone A (Secure/Local):** PostgreSQL, OCR処理, 個人情報（氏名, 口座番号）の保存。インターネットへは出さない。
-    * **Zone B (Cloud/AI):** Gemini API。ここには「匿名化されたテキスト」と「マニュアル」のみ送信する。
-
-## 4. 機能要件
-
-### A. 顧客・案件管理機能
-* 顧客情報（被相続人、相続人）のCRUD処理。
-* PostgreSQLを使用し、排他制御を行う。
-
-### B. 帳票OCR取り込み機能
-* Streamlit画面から画像/PDFをアップロード。
-* PaddleOCRでテキスト化。
-* OCR結果と元画像を並べて表示し、人間が修正してDB保存するUI。
-
-### C. 生成AI支援機能（RAG/Drafting）
-* **マスキング処理:** 相談内容をGeminiに投げる前に、正規表現等で個人情報（氏名、住所、電話番号、口座番号）をプレースホルダ（例: `[NAME_A]`, `[BANK_ID]`）に置換するロジックを実装すること。
-* **マニュアル検索:** 社内規定や金融機関手続きマニュアルをベクトル化、またはコンテキストとして渡し、質問に回答させる。
-
-### D. バックアップ機能
-* `pg_dump` を使用し、毎日深夜にDBのダンプファイルを作成。
-* 外部ストレージ（NAS等）への転送スクリプト。
-
-## 5. データベース設計指針（ER図イメージ）
-* **usersテーブル:** 社員アカウント管理（権限管理用）。
-* **customersテーブル:** 顧客基本情報。
-* **mattersテーブル:** 案件情報（遺言作成、遺産整理など）。
-* **documentsテーブル:** OCR読み取り結果、生成された文書データ。ファイルパス管理。
-
-## 6. セキュリティ・コンプライアンス規定
-* **原則:** 顧客のPII（個人特定情報）は、いかなる場合もGemini APIのエンドポイントへ送信してはならない。
-* **API設定:** Gemini API利用時は、学習データとして利用されない設定（Enterprise利用またはオプトアウト設定）を確認する。
 ````
 
 ## File: reset_db.py
@@ -12735,6 +12852,69 @@ Describe your project here.
 
 1.  `rye add <package_name>` コマンドを使用してライブラリを追加します。
 2.  ライブラリ追加後、必ず `rye sync` を実行し、依存関係を同期させてください。
+````
+
+## File: requirements.txt
+````
+# ==========================================
+# Python dependencies (generated/maintained for this repo)
+#
+# - This project uses rye (see requirements.lock). If you use rye:
+#   - rye sync
+#
+# - If you use pip:
+#   - python -m pip install -r requirements.txt
+# ==========================================
+
+-e .
+
+streamlit==1.52.2
+streamlit-autorefresh==1.0.1
+streamlit-image-coordinates==0.4.0
+streamlit-drawable-canvas==0.9.3
+streamlit-keyup==0.3.0
+
+sqlalchemy==2.0.45
+psycopg2-binary==2.9.11
+
+pandas==2.3.3
+numpy==1.26.4
+openpyxl==3.1.5
+
+langchain==1.2.7
+langchain-core==1.2.7
+langchain-community==0.4.1
+langchain-text-splitters==1.1.0
+langchain-google-genai==4.2.0
+langchain-google-vertexai==3.2.1
+langchain-huggingface==1.2.0
+langchain-chroma==1.1.0
+chromadb==1.4.0
+
+google-genai==1.59.0
+google-generativeai==0.8.6
+google-cloud-aiplatform==1.133.0
+google-auth-oauthlib==1.2.4
+google-api-python-client==2.188.0
+
+pdf2image==1.17.0
+pillow==12.0.0
+pypdf==6.5.0
+pymupdf==1.26.7
+
+pytesseract==0.3.13
+python-dotenv==1.2.1
+
+opencv-python==4.8.1.78
+opencv-python-headless==4.8.1.78
+
+reportlab==4.4.7
+watchdog==6.0.0
+pyperclip==1.11.0
+python-docx==1.2.0
+selenium==4.40.0
+webdriver-manager==4.0.2
+pyzipper==0.3.6
 ````
 
 ## File: src/chains/bank_procedure_chain.py
@@ -22800,8 +22980,6 @@ aiohttp==3.13.2
     # via langchain-community
 aiosignal==1.4.0
     # via aiohttp
-alembic==1.18.3
-    # via legal
 altair==6.0.0
     # via streamlit
 annotated-types==0.7.0
@@ -22836,6 +23014,8 @@ certifi==2026.1.4
     # via kubernetes
     # via requests
     # via selenium
+cffi==2.0.0
+    # via trio
 charset-normalizer==3.4.4
     # via reportlab
     # via requests
@@ -22845,6 +23025,11 @@ chromadb==1.4.0
 click==8.3.1
     # via streamlit
     # via typer
+    # via uvicorn
+colorama==0.4.6
+    # via build
+    # via click
+    # via tqdm
     # via uvicorn
 coloredlogs==15.0.1
     # via onnxruntime
@@ -22956,8 +23141,6 @@ h11==0.16.0
     # via httpcore
     # via uvicorn
     # via wsproto
-hf-xet==1.2.0
-    # via huggingface-hub
 httpcore==1.0.9
     # via httpx
 httplib2==0.31.1
@@ -23055,13 +23238,10 @@ langsmith==0.5.2
     # via langchain-core
 lxml==6.0.2
     # via python-docx
-mako==1.3.10
-    # via alembic
 markdown-it-py==4.0.0
     # via rich
 markupsafe==3.0.3
     # via jinja2
-    # via mako
 marshmallow==3.26.2
     # via dataclasses-json
 mdurl==0.1.2
@@ -23202,6 +23382,8 @@ pyautogui==0.9.54
     # via legal
 pybase64==1.4.3
     # via chromadb
+pycparser==3.0
+    # via cffi
 pycryptodomex==3.23.0
     # via pyzipper
 pydantic==2.12.5
@@ -23231,14 +23413,6 @@ pymsgbox==2.0.1
     # via pyautogui
 pymupdf==1.26.7
     # via legal
-pyobjc-core==12.1
-    # via pyautogui
-    # via pyobjc-framework-cocoa
-    # via pyobjc-framework-quartz
-pyobjc-framework-cocoa==12.1
-    # via pyobjc-framework-quartz
-pyobjc-framework-quartz==12.1
-    # via pyautogui
 pyparsing==3.3.2
     # via httplib2
 pypdf==6.5.0
@@ -23252,6 +23426,8 @@ pypika==0.48.9
     # via chromadb
 pyproject-hooks==1.2.0
     # via build
+pyreadline3==3.5.4
+    # via humanfriendly
 pyrect==0.2.0
     # via pygetwindow
 pyscreeze==1.0.1
@@ -23324,8 +23500,6 @@ rpds-py==0.30.0
     # via referencing
 rsa==4.9.1
     # via google-auth
-rubicon-objc==0.5.3
-    # via mouseinfo
 safetensors==0.7.0
     # via transformers
 scikit-learn==1.8.0
@@ -23351,9 +23525,9 @@ sniffio==1.3.1
 sortedcontainers==2.4.0
     # via trio
 sqlalchemy==2.0.45
-    # via alembic
     # via langchain-classic
     # via langchain-community
+    # via legal
 streamlit==1.52.2
     # via legal
     # via streamlit-autorefresh
@@ -23413,7 +23587,6 @@ types-urllib3==1.26.25.14
     # via selenium
 typing-extensions==4.15.0
     # via aiosignal
-    # via alembic
     # via altair
     # via anyio
     # via chromadb
@@ -23458,12 +23631,11 @@ uuid-utils==0.12.0
     # via langsmith
 uvicorn==0.40.0
     # via chromadb
-uvloop==0.22.1
-    # via uvicorn
 validators==0.35.0
     # via langchain-google-vertexai
 watchdog==6.0.0
     # via legal
+    # via streamlit
 watchfiles==1.1.1
     # via uvicorn
 webdriver-manager==4.0.2

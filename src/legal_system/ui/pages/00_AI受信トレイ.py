@@ -221,6 +221,17 @@ def render_ai_inbox():
                 
                 df_holdings = pd.DataFrame(holdings_data)
                 
+                try:
+                    # quantity カラムを文字列型に強制変換（単位追記などを許容するため）
+                    if "quantity" in df_holdings.columns:
+                        df_holdings["quantity"] = df_holdings["quantity"].astype(str)
+                    
+                    # valuation カラムを整数型に安全に変換（浮動小数点警告を防ぐ）
+                    if "valuation" in df_holdings.columns:
+                        df_holdings["valuation"] = pd.to_numeric(df_holdings["valuation"], errors='coerce').fillna(0).astype(int)
+                except Exception as e:
+                    st.warning(f"データ型変換時の警告: {e}")
+                
                 edited_holdings = st.data_editor(
                     df_holdings,
                     num_rows="dynamic",

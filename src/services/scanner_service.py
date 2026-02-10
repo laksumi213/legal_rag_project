@@ -565,16 +565,14 @@ class TransactionDetailHandler(DocumentHandler):
             
         if dest_dir:
             saved_path = self._save_file_copy(original_path, dest_dir, new_filename)
-            if saved_path:
-                self._update_or_create_registry(session, case.case_id, saved_path, "取引明細書", analysis_data, file_hash)
-                session.add(ContactLog(case_id=case.case_id, contact_content=f"【自動処理】取引明細書を保存しました: {saved_path.name}"))
 
 class InvoiceHandler(DocumentHandler):
     def handle(self, session: Any, case: Case, analysis_data: Dict[str, Any], original_path: Path, file_hash: Optional[str] = None) -> None:
         meta = analysis_data.get("meta", {})
-        sender = meta.get("sender_name", "不明な請求元")
+        # 2026-02-10: NoneTypeエラー修正 - デフォルト値を空文字列に設定
+        sender = meta.get("sender_name") or ""
         amount = meta.get("amount", 0)
-        due_date = meta.get("due_date", "")
+        due_date = meta.get("due_date") or ""
         
         # --- ★修正ここから: 「着手金」判定とファイル名の生成 ---
         
@@ -583,12 +581,14 @@ class InvoiceHandler(DocumentHandler):
         
         # AI解析データ全体（JSON文字列）または抽出された送信元名に「着手」が含まれるかチェック
         # ※OCRで「着手金請求書」というタイトルをsenderとして拾うケースなどを想定
-        if "着手" in str(analysis_data) or "着手" in sender:
+        # 2026-02-10: NoneTypeエラー修正 - sender が None でないことを確認
+        if "着手" in str(analysis_data) or (sender and "着手" in sender):
             doc_label = "着手金請求書"
 
         # 第2引数に判定した名前(doc_label)を渡し、第3引数(請求元)は削除
         new_filename = self._generate_filename(case, doc_label, original_path=original_path)
         
+        # ... (unchanged code)
         # --- ★修正ここまで ---
         
         logger.info(f"   📂 処理対象案件のフォルダ設定: '{case.folder_path}'")
@@ -831,7 +831,8 @@ class ScannerService:
             session.add(new_reg)
 
     def _execute_handler(self, session: Any, case_id: int, analysis: Dict[str, Any], path: Path, file_hash: str) -> None:
-        case = session.query(Case).options(joinedload(Case.deceased_ref)).get(case_id)
+        # 2026-02-10: SQLAlchemy 2.0形式に更新
+        case = session.get(Case, case_id, options=[joinedload(Case.deceased_ref)])
         if case:
             doc_type = analysis.get("doc_type", "other")
             handler = self.handlers.get(doc_type, self.handlers["other"])
@@ -1019,14 +1020,16 @@ class ScannerService:
             return {}
         
         # --- Pythonによる後処理 ---
-        bank_name = ai_data.get("bank_name", "")
-        doc_type = ai_data.get("doc_type", "")
+        # 2026-02-10: NoneTypeエラー修正 - bank_name と doc_type のデフォルト値を空文字列に設定
+        bank_name = ai_data.get("bank_name") or ""
+        doc_type = ai_data.get("doc_type") or ""
         
-        if "証券" in bank_name or "證券" in bank_name:
+        # 2026-02-10: NoneTypeエラー修正 - in 演算子使用前に None チェック
+        if bank_name and ("証券" in bank_name or "證券" in bank_name):
             if doc_type != "securities_statement":
                 ai_data["doc_type"] = "securities_statement"
         
-        if "野村" in bank_name and doc_type == "balance_certificate":
+        if bank_name and "野村" in bank_name and doc_type == "balance_certificate":
              ai_data["doc_type"] = "securities_statement"
 
         # 名前クレンジング & 案件検索

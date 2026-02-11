@@ -318,7 +318,11 @@ def main():
         render_label_printer(session, current_case, current_user_info)
 
     elif menu == "✅ タスク管理":
-        st.info(f"メニュー: {menu} は準備中です。")
+        from src.legal_system.ui.pages.タスク管理 import render_task_management
+
+        # 案件IDをセッション状態に保存
+        st.session_state["selected_case_id"] = target_case_id
+        render_task_management()
 
     elif menu == "📊 進捗ダッシュボード":
         from src.legal_system.ui.pages.進捗ダッシュボード import (

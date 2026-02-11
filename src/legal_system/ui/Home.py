@@ -1,13 +1,14 @@
 # src/legal_system/ui/Home.py
 
 import os
+import subprocess
 import sys
 import threading
 import time
-import subprocess
+
 import streamlit as st
-from sqlalchemy.orm import joinedload
 from sqlalchemy import desc
+from sqlalchemy.orm import joinedload
 
 # 自動更新ライブラリ
 try:
@@ -32,46 +33,48 @@ if ROOT_DIR not in sys.path:
 # 2. ページ設定
 # ==========================================
 st.set_page_config(
-    page_title="案件統合管理ホーム", 
-    page_icon="🏠", 
+    page_title="案件統合管理ホーム",
+    page_icon="🏠",
     layout="wide",
-    initial_sidebar_state="expanded"
+    initial_sidebar_state="expanded",
 )
 
 # ==========================================
 # 3. Watcher（監視プロセス）起動ロジック
 # ==========================================
 
+
 @st.cache_resource
 def get_shared_state():
     """スレッド間で状態を共有するためのコンテナ"""
     return {"services_ready": False, "watcher_started": False}
 
+
 def launch_watcher_process():
     """run_watcher.py を起動する（コンソールは統合）"""
     watcher_path = os.path.join(ROOT_DIR, "run_watcher.py")
     python_exe = sys.executable
-    
+
     if not os.path.exists(watcher_path):
         return False, f"ファイルが見つかりません: {watcher_path} (ROOT: {ROOT_DIR})"
 
     try:
         # Windowsで黒い画面を別に出さない設定
         subprocess.Popen(
-            [python_exe, "-u", str(watcher_path)], 
-            cwd=str(ROOT_DIR),
-            close_fds=True
+            [python_exe, "-u", str(watcher_path)], cwd=str(ROOT_DIR), close_fds=True
         )
         return True, "起動成功 (ログはターミナルを確認)"
     except Exception as e:
         return False, str(e)
 
+
 def background_loader():
     """バックグラウンド読込スレッド"""
     try:
         from src.legal_system.core.preload import warm_up_modules
+
         warm_up_modules()
-        
+
         state = get_shared_state()
         state["services_ready"] = True
 
@@ -83,8 +86,9 @@ def background_loader():
                 print(f"✨ [Watcher Auto-Start] SUCCESS: {msg}")
             else:
                 print(f"⚠️ [Watcher Auto-Start] FAILED: {msg}")
-    except Exception as e: 
+    except Exception as e:
         print(f"Background loader error: {e}")
+
 
 if "bg_thread_started" not in st.session_state:
     t = threading.Thread(target=background_loader, daemon=True)
@@ -95,25 +99,38 @@ if "bg_thread_started" not in st.session_state:
 # 4. コンポーネントのインポート
 # ==========================================
 from legal_system.core.database_manager import DatabaseManager
-from legal_system.models.tables import Case, Deceased, Heir, FileRegistry, IncomingNoteBuffer, AuditLog
-from src.legal_system.ui.components.sidebar import render_sidebar
+from legal_system.models.tables import (
+    AuditLog,
+    Case,
+    Deceased,
+    FileRegistry,
+    IncomingNoteBuffer,
+)
 from src.legal_system.ui.components.case_search import render_case_search
-from src.legal_system.ui.components.inbox import render_inbox
 from src.legal_system.ui.components.cases.header import render_case_header
+from src.legal_system.ui.components.inbox import render_inbox
+from src.legal_system.ui.components.sidebar import render_sidebar
+
 
 @st.cache_resource(show_spinner=False)
 def get_gmail_service_silent():
     try:
         from src.services.gmail_watcher_service import GmailWatcherService
+
         return GmailWatcherService()
-    except Exception: return None
+    except Exception:
+        return None
+
 
 @st.cache_resource(show_spinner=False)
 def get_scanner_service_silent():
     try:
         from src.services.scanner_service import ScannerService
+
         return ScannerService()
-    except Exception: return None
+    except Exception:
+        return None
+
 
 # ==========================================
 # ★追加: 通知レンダリング関数
@@ -124,17 +141,23 @@ def render_notifications(session):
     """
     # 1. 未処理件数のカウント
     pending_files = session.query(FileRegistry).filter_by(status="PENDING").count()
-    pending_notes = session.query(IncomingNoteBuffer).filter_by(status="PENDING").count()
+    pending_notes = (
+        session.query(IncomingNoteBuffer).filter_by(status="PENDING").count()
+    )
     total_pending = pending_files + pending_notes
-    
+
     # 2. 直近のアクションログ (過去5件)
-    recent_actions = session.query(AuditLog).order_by(desc(AuditLog.timestamp)).limit(5).all()
+    recent_actions = (
+        session.query(AuditLog).order_by(desc(AuditLog.timestamp)).limit(5).all()
+    )
 
     state = get_shared_state()
-    
-    with st.expander("🛠️ システム通知 & 監視ステータス", expanded=bool(total_pending > 0)):
+
+    with st.expander(
+        "🛠️ システム通知 & 監視ステータス", expanded=bool(total_pending > 0)
+    ):
         col_stat, col_noti, col_log = st.columns([1, 1.5, 2])
-        
+
         # --- ステータス ---
         with col_stat:
             st.markdown("##### 🟢 監視プロセス")
@@ -157,23 +180,34 @@ def render_notifications(session):
                 st.caption("✅ すべて処理済みです")
             else:
                 if pending_files > 0:
-                    if st.button(f"📄 スキャン書類: {pending_files} 件 (AI処理へ)", type="primary", use_container_width=True):
+                    if st.button(
+                        f"📄 スキャン書類: {pending_files} 件 (AI処理へ)",
+                        type="primary",
+                        use_container_width=True,
+                    ):
                         st.switch_page("pages/00_AI受信トレイ.py")
-                
+
                 if pending_notes > 0:
                     st.warning(f"✉️ Gmailメモ: **{pending_notes}** 件")
-                    st.caption("※Gmailメモはこの画面下部の「受信トレイ」を確認してください")
+                    st.caption(
+                        "※Gmailメモはこの画面下部の「受信トレイ」を確認してください"
+                    )
 
         # --- アクションログ ---
         with col_log:
             st.markdown("##### 🔵 直近のアクション")
             if recent_actions:
                 for log in recent_actions:
-                    t_str = log.timestamp.strftime('%H:%M')
-                    target = log.target[:15] + "..." if len(log.target or "") > 15 else log.target
+                    t_str = log.timestamp.strftime("%H:%M")
+                    target = (
+                        log.target[:15] + "..."
+                        if len(log.target or "") > 15
+                        else log.target
+                    )
                     st.text(f"[{t_str}] {log.action_type}: {target}")
             else:
                 st.caption("履歴なし")
+
 
 # ==========================================
 # 5. メインアプリ処理
@@ -213,10 +247,15 @@ def main():
         return
 
     # データロード
-    current_case = session.query(Case).options(
-        joinedload(Case.deceased_ref).joinedload(Deceased.heirs),
-        joinedload(Case.manager), joinedload(Case.operator)
-    ).get(target_case_id)
+    current_case = (
+        session.query(Case)
+        .options(
+            joinedload(Case.deceased_ref).joinedload(Deceased.heirs),
+            joinedload(Case.manager),
+            joinedload(Case.operator),
+        )
+        .get(target_case_id)
+    )
 
     if not current_case:
         st.error("データなし")
@@ -229,39 +268,67 @@ def main():
     if menu == "🏠 案件概要・基本情報":
         from src.legal_system.ui.components.cases.basic_info import render_basic_info
         from src.legal_system.ui.components.cases.dashboard_widgets import (
-            render_manager_assignment, render_sol_info, render_kintone_tool, render_contact_logs
+            render_contact_logs,
+            render_kintone_tool,
+            render_manager_assignment,
+            render_sol_info,
         )
+
         render_basic_info(session, target_case_id)
-        st.divider(); render_manager_assignment(session, current_case)
-        st.divider(); render_sol_info(session, current_case)
-        st.divider(); render_kintone_tool(target_case_id)
+        st.divider()
+        render_manager_assignment(session, current_case)
+        st.divider()
+        render_sol_info(session, current_case)
+        st.divider()
+        render_kintone_tool(target_case_id)
         render_contact_logs(session, target_case_id)
 
     elif menu == "🏦 銀行口座 登録":
-        from src.legal_system.ui.components.cases.asset_list import render_bank_account_list
+        from src.legal_system.ui.components.cases.asset_list import (
+            render_bank_account_list,
+        )
+
         render_bank_account_list(session, target_case_id)
 
     elif menu == "📈 証券・その他資産":
         # ★機能追加: 証券・その他資産のCRUD画面
-        from src.legal_system.ui.components.cases.asset_list import render_securities_list
+        from src.legal_system.ui.components.cases.asset_list import (
+            render_securities_list,
+        )
+
         render_securities_list(session, target_case_id)
 
     elif menu == "🏘️ 不動産 登録":
-        from src.legal_system.ui.components.cases.nayose_registration import render_nayose_registration
+        from src.legal_system.ui.components.cases.nayose_registration import (
+            render_nayose_registration,
+        )
+
         render_nayose_registration(session, target_case_id)
 
     elif menu == "🌐 登記情報取得":
-        from src.legal_system.ui.components.cases.registry_acquisition import render_registry_acquisition
+        from src.legal_system.ui.components.cases.registry_acquisition import (
+            render_registry_acquisition,
+        )
+
         render_registry_acquisition(session, target_case_id)
 
     elif menu == "🖨️ 宛名ラベル作成":
         from src.legal_system.ui.components.label_printer_ui import render_label_printer
+
         render_label_printer(session, current_case, current_user_info)
 
     elif menu == "✅ タスク管理":
         st.info(f"メニュー: {menu} は準備中です。")
 
+    elif menu == "📊 進捗ダッシュボード":
+        from src.legal_system.ui.pages.進捗ダッシュボード import (
+            render_progress_dashboard,
+        )
+
+        render_progress_dashboard()
+
     session.close()
+
 
 if __name__ == "__main__":
     main()

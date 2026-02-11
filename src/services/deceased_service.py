@@ -2,12 +2,11 @@
 
 import datetime
 import logging
-import re
 from typing import Any, Dict, List, Optional, Set
 
 import pandas as pd
 import requests
-from sqlalchemy import or_, and_, func
+from sqlalchemy import func, or_
 from sqlalchemy.orm import joinedload
 
 from legal_system.core.database_manager import DatabaseManager
@@ -20,10 +19,11 @@ from legal_system.models.tables import (
     H_AddressHistory,
     H_ContactLink,
     Heir,
-    User,
     IncomingNoteBuffer,
+    User,
 )
 from src.utils.date_utils import parse_all_flexible_date
+from src.utils.retry_decorator import retry_with_backoff
 
 logger = logging.getLogger(__name__)
 
@@ -157,14 +157,16 @@ def _expand_name_variants(name: str) -> Set[str]:
 # 2. 案件 (Case) 操作 & 検索 (大幅強化版)
 # ==========================================
 def find_cases_by_attributes(
-    client_name: Optional[str] = None, 
+    client_name: Optional[str] = None,
     deceased_name: Optional[str] = None,
-    case_number: Optional[str] = None
+    case_number: Optional[str] = None,
 ) -> List[Dict[str, Any]]:
     session = get_db_session()
     results = []
-    
-    logger.info(f"🔎 FindCase Search: Num={case_number}, Client={client_name}, Dec={deceased_name}")
+
+    logger.info(
+        f"🔎 FindCase Search: Num={case_number}, Client={client_name}, Dec={deceased_name}"
+    )
 
     try:
         query = session.query(Case).outerjoin(Case.deceased_ref)
@@ -177,7 +179,9 @@ def find_cases_by_attributes(
         if client_name:
             c_variants = _expand_name_variants(client_name)
             if c_variants:
-                db_client_clean = func.replace(func.replace(Case.client_name, ' ', ''), '　', '')
+                db_client_clean = func.replace(
+                    func.replace(Case.client_name, " ", ""), "　", ""
+                )
                 variant_conditions = [db_client_clean.contains(v) for v in c_variants]
                 conditions.append(or_(*variant_conditions))
 
@@ -185,13 +189,15 @@ def find_cases_by_attributes(
             clean_search_key = deceased_name.replace(" ", "").replace("　", "")
             d_variants = _expand_name_variants(clean_search_key)
             full_name_db = Deceased.name_last + Deceased.name_first
-            full_name_clean = func.replace(func.replace(full_name_db, ' ', ''), '　', '')
-            
+            full_name_clean = func.replace(
+                func.replace(full_name_db, " ", ""), "　", ""
+            )
+
             v_conds = []
             for v in d_variants:
                 v_conds.append(full_name_clean.contains(v))
                 v_conds.append(Deceased.name_last.contains(v))
-            
+
             conditions.append(or_(*v_conds))
 
         if not conditions:
@@ -549,7 +555,7 @@ def update_deceased(deceased_id: int, **kwargs) -> bool:
                 d.date_of_birth = val
             else:
                 d.date_of_birth = parse_all_flexible_date(val)
-        
+
         if kwargs.get("dod"):
             val = kwargs["dod"]
             if isinstance(val, (datetime.date, datetime.datetime)):
@@ -558,7 +564,13 @@ def update_deceased(deceased_id: int, **kwargs) -> bool:
                 d.date_of_death = parse_all_flexible_date(val)
 
         # ★修正: 住所関連のキーが1つでも存在すれば更新処理に入る
-        address_keys = ["last_pref", "last_city", "last_street", "last_building", "last_zip_code"]
+        address_keys = [
+            "last_pref",
+            "last_city",
+            "last_street",
+            "last_building",
+            "last_zip_code",
+        ]
         if any(k in kwargs for k in address_keys):
             if d.last_address_id:
                 addr = session.query(Address).get(d.last_address_id)
@@ -596,7 +608,7 @@ def add_heir(deceased_id: int, name: str, rel: str, **kwargs) -> int:
         parts = name.replace("　", " ").split(" ", 1)
         lname = parts[0]
         fname = parts[1] if len(parts) > 1 else ""
-        
+
         # 日付変換
         dob_val = kwargs.get("dob")
         if dob_val and not isinstance(dob_val, (datetime.date, datetime.datetime)):
@@ -612,7 +624,7 @@ def add_heir(deceased_id: int, name: str, rel: str, **kwargs) -> int:
             is_contracting_party=kwargs.get("is_contracting_party", False),
             occupation=kwargs.get("occupation"),
             hometown=kwargs.get("hometown"),
-            date_of_birth=dob_val
+            date_of_birth=dob_val,
         )
         session.add(new_heir)
         session.flush()
@@ -620,25 +632,25 @@ def add_heir(deceased_id: int, name: str, rel: str, **kwargs) -> int:
         # 住所登録
         street = kwargs.get("street", "")
         pref = kwargs.get("pref", "")
-        
+
         if street or pref or kwargs.get("city") or kwargs.get("building"):
             zip_val = kwargs.get("zip_code", "")
-            
+
             new_addr = Address(
                 zip_code=zip_val,
                 prefecture=pref,
                 city_ward_town=kwargs.get("city", ""),
                 street_address=street,
-                building_name=kwargs.get("building", "")
+                building_name=kwargs.get("building", ""),
             )
             session.add(new_addr)
             session.flush()
-            
-            session.add(H_AddressHistory(
-                heir_id=new_heir.id,
-                address_id=new_addr.id,
-                is_current_address=True
-            ))
+
+            session.add(
+                H_AddressHistory(
+                    heir_id=new_heir.id, address_id=new_addr.id, is_current_address=True
+                )
+            )
 
         # 連絡先
         if "phone_contacts" in kwargs:
@@ -684,7 +696,7 @@ def update_heir(heir_id: int, name: str, rel: str, **kwargs) -> bool:
                 heir.date_of_birth = val
             else:
                 heir.date_of_birth = parse_all_flexible_date(val)
-            
+
         if "occupation" in kwargs:
             heir.occupation = kwargs["occupation"]
         if "hometown" in kwargs:
@@ -729,7 +741,7 @@ def update_heir(heir_id: int, name: str, rel: str, **kwargs) -> bool:
             session.query(H_ContactLink).filter(
                 H_ContactLink.heir_id == heir_id
             ).delete()
-            
+
             if "phone_contacts" in kwargs:
                 for c_data in kwargs["phone_contacts"]:
                     val = c_data.get("value")
@@ -738,7 +750,7 @@ def update_heir(heir_id: int, name: str, rel: str, **kwargs) -> bool:
                         session.add(nc)
                         session.flush()
                         session.add(H_ContactLink(heir_id=heir.id, contact_id=nc.id))
-            
+
             if "email_contacts" in kwargs:
                 for c_data in kwargs["email_contacts"]:
                     val = c_data.get("value")
@@ -770,29 +782,36 @@ def delete_heir(heir_id: int) -> bool:
     finally:
         session.close()
 
-def sync_heir_list(deceased_id: int, heir_data_list: List[Dict[str, Any]]) -> Dict[str, int]:
+
+def sync_heir_list(
+    deceased_id: int, heir_data_list: List[Dict[str, Any]]
+) -> Dict[str, int]:
     session = get_db_session()
     result = {"added": 0, "updated": 0, "deleted": 0}
-    
+
     try:
-        existing_heirs = session.query(Heir).filter(Heir.deceased_id == deceased_id).all()
+        existing_heirs = (
+            session.query(Heir).filter(Heir.deceased_id == deceased_id).all()
+        )
         existing_ids = {h.id for h in existing_heirs}
-        
+
         incoming_ids = set()
-        
+
         for data in heir_data_list:
             h_id = data.get("id")
-            
+
             full_name = data.get("name", "").strip().replace("　", " ")
             parts = full_name.split(" ", 1)
             lname = parts[0]
             fname = parts[1] if len(parts) > 1 else ""
             rel = data.get("relationship", "")
             role_flg = True if data.get("role") == "契約者" else False
-            
+
             dob = data.get("dob")
-            if hasattr(dob, 'date'): dob = dob.date()
-            if pd.isnull(dob): dob = None
+            if hasattr(dob, "date"):
+                dob = dob.date()
+            if pd.isnull(dob):
+                dob = None
 
             if h_id and h_id in existing_ids:
                 incoming_ids.add(h_id)
@@ -804,23 +823,26 @@ def sync_heir_list(deceased_id: int, heir_data_list: List[Dict[str, Any]]) -> Di
                 target.is_contracting_party = role_flg
                 result["updated"] += 1
             else:
-                if not lname: continue
+                if not lname:
+                    continue
                 new_h = Heir(
                     deceased_id=deceased_id,
                     name_last=lname,
                     name_first=fname,
                     relationship_type=rel,
                     date_of_birth=dob,
-                    is_contracting_party=role_flg
+                    is_contracting_party=role_flg,
                 )
                 session.add(new_h)
                 result["added"] += 1
-        
+
         ids_to_delete = existing_ids - incoming_ids
         if ids_to_delete:
-            session.query(Heir).filter(Heir.id.in_(ids_to_delete)).delete(synchronize_session=False)
+            session.query(Heir).filter(Heir.id.in_(ids_to_delete)).delete(
+                synchronize_session=False
+            )
             result["deleted"] = len(ids_to_delete)
-            
+
         session.commit()
         return result
 
@@ -832,41 +854,47 @@ def sync_heir_list(deceased_id: int, heir_data_list: List[Dict[str, Any]]) -> Di
         session.close()
 
 
+@retry_with_backoff(
+    max_retries=3,
+    backoff_factor=2.0,
+    exceptions=(requests.RequestException, requests.Timeout),
+)
 def search_zip_by_address_api(address: str) -> Optional[str]:
     if not address:
         return None
-    try:
-        res = requests.get(
-            "http://geoapi.heartrails.com/api/json",
-            params={"method": "suggest", "matching": "like", "keyword": address},
-            timeout=5,
-        )
-        data = res.json()
-        if data and data.get("response") and data["response"].get("location"):
-            p = data["response"]["location"][0].get("postal")
-            if p:
-                return f"{p[:3]}-{p[3:]}"
-        return None
-    except Exception:
-        return None
+
+    res = requests.get(
+        "http://geoapi.heartrails.com/api/json",
+        params={"method": "suggest", "matching": "like", "keyword": address},
+        timeout=5,
+    )
+    data = res.json()
+    if data and data.get("response") and data["response"].get("location"):
+        p = data["response"]["location"][0].get("postal")
+        if p:
+            return f"{p[:3]}-{p[3:]}"
+    return None
 
 
+@retry_with_backoff(
+    max_retries=3,
+    backoff_factor=2.0,
+    exceptions=(requests.RequestException, requests.Timeout),
+)
 def search_address_by_zip_api(zip_code: str) -> Optional[dict]:
     if not zip_code:
         return None
-    try:
-        res = requests.get(
-            f"https://zipcloud.ibsnet.co.jp/api/search?zipcode={zip_code.replace('-', '')}",
-            timeout=5,
-        )
-        data = res.json()
-        if data and data.get("results"):
-            r = data["results"][0]
-            return {
-                "prefecture": r["address1"],
-                "city_ward_town": r["address2"],
-                "street_address": r["address3"],
-            }
-        return {}
-    except:
-        return None
+
+    res = requests.get(
+        f"https://zipcloud.ibsnet.co.jp/api/search?zipcode={zip_code.replace('-', '')}",
+        timeout=5,
+    )
+    data = res.json()
+    if data and data.get("results"):
+        r = data["results"][0]
+        return {
+            "prefecture": r["address1"],
+            "city_ward_town": r["address2"],
+            "street_address": r["address3"],
+        }
+    return {}

@@ -166,7 +166,6 @@ class ToukiService:
             cleaned_name = cleaned_name.replace(t, "")
         return cleaned_name.replace(" ", "").replace("　", "").strip()
 
-<<<<<<< HEAD
     def _process_address_efficiently(
         self, address_string: str
     ) -> Tuple[Optional[str], Optional[str], Optional[str]]:
@@ -193,67 +192,6 @@ class ToukiService:
         town_name = self._to_zenkaku(town_name_raw.strip())
         block = self._to_zenkaku(block_raw.strip())
         return prefectures, town_name, block
-=======
-    def _parse_address_for_touki(self, address_string: str) -> Tuple[Optional[str], Optional[str], Optional[str]]:
-        """
-        住所文字列から「都道府県」「所在欄」「地番・家屋番号欄」を分離する。
-        例: "福岡県福岡市南区長丘5丁目13番1号" -> ("福岡県", "福岡市南区長丘５丁目", "１３－１")
-        例: "東京都渋谷区神南1丁目2番地3" -> ("東京都", "渋谷区神南１丁目", "２－３")
-        例: "千葉県船橋市本町2-1-1" -> ("千葉県", "船橋市本町", "２－１－１")
-        例: "北海道札幌市中央区北1条西2丁目" -> ("北海道", "札幌市中央区北１条西２丁目", None)
-        """
-        if not address_string:
-            return None, None, None
-
-        # 全角化と正規化
-        normalized_address = self._normalize_touki_input(str(address_string))
-        zenkaku_address = self._to_zenkaku(normalized_address)
-
-        # 1. 都道府県の分離
-        prefecture = None
-        address_without_pref = zenkaku_address
-        pref_pattern = r'^(東京都|北海道|(?:京都|大阪)府|.{2,3}県)'
-        pref_match = re.match(pref_pattern, zenkaku_address)
-        if pref_match:
-            prefecture = pref_match.group(1)
-            address_without_pref = zenkaku_address[len(prefecture):]
-
-        # 2. 「所在」と「地番」の分離ロジック
-        location = address_without_pref
-        block_number_raw = ""
-
-        # 「丁目」で終わる場合、それが所在の末尾。それ以降を地番とする。
-        chome_match = re.match(r'^(.*丁目)(.*)$', address_without_pref)
-        if chome_match:
-            location = chome_match.group(1)
-            block_number_raw = chome_match.group(2)
-        else:
-            # 「丁目」がない場合、最初の数字ブロックの手前で分割する
-            match = re.search(r'[０-９]', address_without_pref)
-            if match:
-                first_digit_index = match.start()
-                if first_digit_index > 0:
-                    location = address_without_pref[:first_digit_index]
-                    block_number_raw = address_without_pref[first_digit_index:]
-                else:
-                    # 先頭が数字の場合、所在が空になるがおそらく発生しない
-                    location = ""
-                    block_number_raw = address_without_pref
-            else:
-                # 数字が全くない場合は、すべて所在
-                location = address_without_pref
-                block_number_raw = ""
-
-        # 3. 地番・家屋番号のフォーマット
-        formatted_block = None
-        if block_number_raw.strip():
-            # 「番地」「番」を「－」に、「号」を削除
-            temp_block = block_number_raw.replace("番地", "－").replace("番", "－").replace("号", "").replace("の", "－")
-            # 連続するハイフンや先頭・末尾のハイフンを処理
-            formatted_block = re.sub(r'－+', '－', temp_block).strip('－')
-
-        return prefecture, location.strip(), formatted_block if formatted_block else None
->>>>>>> feature/roo
 
     def _extract_municipality(self, address_without_pref: str) -> str:
         """
@@ -339,14 +277,9 @@ class ToukiService:
             self._wait_and_click(driver, By.XPATH, "//a[contains(@href, 'FUDOSAN')]")
 
             # 住所解析
-<<<<<<< HEAD
             pref, town, blk = self._process_address_efficiently(address)
             if not pref:
                 raise ValueError(f"住所の解析に失敗しました: {address}")
-=======
-            prefecture, location, block_number = self._parse_address_for_touki(address)
-            if not location: return f"❌ 住所の解析に失敗しました: {address}"
->>>>>>> feature/roo
 
             WebDriverWait(driver, 10).until(
                 EC.presence_of_element_located((By.ID, "fuShozaiTypeTOCHI"))
@@ -357,35 +290,19 @@ class ToukiService:
                 driver.find_element(By.ID, "fuShozaiTypeTOCHI").click()
 
             # 都道府県
-<<<<<<< HEAD
             Select(
                 driver.find_element(By.NAME, "todofukenShozai")
             ).select_by_visible_text(pref)
-=======
-            Select(driver.find_element(By.NAME, "todofukenShozai")).select_by_visible_text(prefecture)
->>>>>>> feature/roo
             time.sleep(0.5)
 
             # 直接入力タブ
             driver.find_element(By.NAME, "fuShozaiChokusetuNyuryoku").click()
-<<<<<<< HEAD
             WebDriverWait(driver, 5).until(
                 EC.visibility_of_element_located((By.NAME, "chibanKuiki"))
             )
 
             self._wait_and_send_keys(driver, By.NAME, "chibanKuiki", town)
             self._wait_and_send_keys(driver, By.NAME, "chibanKaoku", blk)
-=======
-            WebDriverWait(driver, 5).until(EC.visibility_of_element_located((By.NAME, "chibanKuiki")))
-            
-            # 所在欄の入力
-            self._wait_and_send_keys(driver, By.NAME, 'chibanKuiki', location)
-            # 地番・家屋番号欄の入力
-            if block_number:
-                self._wait_and_send_keys(driver, By.NAME, 'chibanKaoku', block_number)
-            else:
-                logger.info(f"地番・家屋番号が検出されなかったため、入力はスキップします。住所: {address}")
->>>>>>> feature/roo
 
             try:
                 kyotan = driver.find_element(By.ID, "fuKyodoTanpoYES")

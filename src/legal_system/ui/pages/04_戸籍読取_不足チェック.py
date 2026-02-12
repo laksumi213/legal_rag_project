@@ -79,6 +79,7 @@ def main():
             return
 
     person_full_name = f"{target_person.name_last}{target_person.name_first}"
+    case_mode = "inheritance" if is_inheritance else "will"
 
     # 基本情報表示
     with st.container(border=True):
@@ -129,6 +130,7 @@ def main():
                 with st.status(f"🚀 {len(files_to_process)}件を一括解析中...", expanded=True) as status:
                     for i, file_obj in enumerate(files_to_process):
                         st.write(f"📄 [{i+1}/{len(files_to_process)}] 解析中: {file_obj.name}")
+                        fid = f"{file_obj.name}_{file_obj.size}"
                         try:
                             file_bytes = file_obj.getvalue()
                             # AI解析実行 (ヒント付き)
@@ -140,18 +142,60 @@ def main():
                             )
                             if "error" in result:
                                 st.error(f"❌ {file_obj.name}: {result['error']}")
+                                st.session_state["processed_koseki_ids"].add(fid)
                             else:
+                                rows = service.extract_people_table_rows(
+                                    analysis_result=result,
+                                    base_person_name=person_full_name,
+                                    case_mode=case_mode,
+                                )
+                                if rows:
+                                    ng_words = {
+                                        "長男", "二男", "三男", "四男", "五男",
+                                        "長女", "二女", "三女", "四女", "五女",
+                                        "父", "母", "妻", "夫", "本人",
+                                        "養子", "養女", "筆頭者", "戸主",
+                                    }
+                                    invalid_rows = []
+                                    valid_rows = []
+                                    for r in rows:
+                                        nm = str(r.get("name", "") or "").strip().replace("　", " ")
+                                        nm_norm = nm.replace(" ", "").strip()
+                                        if nm_norm in ng_words:
+                                            invalid_rows.append({**r, "name": nm})
+                                        else:
+                                            valid_rows.append(r)
+
+                                    if invalid_rows:
+                                        st.warning(
+                                            f"⚠️ AI抽出結果に続柄語が氏名として混入したため除外しました（{len(invalid_rows)}件）: "
+                                            + "、".join([str(x.get("name", "")) for x in invalid_rows])
+                                        )
+
+                                    df_people = pd.DataFrame([
+                                        {
+                                            "氏名": r.get("name", ""),
+                                            "続柄": r.get("rel", ""),
+                                            "生年月日": r.get("birth_date", ""),
+                                            "相続人判定（○/×）": "○" if bool(r.get("is_heir")) else "×",
+                                        }
+                                        for r in valid_rows
+                                    ])
+                                    with st.expander("👤 抽出された人物一覧", expanded=True):
+                                        st.dataframe(df_people, use_container_width=True, hide_index=True)
+
                                 status_msg = service.register_koseki_record(
                                     case.case_id, target_person.id, target_type, result
                                 )
                                 if status_msg.startswith("Success"):
                                     st.write(f"✅ {file_obj.name}: 登録完了")
-                                    fid = f"{file_obj.name}_{file_obj.size}"
                                     st.session_state["processed_koseki_ids"].add(fid)
                                 else:
                                     st.error(f"❌ 保存失敗: {status_msg}")
+                                    st.session_state["processed_koseki_ids"].add(fid)
                         except Exception as e:
                             st.error(f"❌ システムエラー: {e}")
+                            st.session_state["processed_koseki_ids"].add(fid)
                     status.update(label="🎉 完了しました！", state="complete", expanded=False)
                 time.sleep(1.5)
                 st.rerun()

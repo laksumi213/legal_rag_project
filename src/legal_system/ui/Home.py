@@ -163,7 +163,7 @@ def render_notifications(session):
             st.markdown("##### 🟢 監視プロセス")
             status_text = "稼働中" if state["watcher_started"] else "停止中"
             st.caption(f"状態: **{status_text}**")
-            if st.button("🚀 監視を再起動", use_container_width=True):
+            if st.button("🚀 監視を再起動", width="stretch"):
                 success, msg = launch_watcher_process()
                 if success:
                     state["watcher_started"] = True
@@ -247,14 +247,15 @@ def main():
         return
 
     # データロード
-    current_case = (
-        session.query(Case)
-        .options(
+    # 2026-02-10: SQLAlchemy 2.0形式に更新
+    current_case = session.get(
+        Case,
+        target_case_id,
+        options=[
             joinedload(Case.deceased_ref).joinedload(Deceased.heirs),
             joinedload(Case.manager),
-            joinedload(Case.operator),
-        )
-        .get(target_case_id)
+            joinedload(Case.operator)
+        ]
     )
 
     if not current_case:

@@ -14,7 +14,9 @@ from services.deceased_service import get_next_case_number_service
 
 logger = logging.getLogger(__name__)
 
-# ... (ヘルパー関数群 katakana_to_hiragana, format_name_full_width 等は変更なし) ...
+# ---------------------------------------------------------
+# ヘルパー関数
+# ---------------------------------------------------------
 def katakana_to_hiragana(text: str) -> str:
     if not text: return ""
     result = ""
@@ -43,9 +45,62 @@ def get_raw_value(data: Dict[str, Any], keys: List[str]) -> Optional[str]:
             return val
     return None
 
-# ... (get_kintone_data_as_dict は変更なし) ...
+def _split_address_smart(address_full: str):
+    """
+    住所文字列を高度なルールベースで [都道府県, 市区町村, 番地, 建物名] に分割する。
+    API依存を排除し、正規表現で「市川市」などの特殊ケースにも対応。
+    """
+    if not address_full:
+        return "", "", "", ""
+        
+    # 1. 都道府県抽出
+    pref = ""
+    rest = address_full
+    match_pref = re.match(r"(.{2,3}[都道府県])(.+)", address_full)
+    if match_pref:
+        pref = match_pref.group(1)
+        rest = match_pref.group(2).strip()
+    
+    # 2. 市区町村抽出
+    city = ""
+    street = rest
+    
+    # 特殊な市名 ("市"を含む市) のパターン
+    special_cities = ["市川市", "市原市", "四日市市", "廿日市市", "野々市市"]
+    special_pat = f"^({'|'.join(special_cities)})(.*)"
+    
+    # 優先順位付きパターンマッチング
+    patterns = [
+        r'^(.+?市.+?区)(.*)',   # 政令指定都市の区 (例: 千葉市中央区)
+        r'^(.+?郡.+?[町村])(.*)', # 郡 (例: 印旛郡酒々井町)
+        special_pat,            # 特殊市名 (例: 市川市)
+        r'^(.+?市)(.*)',        # 一般市 (例: 千葉市)
+        r'^(.+?区)(.*)',        # 東京23区 (例: 千代田区)
+        r'^(.+?[町村])(.*)'     # 独立町村 (例: 大島町)
+    ]
+    
+    for pat in patterns:
+        m = re.match(pat, street)
+        if m:
+            city = m.group(1)
+            street = m.group(2).strip()
+            break
+            
+    # 3. 番地と建物名の分離
+    # 全角/半角スペースで区切られている場合、後半を建物名とする
+    building = ""
+    parts = re.split(r'[ 　]+', street, 1)
+    if len(parts) > 1:
+        street = parts[0]
+        building = parts[1]
+        
+    return pref, city, street, building
+
+# ---------------------------------------------------------
+# 公開API
+# ---------------------------------------------------------
 def get_kintone_data_as_dict(case_id: int) -> Optional[Dict[str, Any]]:
-    # 省略（既存コードのまま）
+    """DB上のCaseデータをKintone互換の辞書形式で取得する"""
     db = DatabaseManager()
     session = db._get_session()
     try:
@@ -124,7 +179,10 @@ def import_kintone_json(
         # 1. データの正規化
         k_rec_id_raw = get_value_from_keys(json_data, ["$id", "record_id", "レコード番号"])
         k_record_id = int(k_rec_id_raw) if k_rec_id_raw and k_rec_id_raw.isdigit() else None
-        case_num = get_value_from_keys(json_data, ["顧客コード", "顧客コード_2", "case_number", "案件番号"])
+        
+        # ★修正: 顧客コード_2 を最優先で取得
+        case_num = get_value_from_keys(json_data, ["顧客コード_2", "顧客コード", "case_number", "案件番号"])
+        
         client_name_raw = get_value_from_keys(json_data, ["顧客名", "client_name", "氏名"]).replace("　", " ")
         client_kana_raw = get_value_from_keys(json_data, ["顧客名(ふりがな)", "顧客名（ふりがな）", "client_name_kana", "フリガナ"]).replace("　", " ")
         deceased_name_raw = get_value_from_keys(json_data, ["被相続人名", "deceased_name", "被相続人"]).replace("　", " ")
@@ -185,24 +243,19 @@ def import_kintone_json(
         if start_date: deceased.date_of_death = start_date
         session.flush()
 
-        # =======================================================
-        # 5. 契約者 (Heir) の更新 (★ここを修正)
-        # =======================================================
+        # 5. 契約者 (Heir) の更新
         contractor = (
             session.query(Heir)
             .filter(Heir.deceased_id == deceased.id, Heir.is_contracting_party == True)
             .first()
         )
 
-        # 契約者フラグが立っている人がいない場合、
-        # いきなり新規作成するのではなく、既存の相続人がいればその人を契約者に昇格させる
         if not contractor:
             existing_heir = session.query(Heir).filter(Heir.deceased_id == deceased.id).first()
             if existing_heir:
                 contractor = existing_heir
                 contractor.is_contracting_party = True # 昇格
             else:
-                # 誰もいない場合のみ新規作成
                 contractor = Heir(
                     deceased_id=deceased.id,
                     is_contracting_party=True,
@@ -210,7 +263,6 @@ def import_kintone_json(
                 )
                 session.add(contractor)
 
-        # 氏名更新
         if client_name_raw:
             c_parts = client_name_raw.split(" ", 1)
             contractor.name_last = c_parts[0]
@@ -220,26 +272,34 @@ def import_kintone_json(
             contractor.name_last_kana = c_k_parts[0]
             contractor.name_first_kana = c_k_parts[1] if len(c_k_parts) > 1 else ""
 
-        # 6. 住所 (Heirに紐づくAddress)
+        # 6. 住所 (Heirに紐づくAddress) ★改良版
         zip_code = get_value_from_keys(json_data, ["郵便番号", "zip_code"])
         address_full = get_value_from_keys(json_data, ["住所", "address"])
 
         if zip_code or address_full:
-            addr_link = session.query(H_AddressHistory).filter(H_AddressHistory.heir_id == contractor.id, H_AddressHistory.is_current_address == True).first()
-            pref = ""; street = address_full
-            match = re.match(r"(.{2,3}[都道府県])(.+)", address_full)
-            if match:
-                pref = match.group(1); street = match.group(2)
+            addr_link = session.query(H_AddressHistory).filter(
+                H_AddressHistory.heir_id == contractor.id, 
+                H_AddressHistory.is_current_address == True
+            ).first()
+            
+            # 高度な分割ロジックを使用
+            pref, city, street, building = _split_address_smart(address_full)
 
             if addr_link:
                 addr = session.query(Address).get(addr_link.address_id)
                 addr.zip_code = zip_code
                 addr.prefecture = pref
-                addr.city_ward_town = "" 
+                addr.city_ward_town = city
                 addr.street_address = street
-                addr.building_name = "" 
+                addr.building_name = building
             else:
-                new_addr = Address(zip_code=zip_code, prefecture=pref, street_address=street)
+                new_addr = Address(
+                    zip_code=zip_code, 
+                    prefecture=pref, 
+                    city_ward_town=city, 
+                    street_address=street,
+                    building_name=building
+                )
                 session.add(new_addr)
                 session.flush()
                 session.add(H_AddressHistory(heir_id=contractor.id, address_id=new_addr.id, is_current_address=True))

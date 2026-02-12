@@ -67,3 +67,9 @@ def convert_seireki_to_wareki(dt: datetime.date) -> str:
     
     nen = "元" if n == 1 else str(n)
     return f"{gengo}{nen}年{dt.month}月{dt.day}日"
+
+def json_serial(obj):
+    """JSON serializer for objects not serializable by default json code"""
+    if isinstance(obj, (datetime.datetime, datetime.date)):
+        return obj.isoformat()
+    raise TypeError (f"Type {type(obj)} not serializable")

@@ -1,57 +1,59 @@
-# 📂 遺言・遺産整理業務支援システム 要件定義書 (Ver 1.0)
+# ==========================================
+# Python dependencies (generated/maintained for this repo)
+#
+# - This project uses rye (see requirements.lock). If you use rye:
+#   - rye sync
+#
+# - If you use pip:
+#   - python -m pip install -r requirements.txt
+# ==========================================
 
-## 1. プロジェクト概要
-* **目的:** 遺言書作成および遺産整理業務の効率化。
-* **コアコンセプト:** 「個人情報の完全オフライン管理」と「生成AIによる業務支援」のハイブリッド構成。
-* **利用規模:** 本社20名で開始、将来的には全拠点100名以上（年間1000件規模）。
+-e .
 
-## 2. 技術スタック選定
-以下のライブラリ・ツールを標準とする。
+streamlit==1.52.2
+streamlit-autorefresh==1.0.1
+streamlit-image-coordinates==0.4.0
+streamlit-drawable-canvas==0.9.3
+streamlit-keyup==0.3.0
 
-| カテゴリ | 技術名 | 選定理由 |
-| :--- | :--- | :--- |
-| **言語** | **Python 3.10+** | AI/データ処理のエコシステムが最強であるため。 |
-| **アプリFW** | **Streamlit** | 社内Webアプリ化が高速。各PCへのインストール不要。 |
-| **DB** | **PostgreSQL** | 100人規模の同時接続・排他制御に耐える堅牢性（無料）。 |
-| **ORM** | **SQLAlchemy** | DB操作の抽象化。保守性向上のため必須。 |
-| **OCR** | **PaddleOCR** | 金融機関書類（日本語・罫線あり）の認識精度が高いため。 |
-| **生成AI** | **Google Gemini API** | マニュアル検索、文書案作成用。(google-generativeai) |
-| **PDF処理** | **PyMuPDF (fitz)** | PDFの読み込み、加工用。 |
+sqlalchemy==2.0.45
+psycopg2-binary==2.9.11
 
-## 3. システムアーキテクチャ
-物理的なデータ保管場所と、外部AIへのデータフローを厳密に分離する。
+pandas==2.3.3
+numpy==1.26.4
+openpyxl==3.1.5
 
-* **サーバー構成:** オンプレミス（社内）サーバー1台にDockerコンテナ等でDBとアプリをホスト。
-* **クライアント:** 社員PCのブラウザからイントラネット経由でアクセス。
-* **ネットワーク分離:**
-    * **Zone A (Secure/Local):** PostgreSQL, OCR処理, 個人情報（氏名, 口座番号）の保存。インターネットへは出さない。
-    * **Zone B (Cloud/AI):** Gemini API。ここには「匿名化されたテキスト」と「マニュアル」のみ送信する。
+langchain==1.2.7
+langchain-core==1.2.7
+langchain-community==0.4.1
+langchain-text-splitters==1.1.0
+langchain-google-genai==4.2.0
+langchain-google-vertexai==3.2.1
+langchain-huggingface==1.2.0
+langchain-chroma==1.1.0
+chromadb==1.4.0
 
-## 4. 機能要件
+google-genai==1.59.0
+google-generativeai==0.8.6
+google-cloud-aiplatform==1.133.0
+google-auth-oauthlib==1.2.4
+google-api-python-client==2.188.0
 
-### A. 顧客・案件管理機能
-* 顧客情報（被相続人、相続人）のCRUD処理。
-* PostgreSQLを使用し、排他制御を行う。
+pdf2image==1.17.0
+pillow==12.0.0
+pypdf==6.5.0
+pymupdf==1.26.7
 
-### B. 帳票OCR取り込み機能
-* Streamlit画面から画像/PDFをアップロード。
-* PaddleOCRでテキスト化。
-* OCR結果と元画像を並べて表示し、人間が修正してDB保存するUI。
+pytesseract==0.3.13
+python-dotenv==1.2.1
 
-### C. 生成AI支援機能（RAG/Drafting）
-* **マスキング処理:** 相談内容をGeminiに投げる前に、正規表現等で個人情報（氏名、住所、電話番号、口座番号）をプレースホルダ（例: `[NAME_A]`, `[BANK_ID]`）に置換するロジックを実装すること。
-* **マニュアル検索:** 社内規定や金融機関手続きマニュアルをベクトル化、またはコンテキストとして渡し、質問に回答させる。
+opencv-python==4.8.1.78
+opencv-python-headless==4.8.1.78
 
-### D. バックアップ機能
-* `pg_dump` を使用し、毎日深夜にDBのダンプファイルを作成。
-* 外部ストレージ（NAS等）への転送スクリプト。
-
-## 5. データベース設計指針（ER図イメージ）
-* **usersテーブル:** 社員アカウント管理（権限管理用）。
-* **customersテーブル:** 顧客基本情報。
-* **mattersテーブル:** 案件情報（遺言作成、遺産整理など）。
-* **documentsテーブル:** OCR読み取り結果、生成された文書データ。ファイルパス管理。
-
-## 6. セキュリティ・コンプライアンス規定
-* **原則:** 顧客のPII（個人特定情報）は、いかなる場合もGemini APIのエンドポイントへ送信してはならない。
-* **API設定:** Gemini API利用時は、学習データとして利用されない設定（Enterprise利用またはオプトアウト設定）を確認する。
+reportlab==4.4.7
+watchdog==6.0.0
+pyperclip==1.11.0
+python-docx==1.2.0
+selenium==4.40.0
+webdriver-manager==4.0.2
+pyzipper==0.3.6

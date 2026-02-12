@@ -531,6 +531,8 @@ class Coordinate(Base):
     label = Column(String, nullable=False, comment="項目名")
     x_point = Column(Float, nullable=False, comment="X座標")
     y_point = Column(Float, nullable=False, comment="Y座標")
+    width = Column(Float, nullable=True, comment="幅")
+    height = Column(Float, nullable=True, comment="高さ")
     page_number = Column(Integer, default=1, comment="ページ番号")
     font_size = Column(Integer, default=10, comment="フォントサイズ")
     color = Column(String, default="black", comment="文字色")

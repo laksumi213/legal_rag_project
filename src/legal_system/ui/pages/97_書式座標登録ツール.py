@@ -14,12 +14,10 @@ import streamlit as st
 # PDF・画像処理ライブラリ
 from pdf2image import convert_from_bytes
 from PIL import ImageDraw, ImageFont
-from pypdf import PdfReader, PdfWriter
-from reportlab.lib.colors import black, red
-from reportlab.pdfbase import pdfmetrics
-from reportlab.pdfbase.ttfonts import TTFont
-from reportlab.pdfgen import canvas
-from streamlit_image_coordinates import streamlit_image_coordinates
+from pypdf import PdfReader
+from legal_system.utils.pdf_utils import apply_coordinates_to_pdf
+# ReportLab関連のインポートはpdf_utilsに移動したため、ここでは削除
+from streamlit_drawable_canvas import st_canvas
 
 # ==========================================
 # 1. パス解決 & 初期設定
@@ -38,13 +36,9 @@ TEMPLATES_DIR = os.path.join(ROOT_DIR, "data", "templates")
 # ページ設定
 st.set_page_config(layout="wide", page_title="書式・座標管理", page_icon="🛠️")
 
-# フォント設定
+# フォント設定 (ImageFontで使うためFONT_PATHの定義は残す)
 FONT_PATH = os.path.join(ROOT_DIR, "data", "fonts", "ipaexg.ttf")
-try:
-    if os.path.exists(FONT_PATH):
-        pdfmetrics.registerFont(TTFont("IPAexG", FONT_PATH))
-except Exception:
-    pass
+# pdfmetrics.registerFont は pdf_utils.py に移動したため削除
 
 db = DatabaseManager()
 user_info = db.get_current_user_info()
@@ -127,7 +121,7 @@ PRESETS = {
 
     # --- その他 ---
     "----- 図形・記号・担当者 -----": {"label": "", "val": ""},
-    "四角形枠": {"label": "枠線", "val": "RECT:30x30"},
+    "四角形枠": {"label": "枠線", "val": "RECT:30x30", "width": 30.0, "height": 30.0, "size": 1.0},
     "数字「1」": {"label": "数字1", "val": "1", "size": 11.0},
     "チェック (✓)": {"label": "チェック", "val": "✓", "size": 14.0},
     "丸 (◯)": {"label": "丸", "val": "◯", "size": 14.0},
@@ -179,6 +173,10 @@ if "input_val" not in st.session_state:
     st.session_state["input_val"] = ""
 if "input_size" not in st.session_state:
     st.session_state["input_size"] = 11.0  # ★初期値11.0
+if "input_width" not in st.session_state:
+    st.session_state["input_width"] = 0.0
+if "input_height" not in st.session_state:
+    st.session_state["input_height"] = 0.0
 if "input_desc" not in st.session_state:
     st.session_state["input_desc"] = ""
 if "preset_sel" not in st.session_state:
@@ -219,6 +217,8 @@ def on_data_editor_change():
                 x=float(new_row.get("x", 100.0)),
                 y=float(new_row.get("y", 100.0)),
                 page_number=int(new_row.get("page", st.session_state["current_page"])),
+                width=float(new_row.get("width", 0.0)),
+                height=float(new_row.get("height", 0.0)),
                 description="手動追加",
                 font_size=float(new_row.get("font_size", 11.0)),
                 color=new_row.get("color", "black"),
@@ -236,6 +236,10 @@ def on_data_editor_change():
                 target_id = id_list[idx]
                 if "font_size" in row_changes:
                     row_changes["font_size"] = float(row_changes["font_size"])
+                if "width" in row_changes:
+                    row_changes["width"] = float(row_changes["width"])
+                if "height" in row_changes:
+                    row_changes["height"] = float(row_changes["height"])
                 db.update_coordinate_direct(int(target_id), row_changes)
         st.toast("✅ 変更を保存しました")
 
@@ -259,44 +263,51 @@ def on_data_editor_change():
 def render_coordinate_editor():
     # サイドバー: ファイル選択（新規アップロードは廃止）
     st.sidebar.header("📂 対象ファイル")
-    all_files = db.get_all_files()
+    all_files = db.get_template_files()
+    
     if not all_files:
-        st.sidebar.warning("登録済みのファイルがありません。")
-        st.info(
-            "👈 サイドバーで「📥 雛形ファイル登録」を選んでファイルを登録してください。"
-        )
+        st.sidebar.warning("登録済みの雛形ファイルがありません。")
         return
 
-    file_options = {f"{f['filename']}": f for f in all_files}
-
-    current_fname = st.session_state.get("target_file_name")
+    file_options = [f["filename"] for f in all_files]
+    
+    # --- ファイル選択と読込ロジック (再修正) ---
+    
+    # 前回選択されたファイル名を取得
+    last_selected = st.session_state.get("target_file_name")
+    
+    # ファイルリストからインデックスを決定
     idx = 0
-    if current_fname:
-        keys = list(file_options.keys())
-        for i, k in enumerate(keys):
-            if current_fname in k:
-                idx = i
-                break
+    if last_selected and last_selected in file_options:
+        idx = file_options.index(last_selected)
 
-    selected_label = st.sidebar.selectbox(
-        "編集するファイルを選択", list(file_options.keys()), index=idx
+    # selectboxを表示
+    selected_filename = st.sidebar.selectbox(
+        "編集するファイルを選択",
+        file_options,
+        index=idx,
+        key="sb_template_file" # キーを変更して衝突を避ける
     )
 
-    if selected_label:
-        selected_data = file_options[selected_label]
-        fname = selected_data["filename"]
+    # 選択が変更されたか、まだファイルが読み込まれていないかチェック
+    if selected_filename != last_selected or st.session_state.get("target_file_bytes") is None:
+        st.session_state["target_file_name"] = selected_filename
+        st.session_state["current_page"] = 1
 
-        if st.session_state["target_file_name"] != fname:
-            file_path = os.path.join(TEMPLATES_DIR, fname)
-            if os.path.exists(file_path):
-                with open(file_path, "rb") as f:
-                    st.session_state["target_file_bytes"] = f.read()
-                st.session_state["target_file_name"] = fname
-                st.session_state["current_page"] = 1
-                st.rerun()
+        file_path = os.path.join(TEMPLATES_DIR, selected_filename)
+        if os.path.exists(file_path):
+            with open(file_path, "rb") as f:
+                st.session_state["target_file_bytes"] = f.read()
+            # 状態を更新したので、一度だけ再実行してUI全体を正しく描画させる
+            st.rerun()
+        else:
+            st.error(f"ファイルが見つかりません: {file_path}")
+            # ファイルが見つからない場合はバイトデータをクリア
+            st.session_state["target_file_bytes"] = None
 
-    target_file_bytes = st.session_state["target_file_bytes"]
+    target_file_bytes = st.session_state.get("target_file_bytes")
     if not target_file_bytes:
+        st.warning("対象ファイルがロードされていません。ファイルを選択してください。")
         return
 
     # PDF解析
@@ -312,6 +323,12 @@ def render_coordinate_editor():
         p_idx = st.session_state["current_page"] - 1
         if p_idx >= total_pages:
             p_idx = 0
+
+        # Current page image as bytes for st_canvas
+        img_byte_arr = BytesIO()
+        images[p_idx].save(img_byte_arr, format="PNG")
+        st.session_state["current_page_image_bytes"] = img_byte_arr.getvalue()
+
     except Exception as e:
         st.error(f"解析エラー: {e}")
         return
@@ -396,6 +413,10 @@ def render_coordinate_editor():
                 st.session_state["input_val"] = p["val"]
                 if "size" in p:
                     st.session_state["input_size"] = float(p["size"])
+                if "width" in p:
+                    st.session_state["input_width"] = float(p["width"])
+                if "height" in p:
+                    st.session_state["input_height"] = float(p["height"])
 
         st.selectbox(
             "⚡️ プリセット",
@@ -412,6 +433,11 @@ def render_coordinate_editor():
             "サイズ", 0.5, 100.0, key="input_size", step=0.5, format="%.1f"
         )
         color_in = c4.selectbox("色", ["black", "red"], key="input_color")
+
+        c5, c6 = st.columns(2)
+        width_in = c5.number_input("幅", 0.0, 1000.0, key="input_width", step=1.0, format="%.1f")
+        height_in = c6.number_input("高さ", 0.0, 1000.0, key="input_height", step=1.0, format="%.1f")
+
         desc_in = st.text_input("備考", key="input_desc")
 
         st.write(
@@ -429,6 +455,8 @@ def render_coordinate_editor():
                     label=label_in,
                     x=st.session_state["last_x"],
                     y=st.session_state["last_y"],
+                    width=float(width_in),
+                    height=float(height_in),
                     page_number=st.session_state["current_page"],
                     description=desc_in,
                     font_size=float(size_in),
@@ -448,28 +476,23 @@ def render_coordinate_editor():
         draw_bg = display_image.copy()
         draw = ImageDraw.Draw(draw_bg)
 
-        def draw_mark(raw_x, raw_y, val, sz, clr):
+        def draw_mark(raw_x, raw_y, val, sz, clr, w=None, h=None):
             dx = raw_x * zoom_rate
             dy = raw_y * zoom_rate
             vsz = int(float(sz) * preview_scale * zoom_rate)
             c = (255, 0, 0) if clr == "red" else (0, 0, 0)
-            if not val:
-                return
-            if str(val).startswith("RECT:"):
-                try:
-                    dims = val.replace("RECT:", "").split("x")
-                    w_pt, h_pt = float(dims[0]), float(dims[1])
-                    w_px = w_pt * preview_scale * zoom_rate
-                    h_px = h_pt * preview_scale * zoom_rate
-                    lw = max(1, int(vsz / 10))
-                    draw.rectangle([dx, dy, dx + w_px, dy + h_px], outline=c, width=lw)
-                except:
-                    pass
-            else:
+
+            if str(val).startswith("RECT:") and w is not None and h is not None:
+                w_px = w * preview_scale * zoom_rate
+                h_px = h * preview_scale * zoom_rate
+                lw = max(1, int(vsz / 10))
+                draw.rectangle([dx, dy, dx + w_px, dy + h_px], outline=c, width=lw)
+            elif val:
                 try:
                     font = ImageFont.truetype(FONT_PATH, max(8, vsz))
                     draw.text((dx, dy), str(val), font=font, fill=c)
-                except:
+                except Exception as e:
+                    print(f"Error drawing text: {e}")
                     pass
 
         if st.session_state["input_val"]:
@@ -479,36 +502,63 @@ def render_coordinate_editor():
                 st.session_state["input_val"],
                 size_in,
                 color_in,
+                width_in,
+                height_in,
             )
 
         if not df_existing.empty:
             for _, c in df_existing.iterrows():
                 if c["page"] == st.session_state["current_page"]:
-                    draw_mark(c["x"], c["y"], c["value"], c["font_size"], c["color"])
+                    draw_mark(c["x"], c["y"], c["value"], c["font_size"], c["color"], c["width"], c["height"])
 
         # width指定でズレ防止
-        value = streamlit_image_coordinates(
-            draw_bg,
-            width=display_image.width,
-            key=f"c_{st.session_state['current_page']}_{zoom_rate}",
+        canvas_result = st_canvas(
+            fill_color="rgba(255, 165, 0, 0.3)",  # Orange with 30% opacity
+            stroke_width=2,
+            stroke_color="#FF0000",  # Red
+            background_image=original_image, # Use original_image for canvas background
+            update_streamlit=True,
+            height=original_image.height,
+            width=original_image.width,
+            drawing_mode="rect",
+            point_display_mode="point",
+            key=f"canvas_{st.session_state['current_page']}_{zoom_rate}",
         )
 
-        if value:
-            ox = value["x"] / zoom_rate
-            oy = value["y"] / zoom_rate
-            if (
-                abs(ox - st.session_state["last_x"]) > 1.0
-                or abs(oy - st.session_state["last_y"]) > 1.0
-            ):
-                st.session_state["last_x"] = ox
-                st.session_state["last_y"] = oy
-                st.rerun()
+        if canvas_result.json_data is not None:
+            objects = canvas_result.json_data["objects"]
+            if objects:
+                last_object = objects[-1]  # 最後の描画オブジェクトを取得
+                if last_object["type"] == "rect":
+                    # st_canvasから取得する座標は描画領域内のピクセル座標なので、PDF座標に変換
+                    # st_canvasのbackground_imageはdisplay_imageと同じサイズで表示しているため、そのまま利用できる
+                    x_on_display = last_object["left"]
+                    y_on_display = last_object["top"]
+                    width_on_display = last_object["width"]
+                    height_on_display = last_object["height"]
+
+                    # PDF座標に変換 (ズーム倍率で逆算)
+                    x_pdf = x_on_display / preview_scale
+                    y_pdf = y_on_display / preview_scale
+                    width_pdf = width_on_display / preview_scale
+                    height_pdf = height_on_display / preview_scale
+
+                    # 状態を更新
+                    st.session_state["last_x"] = x_pdf
+                    st.session_state["last_y"] = y_pdf
+                    st.session_state["input_width"] = width_pdf
+                    st.session_state["input_height"] = height_pdf
+
+                    # フォームの値を更新
+                    st.session_state["input_label"] = st.session_state["input_label"] if st.session_state["input_label"] else "新規枠"
+                    st.session_state["preset_sel"] = "（選択なし）" # プリセット選択をリセット
+                    st.rerun()
 
     # --- 下部: リストエリア ---
     st.divider()
     st.subheader("📋 登録済みリスト")
 
-    cols = ["label", "x", "y", "page", "font_size", "color", "value", "desc", "id"]
+    cols = ["label", "x", "y", "width", "height", "page", "font_size", "color", "value", "desc", "id"]
     if not df_existing.empty:
         for c in cols:
             if c not in df_existing.columns:
@@ -521,6 +571,8 @@ def render_coordinate_editor():
         "label": st.column_config.TextColumn("項目名", width="medium", required=True),
         "x": st.column_config.NumberColumn("X", format="%.1f", required=True),
         "y": st.column_config.NumberColumn("Y", format="%.1f", required=True),
+        "width": st.column_config.NumberColumn("幅", format="%.1f", required=True),
+        "height": st.column_config.NumberColumn("高さ", format="%.1f", required=True),
         "page": st.column_config.NumberColumn("P", width="small", min_value=1, step=1),
         "font_size": st.column_config.NumberColumn(
             "サイズ", width="small", min_value=1.0, step=0.5, format="%.1f"
@@ -548,62 +600,27 @@ def render_coordinate_editor():
             st.error("座標なし")
         else:
             try:
-                output = PdfWriter()
-                for i, page_obj in enumerate(reader.pages):
-                    page_num = i + 1
-                    page_coords = df_existing[df_existing["page"] == page_num]
-                    if not page_coords.empty:
-                        packet_page = BytesIO()
-                        pw = float(page_obj.mediabox.width)
-                        ph = float(page_obj.mediabox.height)
-                        can_page = canvas.Canvas(packet_page, pagesize=(pw, ph))
-                        for _, row in page_coords.iterrows():
-                            # 簡易プレビュー用スケール (72/200)
-                            scale = 72.0 / 200.0
-                            draw_x = float(row["x"]) * scale
-                            top_y = ph - (float(row["y"]) * scale)
-                            f_size = float(row["font_size"])
-                            c_obj = red if row["color"] == "red" else black
-                            can_page.setFillColor(c_obj)
-                            can_page.setStrokeColor(c_obj)
+                # apply_coordinates_to_pdf 関数に渡す座標データを準備
+                # DataFrameから辞書のリストに変換
+                coords_for_apply = df_existing.to_dict(orient="records")
 
-                            val = row["value"]
-                            if str(val).startswith("RECT:"):
-                                try:
-                                    dims = val.replace("RECT:", "").split("x")
-                                    w_pt, h_pt = float(dims[0]), float(dims[1])
-                                    can_page.rect(
-                                        draw_x,
-                                        top_y - h_pt,
-                                        w_pt,
-                                        h_pt,
-                                        stroke=1,
-                                        fill=0,
-                                    )
-                                except:
-                                    pass
-                            else:
-                                can_page.setFont("IPAexG", f_size)
-                                can_page.drawString(
-                                    draw_x, top_y - (f_size * 0.9), str(val)
-                                )
-
-                        can_page.save()
-                        packet_page.seek(0)
-                        overlay = PdfReader(packet_page)
-                        page_obj.merge_page(overlay.pages[0])
-                    output.add_page(page_obj)
-                out_stream = BytesIO()
-                output.write(out_stream)
-                st.download_button(
-                    "📥 テストPDFダウンロード",
-                    out_stream,
-                    "test.pdf",
-                    "application/pdf",
+                # PDFに座標を適用
+                filled_pdf_stream = apply_coordinates_to_pdf(
+                    original_pdf_bytes=target_file_bytes,
+                    coordinates=coords_for_apply
                 )
+
+                st.download_button(
+                    label="📥 テストPDFダウンロード",
+                    data=filled_pdf_stream,
+                    file_name="test_filled.pdf",
+                    mime="application/pdf",
+                )
+                st.success("テストPDF作成完了！")
+
             except Exception as e:
                 st.error(f"エラー: {e}")
-
+                st.exception(e)
 
 # ==========================================
 # アプリケーション本体

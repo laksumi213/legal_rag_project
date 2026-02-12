@@ -8,12 +8,12 @@ import string
 import tempfile  # ★追加: 一時フォルダ作成用
 from io import BytesIO
 from pathlib import Path
+from typing import Any, Iterable
 
 import streamlit as st
 # import pyzipper  <-- 削除またはコメントアウト
 from PIL import Image
 from pdf2image import convert_from_bytes
-from sqlalchemy.orm import joinedload
 
 # ==========================================
 # 1. パス解決 & インポート
@@ -38,9 +38,40 @@ from services.encryption_service import EncryptionService
 st.set_page_config(page_title="公証役場連携", page_icon="⚖️", layout="wide")
 
 
+# セッションステート初期化
+if "force_rerun_checkboxes" not in st.session_state:
+    st.session_state["force_rerun_checkboxes"] = False
+
 # ==========================================
 # 2. ロジッククラス定義
 # ==========================================
+
+def _iter_detected_files(detected_files_map: dict[str, list[Path]]) -> Iterable[Path]:
+    for _, path_list in detected_files_map.items():
+        for p in path_list:
+            yield p
+
+
+def _get_selected_auto_files_from_state(detected_files_map: dict[str, list[Path]]) -> list[Path]:
+    selected: list[Path] = []
+    for p in _iter_detected_files(detected_files_map):
+        key_str = f"auto_{p}"
+        if bool(st.session_state.get(key_str, False)):
+            selected.append(p)
+    return selected
+
+
+def _get_selected_company_docs_from_state(primary_docs: list[str], other_docs: list[str]) -> list[str]:
+    selected: list[str] = []
+    for doc in primary_docs:
+        key_str = f"chk_{doc}"
+        if bool(st.session_state.get(key_str, True)):
+            selected.append(doc)
+    for doc in other_docs:
+        key_str = f"chk_other_{doc}"
+        if bool(st.session_state.get(key_str, False)):
+            selected.append(doc)
+    return selected
 
 class AutoFileCollector:
     """フォルダから関連ファイルを自動収集・分類するクラス"""
@@ -57,38 +88,90 @@ class AutoFileCollector:
         "金融資産（通帳・証券）": [
             "通帳", "残高証明", "証券", "取引推移", "定期", "配当", "株式"
         ],
-        "遺言書案・要旨": [
-            "文案", "遺言", "要旨", "案", "メモ", "下書き", "構成"
+        "遺言_文案": [
+            "文案", "遺言書案", "遺言ドラフト"
+        ],
+        "遺言_要旨": [
+            "要旨", "遺言概要", "遺言メモ"
         ]
     }
 
     # 除外キーワード
     EXCLUDE_KEYWORDS = [
-        "引継書", "通帳のコピー箇所のご説明", "試算", "委任", 
-        "約定書", "テンプレート", "ご案内", "送付状"
+        "引継書", "通帳のコピー箇所のご説明", "試算", "委任",
+        "約定書", "テンプレート", "ご案内", "送付状",
+        "文言説明", "仮"
     ]
 
     @staticmethod
     def collect_files(folder_path: str) -> dict:
-        results = {k: [] for k in AutoFileCollector.KEYWORDS.keys()}
+        # 各カテゴリとファイル名ごとに最新のファイルを保持する (「遺言_文案」「遺言_要旨」以外)
+        category_files_temp = {k: {} for k in AutoFileCollector.KEYWORDS.keys()}
+
+        latest_will_draft = None
+        latest_will_draft_mtime = 0
+
+        latest_will_summary = None
+        latest_will_summary_mtime = 0
+        
         if not folder_path or not os.path.exists(folder_path):
             return {}
-
+        
         try:
-            root_path = Path(folder_path)
-            for p in root_path.rglob("*"):
+            root_path_in_collector = Path(folder_path)
+            for p in root_path_in_collector.rglob("*"):
                 if p.is_file():
                     if p.name.startswith("~$") or p.name.startswith("."): continue
-                    if p.suffix.lower() not in ['.pdf', '.jpg', '.jpeg', '.png', '.docx', '.doc', '.xlsx', '.xls']: continue
+                    if p.suffix.lower() not in [".pdf", ".jpg", ".jpeg", ".png", ".docx", ".doc", ".xlsx", ".xls"]: continue
 
                     if any(ex in p.name for ex in AutoFileCollector.EXCLUDE_KEYWORDS):
                         continue
 
+                    current_mtime = os.path.getmtime(p)
+
+                    # 遺言_文案の処理: 全ての文案ファイルの中から最新のもの1つだけを選択
+                    if any(k in p.name for k in AutoFileCollector.KEYWORDS.get("遺言_文案", [])):
+                        if current_mtime > latest_will_draft_mtime:
+                            latest_will_draft = p
+                            latest_will_draft_mtime = current_mtime
+                        continue # このファイルは処理済みなので次へ
+
+                    # 遺言_要旨の処理: 全ての要旨ファイルの中から最新のもの1つだけを選択
+                    if any(k in p.name for k in AutoFileCollector.KEYWORDS.get("遺言_要旨", [])):
+                        if current_mtime > latest_will_summary_mtime:
+                            latest_will_summary = p
+                            latest_will_summary_mtime = current_mtime
+                        continue # このファイルは処理済みなので次へ
+
+                    # それ以外のカテゴリの処理 (既存ロジック: ファイル名ごとに最新を保持)
+                    matched_category = None
                     for category, keywords in AutoFileCollector.KEYWORDS.items():
-                        if any(k in p.name for k in keywords):
-                            results[category].append(p)
-                            break
-        except Exception:
+                        # 「遺言_文案」と「遺言_要旨」は既に上で処理されているため、ここではスキップ
+                        if category not in ["遺言_文案", "遺言_要旨"]:
+                            if any(k in p.name for k in keywords):
+                                matched_category = category
+                                break
+                    
+                    if matched_category:
+                        file_name = p.name
+                        # 既に同じファイル名のファイルが登録されているかチェックし、更新日時が新しい方を採用
+                        if file_name not in category_files_temp[matched_category] or \
+                           current_mtime > os.path.getmtime(category_files_temp[matched_category][file_name]):
+                            category_files_temp[matched_category][file_name] = p
+            
+            # category_files_temp と最新の遺言ファイルから最終的な結果を構築
+            results = {}
+            if latest_will_draft:
+                results["遺言_文案"] = [latest_will_draft]
+            if latest_will_summary:
+                results["遺言_要旨"] = [latest_will_summary]
+
+            for category, files_dict in category_files_temp.items():
+                if category not in ["遺言_文案", "遺言_要旨"] and files_dict: # 遺言系カテゴリは既に処理済み
+                    results[category] = list(files_dict.values())
+            
+        except Exception as e:
+            print(f"ファイル収集エラー: {e}") # エラーをログに出力
             pass
         return {k: v for k, v in results.items() if v}
 
@@ -242,13 +325,13 @@ class EmailGenerator:
 
             files_str = "\n".join([f"・{f}" for f in z_info["files"]])
             
-            body = f"""{notary_name}　御中
+            body = """{notary_name}　御中
 
 いつも大変お世話になっております。
 行政書士法人チェスターの{user_name}でございます。
 
 この度、弊社クライアントの公正証書遺言作成につきまして、次の通り作成依頼をいたしたく、必要書類を添付にて送付申し上げます。
-{'※ファイル容量の関係で、' + str(total_vols) + '通に分けてお送りいたします。本メールはその' + str(vol_num) + '通目です。' if total_vols > 1 else ''}
+{file_capacity_note}
 
 お忙しいところ恐縮ですが、内容のご確認と今後の段取りについてご教示いただけますと幸いです。
 
@@ -258,29 +341,41 @@ class EmailGenerator:
 証人の手配： 1名依頼いたします。（もう1名は私、{user_name}がお伺いいたします。）
 作成希望場所：{notary_name}
 
-【添付書類 ({z_info['name']})】
+【添付書類 ({zip_name})】
 {files_str}
 
 個人情報保護のため、ファイルにはパスワードを設定しております。パスワードは後ほど別メールにてお送りいたします。
 ※ZIPファイルはWindows標準機能で解凍可能です。
 
-何卒よろしくお願い申し上げます。"""
+何卒よろしくお願い申し上げます。""".format(
+                notary_name=notary_name,
+                user_name=user_name,
+                file_capacity_note=("※ファイル容量の関係で、" + str(total_vols) + "通に分けてお送りいたします。本メールはその" + str(vol_num) + "通目です。") if total_vols > 1 else "",
+                d_name=d_name,
+                zip_name=z_info["name"],
+                files_str=files_str
+            )
             drafts.append({"subject": subject, "body": body, "type": "file", "zip_name": z_info["name"]})
 
         # 2. パスワード通知メール
         pass_subject = f"【パスワード送付】公正証書遺言作成のご依頼/ 遺言者：{d_name}様"
         
-        pass_body = f"""{notary_name}　御中
+        pass_body = """{notary_name}　御中
 
 いつも大変お世話になっております。
 行政書士法人チェスターの{user_name}でございます。
 
 先ほどお送りいたしました添付ファイルのパスワードをご案内いたします。
-{'（全ファイル共通です）' if total_vols > 1 else ''}
+{file_common_pass_note}
 
 パスワード：{password}
 
-お手数をおかけいたしますが、ご査収のほどよろしくお願い申し上げます。"""
+お手数をおかけいたしますが、ご査収のほどよろしくお願い申し上げます。""".format(
+                notary_name=notary_name,
+                user_name=user_name,
+                file_common_pass_note=("（全ファイル共通です）") if total_vols > 1 else "",
+                password=password
+            )
         drafts.append({"subject": pass_subject, "body": pass_body, "type": "pass"})
         return drafts
 
@@ -289,6 +384,11 @@ class EmailGenerator:
 # 3. メイン画面 UI
 # ==========================================
 def main():
+
+    # コールバックからの強制再実行トリガー
+    if st.session_state.get("force_rerun_checkboxes", False):
+        st.session_state["force_rerun_checkboxes"] = False
+        st.rerun()
     st.title("⚖️ 公証役場連携・送付セット作成")
     st.caption("フォルダからの自動ファイル収集、軽量化、暗号化(Windows互換)、分割ZIP作成を一括で行います。")
 
@@ -322,29 +422,59 @@ def main():
     with col_L:
         st.subheader("1. 送付資料の準備")
         
+        # 全選択/全解除ボタン
+        col_chk_all, col_chk_none = st.columns(2)
+        # Placeholders for lists, filled later in the script
+        # These lists need to be populated *before* the buttons are clicked
+        # to correctly update session state for all checkboxes.
+        if "all_detected_files_keys" not in st.session_state: st.session_state["all_detected_files_keys"] = []
+        if "all_company_docs_keys" not in st.session_state: st.session_state["all_company_docs_keys"] = []
+        if "all_other_docs_keys" not in st.session_state: st.session_state["all_other_docs_keys"] = []
+
+        def update_all_checkbox_states(target_state):
+            for key in st.session_state["all_detected_files_keys"]:
+                st.session_state[key] = target_state
+            for key in st.session_state["all_company_docs_keys"]:
+                st.session_state[key] = target_state
+            for key in st.session_state["all_other_docs_keys"]:
+                st.session_state[key] = target_state
+            st.toast(f"全てのチェックボックスを{'選択' if target_state else '解除'}しました。")
+            st.session_state["force_rerun_checkboxes"] = True
+
+        if col_chk_all.button("✅ 全て選択", use_container_width=True, on_click=update_all_checkbox_states, args=(True, )):
+            pass # Handled by on_click
+        if col_chk_none.button("⬜ 全て解除", use_container_width=True, on_click=update_all_checkbox_states, args=(False, )):
+            pass # Handled by on_click
+
+        st.markdown("--- # ① フォルダから自動検出されたファイル")
         # === A. フォルダ自動収集機能 ===
         st.markdown("###### ① フォルダから自動検出されたファイル")
         case_folder_path = current_case.folder_path
         
-        detected_files_map = {}
+        detected_files_map: dict[str, list[Path]] = {}
         if case_folder_path and os.path.exists(case_folder_path):
+            root_path = Path(case_folder_path)
             st.caption(f"検索先: `{case_folder_path}`")
             detected_files_map = AutoFileCollector.collect_files(case_folder_path)
             
             if not detected_files_map:
                 st.info("関連しそうなファイルは見つかりませんでした。")
             
-            selected_auto_files = [] 
-            
+            st.session_state["all_detected_files_keys"] = []
             for category, path_list in detected_files_map.items():
                 with st.expander(f"📁 {category} ({len(path_list)}件)", expanded=True):
                     for p in path_list:
-                        if st.checkbox(f"{p.name}", value=True, key=f"auto_{p}"):
-                            selected_auto_files.append(p)
+                        relative_path_display = p.relative_to(root_path) if p.is_relative_to(root_path) else Path(p.name)
+                        label = f"{p.name} ({relative_path_display.parent})" if relative_path_display.parent != Path(".") else p.name
+                        
+                        key_str = f"auto_{p}"
+                        st.session_state["all_detected_files_keys"].append(key_str)
+                        if st.checkbox(label, value=st.session_state.get(key_str, False), key=key_str):
+                            pass
                             
         else:
             st.warning("⚠️ 案件フォルダパスが登録されていないか、アクセスできません。Home画面で設定してください。")
-            selected_auto_files = []
+            st.session_state["all_detected_files_keys"] = []
 
         # === B. 手動アップロード ===
         st.markdown("###### ② 手動追加（フォルダにない場合）")
@@ -353,18 +483,19 @@ def main():
             type=["pdf", "png", "jpg", "jpeg", "docx", "doc", "xlsx", "xls"], 
             accept_multiple_files=True
         )
-        
+        uploaded_files_list: list[Any] = uploaded_files or []
+
         use_strong_compression = st.checkbox("🔥 強力圧縮 (画質を落としてサイズ優先)", value=False)
 
         # === C. 会社書類・身分証の自動同梱 ===
         st.markdown("###### ③ 会社書類・身分証の同梱")
-        company_docs_selected = []
+        company_docs_selected: list[str] = []
         if os.path.exists(TEMPLATES_DIR):
             all_templates = [f for f in os.listdir(TEMPLATES_DIR) if f.lower().endswith(".pdf")]
             clean_user_name = user_name.replace(" ", "").replace("　", "")
             
-            primary_docs = []
-            other_docs = []
+            primary_docs: list[str] = []
+            other_docs: list[str] = []
             
             for tpl in all_templates:
                 clean_tpl = tpl.replace(" ", "").replace("　", "")
@@ -376,16 +507,26 @@ def main():
                 if is_target: primary_docs.append(tpl)
                 else: other_docs.append(tpl)
             
+            st.session_state["all_company_docs_keys"] = []
             for doc in primary_docs:
-                if st.checkbox(f"📄 {doc}", value=True, key=f"chk_{doc}"):
-                    company_docs_selected.append(doc)
+                key_str = f"chk_{doc}"
+                st.session_state["all_company_docs_keys"].append(key_str)
+                if st.checkbox(f"📄 {doc}", value=st.session_state.get(key_str, True), key=key_str):
+                    pass
             
             with st.expander("その他のファイルを選択"):
+                st.session_state["all_other_docs_keys"] = []
                 for doc in other_docs:
-                    if st.checkbox(f"📄 {doc}", value=False, key=f"chk_other_{doc}"):
-                        company_docs_selected.append(doc)
+                    key_str = f"chk_other_{doc}"
+                    st.session_state["all_other_docs_keys"].append(key_str)
+                    if st.checkbox(f"📄 {doc}", value=st.session_state.get(key_str, False), key=key_str):
+                        pass
         else:
             st.warning("テンプレートフォルダなし")
+            st.session_state["all_company_docs_keys"] = []
+            st.session_state["all_other_docs_keys"] = []
+            primary_docs = []
+            other_docs = []
 
         # === D. 設定 ===
         st.markdown("###### ④ 送付設定")
@@ -393,28 +534,33 @@ def main():
         
         if "zip_password" not in st.session_state:
             chars = string.ascii_letters + string.digits
-            st.session_state["zip_password"] = ''.join(random.choice(chars) for _ in range(10))
+            st.session_state["zip_password"] = "".join(random.choice(chars) for _ in range(10))
         
         password = st.text_input("ZIPパスワード", value=st.session_state["zip_password"])
         if st.button("パスワード再生成"):
             chars = string.ascii_letters + string.digits
-            st.session_state["zip_password"] = ''.join(random.choice(chars) for _ in range(10))
+            st.session_state["zip_password"] = "".join(random.choice(chars) for _ in range(10))
             st.rerun()
 
         st.markdown("---")
         
         # 実行ボタン
         if st.button("🚀 送付セットを作成する", type="primary", use_container_width=True):
-            if not uploaded_files and not company_docs_selected and not selected_auto_files:
+            # ボタン押下時点のチェック状態を、session_stateから確定させる
+            # （描画時に作った一時リストが古い状態のまま混入するのを防ぐ）
+            selected_auto_files = _get_selected_auto_files_from_state(detected_files_map)
+            company_docs_selected = _get_selected_company_docs_from_state(primary_docs, other_docs)
+
+            if not uploaded_files_list and not company_docs_selected and not selected_auto_files:
                 st.error("ファイルが1つも選択されていません。")
             else:
                 progress_text = "処理中..."
                 my_bar = st.progress(0, text=progress_text)
 
-                files_to_zip = {}
+                files_to_zip: dict[str, bytes] = {}
                 processor = DocumentProcessor()
                 
-                total_files = len(uploaded_files) + len(company_docs_selected) + len(selected_auto_files)
+                total_files = len(uploaded_files_list) + len(company_docs_selected) + len(selected_auto_files)
                 processed_cnt = 0
 
                 # 1. 自動収集ファイルの読み込み & 軽量化
@@ -443,7 +589,7 @@ def main():
                     my_bar.progress(processed_cnt / total_files, text=f"処理中: {p.name}")
 
                 # 2. 手動アップロードファイルの処理
-                for f in uploaded_files:
+                for f in uploaded_files_list:
                     bytes_data = f.getvalue()
                     fname_lower = f.name.lower()
                     

@@ -4,37 +4,82 @@ import json
 import pandas as pd
 import streamlit as st
 from sqlalchemy import desc
-from src.legal_system.models.tables import FinancialAsset, FileRegistry, BankMaster
+from sqlalchemy.orm import joinedload
+from src.legal_system.models.tables import FinancialAsset, FileRegistry, BankMaster, BranchMaster, AccountTypeMaster
+from src.services.asset_service import sync_bank_assets
+import time
 
 def render_bank_account_list(session, case_id: int):
     """
-    銀行口座リストの表示と簡易編集 (既存機能)
+    銀行口座リストの表示とCRUD編集
     """
     st.subheader("🏦 銀行・金融資産管理")
-    
-    # asset_type="BANK" または Null (互換性のため) のものを表示
-    assets = session.query(FinancialAsset).filter(
+
+    # データを取得してDataFrameに変換
+    assets = session.query(FinancialAsset).options(
+        joinedload(FinancialAsset.bank_ref),
+        joinedload(FinancialAsset.branch_ref),
+        joinedload(FinancialAsset.account_type_ref)
+    ).filter(
         FinancialAsset.case_id == case_id,
         (FinancialAsset.asset_type == "BANK") | (FinancialAsset.asset_type == None)
     ).all()
+
+    asset_data = []
+    for a in assets:
+        asset_data.append({
+            "id": a.id,
+            "銀行名": a.bank_ref.bank_name if a.bank_ref else "",
+            "支店名": a.branch_ref.branch_name if a.branch_ref else "",
+            "種別": a.account_type_ref.type_name if a.account_type_ref else "普通",
+            "口座番号": a.account_number,
+            "残高": int(a.balance) if a.balance is not None else 0,
+            "状況": a.status
+        })
     
-    if assets:
-        for a in assets:
-            b = a.bank_ref.bank_name if a.bank_ref else "不明"
-            br = a.branch_ref.branch_name if a.branch_ref else ""
+    df = pd.DataFrame(asset_data)
+
+    st.info("👇 下の表で銀行口座の情報を直接編集できます。行の追加・削除も可能です。")
+
+    # データエディタ
+    edited_df = st.data_editor(
+        df,
+        key="bank_asset_editor",
+        num_rows="dynamic",
+        use_container_width=True,
+        hide_index=True,
+        column_config={
+            "id": None, # ID列は非表示
+            "銀行名": st.column_config.TextColumn("銀行名", required=True, width="medium"),
+            "支店名": st.column_config.TextColumn("支店名", width="medium"),
+            "種別": st.column_config.SelectboxColumn("種別", options=["普通", "当座", "貯蓄", "定期"], required=True, width="small"),
+            "口座番号": st.column_config.TextColumn("口座番号", width="small"),
+            "残高": st.column_config.NumberColumn("残高 (円)", format="%d", width="medium"),
+            "状況": st.column_config.TextColumn("状況", width="medium"),
+        }
+    )
+
+    if st.button("💾 銀行口座リストを保存", type="primary"):
+        try:
+            data_to_sync = edited_df.to_dict(orient="records")
+            result = sync_bank_assets(session, case_id, data_to_sync)
+            session.commit()
             
-            with st.expander(f"🏦 {b} {br} ({a.account_number})"):
-                c1, c2 = st.columns(2)
-                nb = c1.number_input("残高", value=int(a.balance), key=f"ab_{a.id}")
-                ns = c2.text_input("状況", value=a.status, key=f"as_{a.id}")
-                
-                if st.button("更新", key=f"ub_{a.id}"):
-                    a.balance = nb
-                    a.status = ns
-                    session.commit()
-                    st.toast("保存しました")
-    else:
-        st.info("登録された銀行口座はありません。")
+            msg_parts = []
+            if result.get("added"): msg_parts.append(f"{result['added']}件追加")
+            if result.get("updated"): msg_parts.append(f"{result['updated']}件更新")
+            if result.get("deleted"): msg_parts.append(f"{result['deleted']}件削除")
+            
+            final_msg = "、".join(msg_parts) if msg_parts else "変更はありませんでした"
+            st.success(f"保存しました ({final_msg})")
+            
+            time.sleep(1)
+            st.rerun()
+
+        except Exception as e:
+            session.rollback()
+            st.error(f"保存中にエラーが発生しました: {e}")
+            logger.error(f"Asset Save Error: {e}", exc_info=True)
 
 def render_securities_list(session, case_id: int):
     """

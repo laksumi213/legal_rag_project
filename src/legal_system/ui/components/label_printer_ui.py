@@ -8,7 +8,7 @@ from src.legal_system.ui.label_generator import generate_advanced_label, get_bra
 # ルートディレクトリの特定 (相対パス解決)
 current_dir = os.path.dirname(os.path.abspath(__file__))
 # src/legal_system/ui/components/tools -> root
-ROOT_DIR = os.path.dirname(os.path.dirname(os.path.dirname(os.path.dirname(os.path.dirname(current_dir)))))
+ROOT_DIR = os.path.dirname(os.path.dirname(os.path.dirname(os.path.dirname(current_dir))))
 
 def render_label_printer(session, case, current_user_info):
     """宛名ラベル作成画面"""
@@ -59,7 +59,7 @@ def render_label_printer(session, case, current_user_info):
                 # 簡易パース
                 lines = sa.split("\n")
                 sz = lines[0].replace("〒", "") if lines else ""
-                sad = "\n".join(lines[1:]) if len(lines) > 1 else ""
+                sad = "\n ".join(lines[1:]) if len(lines) > 1 else ""
             
             c_p1, c_p2 = st.columns(2)
             sp = c_p1.number_input("開始位置", 1, 30, 1)
@@ -86,7 +86,7 @@ def render_label_printer(session, case, current_user_info):
         if inc_s:
             s_data = {
                 "type": "sender",
-                "name": f"行政書士法人チェスター\n{sn}", 
+                "name": f"行政書士法人チェスター {sn}", 
                 "honorific": "",
                 "zip_code": sz,
                 "address": sad,

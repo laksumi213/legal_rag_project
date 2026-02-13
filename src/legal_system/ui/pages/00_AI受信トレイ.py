@@ -116,7 +116,7 @@ def render_ai_inbox():
             }
             
             # ★UI側での補正ロジック: 銀行名に「証券」が含まれていれば、DB値が何であれ証券モードを優先する
-            extracted_bank_name = ai_data.get('bank_name', '')
+            extracted_bank_name = ai_data.get('bank_name') or ''
             is_securities_detected = "証券" in extracted_bank_name or "證券" in extracted_bank_name
             
             default_key = "その他 (保存のみ)"

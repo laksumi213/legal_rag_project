@@ -485,11 +485,19 @@ class SecuritiesStatementHandler(DocumentHandler):
         total_balance = meta.get("balance", 0)
         
         logger.info(f"📈 証券ハンドラー起動: {sec_company_name} (Acc: {account_number})")
+        logger.info(f"   -> 対象案件: {case.case_number} ({case.client_name})")
+        logger.info(f"   -> 案件フォルダパス: {case.folder_path}")
 
         new_filename = self._generate_filename(case, "取引残高報告書", sec_company_name, original_path=original_path)
+        logger.info(f"   -> 生成ファイル名: {new_filename}")
         
         dest_dir = self._find_target_folder(case.folder_path, "受領資料", "証券")
         if not dest_dir: dest_dir = self._ensure_folder(case.folder_path, "受領資料")
+        
+        if dest_dir:
+            logger.info(f"   -> 保存先フォルダ: {dest_dir}")
+        else:
+            logger.warning(f"   -> 保存先フォルダが見つかりません")
 
         if dest_dir:
             saved_path = self._save_file_copy(original_path, dest_dir, new_filename)

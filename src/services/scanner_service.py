@@ -748,16 +748,24 @@ class ScannerService:
             with open(path, "rb") as f: file_bytes = f.read()
             f_hash = hashlib.md5(file_bytes).hexdigest()
             
-            logger.info("   🤖 AI解析を実行中...")
-            analysis = self._analyze_document(file_bytes)
-            candidates = analysis.get("case_candidates", [])
-            doc_type = analysis.get('doc_type', 'unknown')
-            
-            logger.info(f"   📋 解析完了: {doc_type}")
-            logger.info(f"   💡 候補案件: {len(candidates)} 件")
-            
             session = self.db._get_session()
             try:
+                # 重複チェック: 既に処理済みのファイルかどうかを確認
+                existing_entry = session.query(FileRegistry).filter_by(file_hash=f_hash).first()
+                if existing_entry:
+                    logger.info(f"   ⏭️ 既に処理済みのファイルです (Hash: {f_hash[:8]}..., Status: {existing_entry.status})")
+                    logger.info(f"   📁 登録済みパス: {existing_entry.file_path}")
+                    session.close()
+                    return
+                
+                logger.info("   🤖 AI解析を実行中...")
+                analysis = self._analyze_document(file_bytes)
+                candidates = analysis.get("case_candidates", [])
+                doc_type = analysis.get('doc_type', 'unknown')
+                
+                logger.info(f"   📋 解析完了: {doc_type}")
+                logger.info(f"   💡 候補案件: {len(candidates)} 件")
+                
                 # ----------------------------------------------------------------
                 # 自律実行モード (Auto Mode)
                 # 条件: 候補が1件だけ かつ 書類種別が明確
@@ -776,31 +784,40 @@ class ScannerService:
                     target_case_id = candidates[0]['case_id']
                     logger.info(f"   ✨ 高信頼度 (100%) -> 自動処理を実行します (Case: {target_case_id})")
                     
-                    self._execute_handler(session, target_case_id, analysis, path, file_hash=f_hash)
+                    # 元ファイルパスをDBに記録
+                    self._register_file_entry(session, target_case_id, path, doc_type, analysis, status="PROCESSING")
+                    session.commit()
                     
                     try:
-                        os.remove(path)
-                        logger.info("   🗑️ 元ファイルを削除しました (処理完了)")
-                    except Exception as ex:
-                        logger.warning(f"   ⚠️ 元ファイル削除失敗: {ex}")
+                        self._execute_handler(session, target_case_id, analysis, path, file_hash=f_hash)
+                        
+                        # 処理成功 → ステータスを更新
+                        file_entry = session.query(FileRegistry).filter_by(file_hash=f_hash).first()
+                        if file_entry:
+                            file_entry.status = "CONFIRMED"
+                        session.commit()
+                        logger.info(f"   � 元ファイルを保持しました: {path}")
+                    except Exception as handler_error:
+                        # 処理失敗 → ステータスをFAILEDに更新
+                        session.rollback()
+                        session = self.db._get_session()
+                        file_entry = session.query(FileRegistry).filter_by(file_hash=f_hash).first()
+                        if file_entry:
+                            file_entry.status = "FAILED"
+                        session.commit()
+                        logger.error(f"   ❌ ハンドラー処理エラー: {handler_error}")
+                        logger.info(f"   📁 元ファイルを保持しました: {path}")
                         
                 else:
                     # ----------------------------------------------------------------
                     # 従来モード (保留 / PENDING)
                     # ----------------------------------------------------------------
-                    logger.info("   🤔 確認が必要 -> 受信トレイ(Pending)へ")
-                    
-                    temp_storage = Config.DATA_DIR / "uploads" / "pending"
-                    temp_storage.mkdir(parents=True, exist_ok=True)
-                    saved_path = temp_storage / path.name
-                    shutil.copy2(str(path), str(saved_path))
+                    logger.info("   🤔 確認が必要 -> 受信トレイ(Pending)へ登録")
                     
                     candidate_id = candidates[0]['case_id'] if candidates else None
-                    self._register_file_entry(session, candidate_id, saved_path, doc_type, analysis, status="PENDING")
+                    self._register_file_entry(session, candidate_id, path, doc_type, analysis, status="PENDING")
                     
-                    try:
-                        os.remove(path)
-                    except: pass
+                    logger.info(f"   📁 元ファイルを保持しました: {path}")
                 
                 session.commit()
                 
@@ -881,17 +898,27 @@ class ScannerService:
             if override_doc_type:
                 analysis["doc_type"] = override_doc_type
 
-            self._execute_handler(session, target_case_id, analysis, file_path, file_hash=buffer_id)
-            
-            file_entry = session.query(FileRegistry).filter_by(file_hash=buffer_id).first() 
-            if file_entry and file_entry.status != "CONFIRMED":
-                file_entry.status = "CONFIRMED"
-                file_entry.case_id = target_case_id
-                file_entry.ai_confidence = 1.0
-            
-            session.commit()
-            logger.info("✅ 承認処理成功")
-            return True
+            try:
+                self._execute_handler(session, target_case_id, analysis, file_path, file_hash=buffer_id)
+                
+                file_entry = session.query(FileRegistry).filter_by(file_hash=buffer_id).first() 
+                if file_entry and file_entry.status != "CONFIRMED":
+                    file_entry.status = "CONFIRMED"
+                    file_entry.case_id = target_case_id
+                    file_entry.ai_confidence = 1.0
+                
+                session.commit()
+                
+                logger.info(f"� 元ファイルを保持しました: {file_path}")
+                logger.info("✅ 承認処理成功")
+                return True
+            except Exception as handler_error:
+                session.rollback()
+                logger.error(f"❌ ハンドラー処理エラー: {handler_error}")
+                logger.info(f"📁 元ファイルを保持しました: {file_path}")
+                import traceback
+                logger.error(traceback.format_exc())
+                return False
         except Exception as e:
             session.rollback()
             logger.error(f"承認処理エラー: {e}")

@@ -791,12 +791,24 @@ class ScannerService:
                     try:
                         self._execute_handler(session, target_case_id, analysis, path, file_hash=f_hash)
                         
-                        # 処理成功 → ステータスを更新
+                        # ハンドラー側が保存に成功すると _update_or_create_registry(..., status="CONFIRMED") が呼ばれて status が CONFIRMED になる
                         file_entry = session.query(FileRegistry).filter_by(file_hash=f_hash).first()
-                        if file_entry:
-                            file_entry.status = "CONFIRMED"
-                        session.commit()
-                        logger.info(f"   � 元ファイルを保持しました: {path}")
+                        if file_entry and file_entry.status == "CONFIRMED":
+                            session.commit()
+                            logger.info(f"   📁 元ファイルを保持しました: {path}")
+                        else:
+                            # 保存先フォルダ未発見などで保存できなかった場合は PENDING にフォールバック
+                            if file_entry:
+                                file_entry.status = "PENDING"
+                                file_entry.case_id = target_case_id
+                                file_entry.ai_confidence = 0.0
+                            session.commit()
+
+                            renamed_path = self._try_rename_original_in_place(session, f_hash, target_case_id, path, analysis)
+                            if renamed_path:
+                                logger.info(f"   📁 元ファイルをリネームして保持しました: {renamed_path}")
+                            else:
+                                logger.info(f"   📁 元ファイルを保持しました: {path}")
                     except Exception as handler_error:
                         # 処理失敗 → ステータスをFAILEDに更新
                         session.rollback()
@@ -816,8 +828,13 @@ class ScannerService:
                     
                     candidate_id = candidates[0]['case_id'] if candidates else None
                     self._register_file_entry(session, candidate_id, path, doc_type, analysis, status="PENDING")
-                    
-                    logger.info(f"   📁 元ファイルを保持しました: {path}")
+
+                    session.commit()
+                    renamed_path = self._try_rename_original_in_place(session, f_hash, candidate_id, path, analysis)
+                    if renamed_path:
+                        logger.info(f"   📁 元ファイルをリネームして保持しました: {renamed_path}")
+                    else:
+                        logger.info(f"   📁 元ファイルを保持しました: {path}")
                 
                 session.commit()
                 
@@ -830,6 +847,74 @@ class ScannerService:
                 
         except Exception as e:
             logger.error(f"   ❌ ファイル処理エラー (Top Level): {e}")
+
+    def _try_rename_original_in_place(
+        self,
+        session: Any,
+        file_hash: str,
+        case_id: Optional[int],
+        original_path: Path,
+        analysis: Dict[str, Any],
+    ) -> Optional[Path]:
+        try:
+            if not case_id:
+                return None
+            if not original_path or not original_path.exists():
+                return None
+
+            case = session.get(Case, case_id)
+            if not case:
+                return None
+
+            doc_type = analysis.get("doc_type", "other")
+            handler = self.handlers.get(doc_type, self.handlers.get("other"))
+            if not handler:
+                return None
+
+            bank_name = analysis.get("bank_name") or analysis.get("meta", {}).get("bank_name") or ""
+            doc_name_map = {
+                "balance_certificate": "残高証明書",
+                "bank_passbook": "通帳",
+                "securities_statement": "取引残高報告書",
+                "transaction_detail": "取引明細",
+                "invoice": "請求書",
+                "registry_document": "不動産登記情報",
+                "heir_list": "推定相続人連絡先一覧",
+                "tax_payment_notice": "固定資産税納税通知書",
+                "corporate_registry": "商業登記",
+                "other": "書類",
+                "unknown": "書類",
+            }
+            doc_name = doc_name_map.get(doc_type, "書類")
+
+            new_filename = handler._generate_filename(
+                case,
+                doc_name,
+                bank_name,
+                original_path=original_path,
+            )
+            new_path = original_path.with_name(new_filename)
+            if new_path == original_path:
+                return None
+            if new_path.exists():
+                return None
+
+            original_path.rename(new_path)
+
+            file_entry = session.query(FileRegistry).filter_by(file_hash=file_hash).first()
+            if file_entry:
+                file_entry.filename = new_path.name
+                file_entry.file_path = str(new_path)
+                session.commit()
+
+            return new_path
+        except Exception as e:
+            logger.warning(f"   ⚠️ 原本リネーム失敗: {e}")
+            try:
+                session.rollback()
+            except Exception:
+                pass
+            return None
 
     def _register_file_entry(self, session: Any, case_id: Optional[int], file_path: Path, doc_type: str, analysis_data: Dict[str, Any], status: str = "PENDING") -> None:
         if not file_path or not file_path.exists(): return
@@ -900,16 +985,15 @@ class ScannerService:
 
             try:
                 self._execute_handler(session, target_case_id, analysis, file_path, file_hash=buffer_id)
-                
-                file_entry = session.query(FileRegistry).filter_by(file_hash=buffer_id).first() 
+
+                file_entry = session.query(FileRegistry).filter_by(file_hash=buffer_id).first()
                 if file_entry and file_entry.status != "CONFIRMED":
                     file_entry.status = "CONFIRMED"
                     file_entry.case_id = target_case_id
                     file_entry.ai_confidence = 1.0
-                
+
                 session.commit()
-                
-                logger.info(f"� 元ファイルを保持しました: {file_path}")
+                logger.info(f"📁 元ファイルを保持しました: {file_path}")
                 logger.info("✅ 承認処理成功")
                 return True
             except Exception as handler_error:

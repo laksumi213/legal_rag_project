@@ -525,6 +525,13 @@ class SecuritiesStatementHandler(DocumentHandler):
                     session.add(branch)
                     session.flush()
 
+            # 口座種別の取得・作成
+            ac_type = session.query(AccountTypeMaster).filter(AccountTypeMaster.type_name.like("%証券%")).first()
+            if not ac_type:
+                ac_type = AccountTypeMaster(type_name="証券口座")
+                session.add(ac_type)
+                session.flush()
+
             search_num = account_number if account_number else "AI読取"
             existing = session.query(FinancialAsset).filter(
                 FinancialAsset.case_id == case_id, 

@@ -292,7 +292,7 @@ def main():
         render_bank_account_list(session, target_case_id)
 
     elif menu == "🏦 銀行手続き自動化":
-        from src.legal_system.ui.pages.銀行手続き自動化 import (
+        from src.legal_system.ui.components.bank_procedure_automation import (
             render_bank_procedure_automation,
         )
 

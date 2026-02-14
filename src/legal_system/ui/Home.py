@@ -254,8 +254,8 @@ def main():
         options=[
             joinedload(Case.deceased_ref).joinedload(Deceased.heirs),
             joinedload(Case.manager),
-            joinedload(Case.operator)
-        ]
+            joinedload(Case.operator),
+        ],
     )
 
     if not current_case:
@@ -290,6 +290,14 @@ def main():
         )
 
         render_bank_account_list(session, target_case_id)
+
+    elif menu == "🏦 銀行手続き自動化":
+        from src.legal_system.ui.pages.銀行手続き自動化 import (
+            render_bank_procedure_automation,
+        )
+
+        st.session_state["selected_case_id"] = target_case_id
+        render_bank_procedure_automation()
 
     elif menu == "📈 証券・その他資産":
         # ★機能追加: 証券・その他資産のCRUD画面

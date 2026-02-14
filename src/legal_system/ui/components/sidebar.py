@@ -66,6 +66,7 @@ def render_sidebar(db, current_user_info: dict) -> str:
         menu_options = [
             "🏠 案件概要・基本情報",
             "🏦 銀行口座 登録",
+            "🏦 銀行手続き自動化",
             "📈 証券・その他資産",
             "🏘️ 不動産 登録",
             "🌐 登記情報取得",

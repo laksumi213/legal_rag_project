@@ -20,7 +20,10 @@ def render_bank_procedure_automation() -> None:
 
     enable_keyboard_shortcuts(search_keyword="案件番号")
 
-    if "selected_case_id" not in st.session_state or not st.session_state.selected_case_id:
+    if (
+        "selected_case_id" not in st.session_state
+        or not st.session_state.selected_case_id
+    ):
         st.warning("⚠️ 案件が選択されていません。案件検索から案件を選択してください。")
         return
 
@@ -38,7 +41,9 @@ def render_bank_procedure_automation() -> None:
 
         assets = db.get_financial_assets_by_case_id(case_id)
         if not assets:
-            st.warning("この案件には預貯金口座が登録されていません。（メニュー: 銀行口座 登録）")
+            st.warning(
+                "この案件には預貯金口座が登録されていません。（メニュー: 銀行口座 登録）"
+            )
             return
 
         asset_options = {
@@ -78,7 +83,9 @@ def render_bank_procedure_automation() -> None:
 
         selected_template_name = st.selectbox(
             "テンプレPDF",
-            list(template_label_to_path.keys()) if template_label_to_path else ["(テンプレなし)"] ,
+            list(template_label_to_path.keys())
+            if template_label_to_path
+            else ["(テンプレなし)"],
         )
         template_path = template_label_to_path.get(selected_template_name)
 
@@ -109,8 +116,25 @@ def render_bank_procedure_automation() -> None:
                         template_path=template_path,
                         created_on=created_on,
                     )
+                elif target_bank == "三菱UFJ銀行":
+                    result = svc.generate_mufg_balance_certificate_pdf(
+                        case_id=case_id,
+                        financial_asset_id=selected_financial_asset_id,
+                        template_path=template_path,
+                        created_on=created_on,
+                    )
+                elif target_bank == "JA":
+                    result = svc.generate_ja_balance_certificate_pdf(
+                        case_id=case_id,
+                        financial_asset_id=selected_financial_asset_id,
+                        template_path=template_path,
+                        created_on=created_on,
+                    )
+                elif target_bank == "三井住友銀行":
+                    st.error("三井住友銀行は参照実装が無いため、追加資料提示待ちです。")
+                    return
                 else:
-                    st.error("この銀行の残高証明PDFは未実装です（既存testsロジックを移植して拡張予定）。")
+                    st.error("この銀行の残高証明PDFは未実装です。")
                     return
 
                 st.download_button(

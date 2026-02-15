@@ -1,7 +1,7 @@
 # test_agent.py
 import os
 
-from src.legal_system.core.ai_processor import AgenticDocumentProcessor
+from legal_system.core.ai_processor import AgenticDocumentProcessor
 
 # 1. テスト用のダミーKintoneデータ（期待値）
 mock_kintone_data = {

@@ -15,7 +15,7 @@ from langchain_google_genai import ChatGoogleGenerativeAI, GoogleGenerativeAIEmb
 from langchain_text_splitters import MarkdownHeaderTextSplitter
 
 # 設定読み込み
-from src.legal_system.core.config import Config, KeyManager
+from legal_system.core.config import Config, KeyManager
 
 
 class BankRepository:

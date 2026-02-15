@@ -2,7 +2,7 @@
 from typing import Any, Dict
 
 # 郵便番号検索サービスをインポート
-from src.services.deceased_service import search_zip_by_address_api
+from legal_system.services.deceased_service import search_zip_by_address_api
 
 
 def determine_base_from_branch(branch_name: str) -> str:
@@ -59,7 +59,7 @@ def generate_kintone_json_payload(
     zip_code = ""
     if address_obj:
         zip_code = address_obj.zip_code
-        
+
         # "None" 文字列が結合されないように修正
         addr_parts = [
             address_obj.prefecture,
@@ -69,7 +69,7 @@ def generate_kintone_json_payload(
         addr_full = "".join(p for p in addr_parts if p).strip()
         if address_obj.building_name:
             addr_full += f" {address_obj.building_name.strip()}"
-        
+
         # 郵便番号がなければ住所から検索
         if not zip_code and addr_full:
             zip_code = search_zip_by_address_api(addr_full) or ""

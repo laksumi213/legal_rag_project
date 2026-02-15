@@ -1,11 +1,10 @@
 # src/legal_system/ui/components/case_search.py
 
 import streamlit as st
-from sqlalchemy import or_
-from sqlalchemy.orm import joinedload
-from src.legal_system.models.tables import Case, Deceased
-from src.services.search_service import search_cases_enhanced
 import streamlit.components.v1 as components
+
+from legal_system.services.search_service import search_cases_enhanced
+
 
 def render_case_search(session):
     """
@@ -13,22 +12,22 @@ def render_case_search(session):
     - 案件番号、依頼者名、被相続人名でのインクリメンタルサーチ
     - ショートカットキー (Alt+S) 対応: Deep DOM Access (On-Demand)
     """
-    
+
     placeholder_text = "案件番号(G...), 依頼者名, 被相続人名..."
     label_text = "案件を検索 (Alt+S)"
-    
+
     try:
         from st_keyup import st_keyup
+
         search_query = st_keyup(
-            label_text, 
-            key="global_case_search", 
+            label_text,
+            key="global_case_search",
             placeholder=placeholder_text,
-            debounce=300
+            debounce=300,
         )
     except ImportError:
         search_query = st.text_input(
-            label_text, 
-            placeholder="st_keyupがインストールされていません"
+            label_text, placeholder="st_keyupがインストールされていません"
         )
 
     # ---------------------------------------------------------
@@ -110,7 +109,7 @@ def render_case_search(session):
     }})();
     </script>
     """
-    
+
     components.html(js_code, height=0, width=0)
 
     # ---------------------------------------------------------
@@ -120,7 +119,7 @@ def render_case_search(session):
 
     if search_query:
         clean_query = search_query.replace("　", " ").strip()
-        
+
         if clean_query:
             cases = search_cases_enhanced(session, clean_query)
 
@@ -129,22 +128,39 @@ def render_case_search(session):
                 if len(cases) == 1:
                     target_case = cases[0]
                     current_selected_id = st.session_state.get("selected_case_id")
-                    
+
                     if current_selected_id != target_case.case_id:
                         st.session_state["selected_case_id"] = target_case.case_id
-                        st.toast(f"案件を自動選択しました: {target_case.client_name} 様", icon="🔍")
+                        st.toast(
+                            f"案件を自動選択しました: {target_case.client_name} 様",
+                            icon="🔍",
+                        )
                         st.rerun()
 
                 st.caption(f"検索結果: {len(cases)}件")
-                
+
                 options = {
                     c.case_id: (
-                        f"【{c.case_number or '未番'}】" +
-                        "　" + (c.client_name.replace(' ', '　') if c.client_name else '') + "　様" +
-                        "　(被相続人:　" + \
-                        ((c.deceased_ref.name_last.replace(' ', '　') if c.deceased_ref.name_last else '') + "　" + \
-                         (c.deceased_ref.name_first.replace(' ', '　') if c.deceased_ref.name_first else '')) if c.deceased_ref else '' \
-                        + "　様）"
+                        f"【{c.case_number or '未番'}】"
+                        + "　"
+                        + (c.client_name.replace(" ", "　") if c.client_name else "")
+                        + "　様"
+                        + "　(被相続人:　"
+                        + (
+                            (
+                                c.deceased_ref.name_last.replace(" ", "　")
+                                if c.deceased_ref.name_last
+                                else ""
+                            )
+                            + "　"
+                            + (
+                                c.deceased_ref.name_first.replace(" ", "　")
+                                if c.deceased_ref.name_first
+                                else ""
+                            )
+                        )
+                        if c.deceased_ref
+                        else "" + "　様）"
                     )
                     for c in cases
                 }
@@ -153,16 +169,16 @@ def render_case_search(session):
                 current_id = st.session_state.get("selected_case_id")
                 if current_id in options:
                     default_idx = list(options.keys()).index(current_id)
-                
+
                 selected_val = st.radio(
-                    "検索結果を選択:", 
-                    options=list(options.keys()), 
+                    "検索結果を選択:",
+                    options=list(options.keys()),
                     format_func=lambda x: options[x],
                     index=default_idx,
                     label_visibility="collapsed",
-                    key="search_result_radio"
+                    key="search_result_radio",
                 )
-                
+
                 if selected_val:
                     # 検索結果が選択されたら、即座に案件を更新
                     if st.session_state.get("selected_case_id") != selected_val:
@@ -170,5 +186,5 @@ def render_case_search(session):
                         st.rerun()
             else:
                 st.warning("該当する案件が見つかりません")
-    
+
     return st.session_state.get("selected_case_id")

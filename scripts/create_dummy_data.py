@@ -13,7 +13,7 @@ sys.path.append(str(root_dir))
 # 2. 既存のtables.pyからモデル定義を読み込む
 # パスエラーが出る場合は、tables.pyの場所を確認してください
 try:
-    from src.legal_system.models.tables import BankMaster, Base, Case
+    from legal_system.models.tables import BankMaster, Base, Case
 except ImportError as e:
     print(f"❌ Import Error: {e}")
     print(f"PYTHONPATH: {sys.path}")

@@ -1,21 +1,26 @@
 # src/legal_system/ui/pages/05_家系図・相続人可視化.py
 
-import streamlit as st
-from sqlalchemy.orm import joinedload
 import os
 import sys
 
+import streamlit as st
+from sqlalchemy.orm import joinedload
+
 # パス解決
 current_dir = os.path.dirname(os.path.abspath(__file__))
-ROOT_DIR = os.path.dirname(os.path.dirname(os.path.dirname(os.path.dirname(current_dir))))
+ROOT_DIR = os.path.dirname(
+    os.path.dirname(os.path.dirname(os.path.dirname(current_dir)))
+)
 if ROOT_DIR not in sys.path:
     sys.path.append(ROOT_DIR)
 
+from legal_system.services.graph_service import GraphService
+
 from legal_system.core.database_manager import DatabaseManager
-from legal_system.models.tables import Case, Deceased, Heir
-from src.services.graph_service import GraphService
+from legal_system.models.tables import Case, Deceased
 
 st.set_page_config(page_title="AI家系図可視化", page_icon="🌳", layout="wide")
+
 
 def main():
     st.title("🌳 AI家系図・相続権自動判定")
@@ -31,9 +36,11 @@ def main():
         return
 
     # データロード
-    case = session.query(Case).options(
-        joinedload(Case.deceased_ref).joinedload(Deceased.heirs)
-    ).get(target_case_id)
+    case = (
+        session.query(Case)
+        .options(joinedload(Case.deceased_ref).joinedload(Deceased.heirs))
+        .get(target_case_id)
+    )
 
     if not case or not case.deceased_ref:
         st.error("案件情報または被相続人情報が不足しています。")
@@ -47,29 +54,31 @@ def main():
     with col_graph:
         st.subheader("📊 相続関係図 (Mermaid)")
         if not heirs:
-            st.info("相続人が登録されていません。「戸籍読取」画面から登録してください。")
+            st.info(
+                "相続人が登録されていません。「戸籍読取」画面から登録してください。"
+            )
         else:
             # グラフ生成
             graph_code = GraphService.generate_mermaid_family_tree(deceased, heirs)
-            
+
             # Mermaidの描画
             st.markdown(f"""
             ```mermaid
             {graph_code}
             ```
             """)
-            
+
             with st.expander("デバッグ: グラフコードを表示"):
                 st.code(graph_code)
 
     with col_info:
         st.subheader("⚖️ 法定相続判定")
         ranks = GraphService.determine_inheritance_rank(heirs)
-        
+
         # 判定表示
         if ranks["spouse"]:
             st.success(f"配偶者: {len(ranks['spouse'])}名検知")
-        
+
         if ranks["first"]:
             st.info(f"第1順位（子・孫）: {len(ranks['first'])}名")
         elif ranks["second"]:
@@ -86,9 +95,10 @@ def main():
         elif not ranks["first"] and ranks["second"]:
             st.write("子がいないため、配偶者と直系尊属が相続人となります。")
         elif ranks["first"] and not ranks["spouse"]:
-             st.write("配偶者がいないため、子が全ての遺産を相続します。")
+            st.write("配偶者がいないため、子が全ての遺産を相続します。")
 
     session.close()
+
 
 if __name__ == "__main__":
     main()

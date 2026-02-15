@@ -3,7 +3,7 @@ import logging
 
 import requests
 
-from src.utils.retry_decorator import retry_with_backoff
+from legal_system.utils.retry_decorator import retry_with_backoff
 
 logger = logging.getLogger(__name__)
 

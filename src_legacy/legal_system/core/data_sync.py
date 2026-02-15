@@ -3,12 +3,12 @@
 import json
 import logging
 import os
-from typing import Any, Dict
 
 # ★重要: ロジックを分散させず、サービス層に一元化する
-from services.kintone_sync_service import import_kintone_json
+from legal_system.services.kintone_sync_service import import_kintone_json
 
 logger = logging.getLogger(__name__)
+
 
 class DataSyncEngine:
     """
@@ -36,7 +36,7 @@ class DataSyncEngine:
 
         try:
             logger.info(f"🔄 同期開始: {os.path.basename(json_path)}")
-            
+
             # 手動取り込みと同じ関数を呼び出す
             # target_case_id=None にすると、JSON内の「顧客コード(G番号)」から自動で案件を特定/作成してくれる
             case_id = import_kintone_json(data, target_case_id=None)

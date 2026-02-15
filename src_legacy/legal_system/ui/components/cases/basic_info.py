@@ -6,10 +6,11 @@ import unicodedata
 
 import pandas as pd
 import streamlit as st
+from legal_system.ui.utils.scroll_helper import maintain_scroll_position
 from sqlalchemy.orm import joinedload
 
 from legal_system.models.tables import Case, Deceased
-from src.services.deceased_service import (
+from legal_system.services.deceased_service import (
     delete_case_and_all_related_data,
     get_address_info,
     get_contact_info,
@@ -18,9 +19,7 @@ from src.services.deceased_service import (
     update_deceased,
     update_heir,
 )
-from src.utils.date_utils import convert_seireki_to_wareki
-
-from src.legal_system.ui.utils.scroll_helper import maintain_scroll_position
+from legal_system.utils.date_utils import convert_seireki_to_wareki
 
 
 def _get_date_input(label, current_value, key=None):
@@ -148,13 +147,15 @@ def render_basic_info(session, case_id: int):
     """
     # スクロール位置維持のJavaScriptを注入
     maintain_scroll_position()
-    
+
     # 案件削除Expanderの状態をセッションで管理
-    if 'danger_zone_expanded' not in st.session_state:
+    if "danger_zone_expanded" not in st.session_state:
         st.session_state.danger_zone_expanded = False
 
     def _toggle_danger_zone():
-        st.session_state.danger_zone_expanded = not st.session_state.danger_zone_expanded
+        st.session_state.danger_zone_expanded = (
+            not st.session_state.danger_zone_expanded
+        )
 
     # データをリロード（最新状態を取得）
     session.expire_all()
@@ -423,7 +424,7 @@ def render_basic_info(session, case_id: int):
             num_rows="dynamic",
             use_container_width=True,
             key=heir_editor_key,
-            hide_index=True
+            hide_index=True,
         )
 
         if st.button("💾 リストの変更を保存", type="primary"):
@@ -453,11 +454,15 @@ def render_basic_info(session, case_id: int):
     # ---------------------------------------------------------
     st.divider()
     # Expanderの状態をst.session_stateで制御
-    with st.expander("🗑️ 案件の削除 (Danger Zone)", expanded=st.session_state.danger_zone_expanded):
-        st.warning("この操作は取り消せません。案件に関する全てのデータ（資産、履歴、ファイル）が削除されます。")
-        
+    with st.expander(
+        "🗑️ 案件の削除 (Danger Zone)", expanded=st.session_state.danger_zone_expanded
+    ):
+        st.warning(
+            "この操作は取り消せません。案件に関する全てのデータ（資産、履歴、ファイル）が削除されます。"
+        )
+
         # チェックボックスの状態もセッションで管理
-        if 'delete_confirmed' not in st.session_state:
+        if "delete_confirmed" not in st.session_state:
             st.session_state.delete_confirmed = False
 
         def _confirm_delete_and_keep_expander_open():
@@ -469,7 +474,7 @@ def render_basic_info(session, case_id: int):
             "削除を確認しました",
             key="confirm_checkbox",
             value=st.session_state.delete_confirmed,
-            on_change=_confirm_delete_and_keep_expander_open
+            on_change=_confirm_delete_and_keep_expander_open,
         )
 
         if st.session_state.delete_confirmed:

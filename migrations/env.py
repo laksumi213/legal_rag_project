@@ -14,8 +14,8 @@ sys.path.insert(0, BASE_DIR)
 
 # 2. プロジェクトのモデルと設定をインポート
 # tables.py に定義されている Base (MetaData) を取得します
-from src.legal_system.core.config import Config
-from src.legal_system.models.tables import Base
+from legal_system.core.config import Config
+from legal_system.models.tables import Base
 
 # Alembic Config オブジェクト
 config = context.config

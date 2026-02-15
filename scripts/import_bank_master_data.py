@@ -1,8 +1,6 @@
-import os
-import sys
 import csv
+import sys
 from pathlib import Path
-from datetime import datetime
 
 # プロジェクトルートをパスに追加
 ROOT_DIR = Path(__file__).resolve().parents[1]
@@ -11,11 +9,17 @@ SRC_DIR = ROOT_DIR / "src"
 sys.path.append(str(SRC_DIR))
 
 from legal_system.core.database_manager import DatabaseManager
-from legal_system.models.tables import BankMaster, FinancialAsset, BranchMaster, BankAlias
+from legal_system.models.tables import (
+    BankAlias,
+    BankMaster,
+    BranchMaster,
+    FinancialAsset,
+)
+
 
 def import_bank_master_data():
     print("🏦 銀行マスタデータのインポートを開始します...")
-    
+
     db = DatabaseManager()
     session = db._get_session()
 
@@ -32,7 +36,6 @@ def import_bank_master_data():
     session.commit()
     print("✅ 既存銀行マスタデータクリア完了。")
 
-    
     csv_path = ROOT_DIR / "data" / "rules" / "bank_master.csv"
     imported_count = 0
     skipped_count = 0
@@ -50,15 +53,21 @@ def import_bank_master_data():
                 bank_code = row.get("bank_code")
 
                 if not bank_name or not bank_code:
-                    print(f"⚠️ スキップ: 'bank_name' または 'bank_code' が不足している行があります: {row}")
+                    print(
+                        f"⚠️ スキップ: 'bank_name' または 'bank_code' が不足している行があります: {row}"
+                    )
                     skipped_count += 1
                     continue
 
                 # 既に登録済みかチェック (bank_name または bank_code で)
-                exists = session.query(BankMaster).filter(
-                    (BankMaster.bank_name == bank_name) | 
-                    (BankMaster.bank_code == bank_code)
-                ).first()
+                exists = (
+                    session.query(BankMaster)
+                    .filter(
+                        (BankMaster.bank_name == bank_name)
+                        | (BankMaster.bank_code == bank_code)
+                    )
+                    .first()
+                )
 
                 if exists:
                     print(f"  . スキップ (登録済み): {bank_name} ({bank_code})")
@@ -78,13 +87,16 @@ def import_bank_master_data():
                 imported_count += 1
 
         session.commit()
-        print(f"\n✅ 銀行マスタデータのインポート完了 (新規: {imported_count}件, スキップ: {skipped_count}件)")
+        print(
+            f"\n✅ 銀行マスタデータのインポート完了 (新規: {imported_count}件, スキップ: {skipped_count}件)"
+        )
 
     except Exception as e:
         session.rollback()
         print(f"❌ エラーが発生しました: {e}")
     finally:
         session.close()
+
 
 if __name__ == "__main__":
     import_bank_master_data()

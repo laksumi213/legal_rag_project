@@ -17,7 +17,7 @@ import streamlit as st
 
 from legal_system.core.database_manager import DatabaseManager
 from legal_system.models.tables import Case
-from services.task_service import TaskService
+from legal_system.services.task_service import TaskService
 
 st.set_page_config(page_title="タスク管理", page_icon="✅", layout="wide")
 

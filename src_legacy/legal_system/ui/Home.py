@@ -71,7 +71,7 @@ def launch_watcher_process():
 def background_loader():
     """バックグラウンド読込スレッド"""
     try:
-        from src.legal_system.core.preload import warm_up_modules
+        from legal_system.core.preload import warm_up_modules
 
         warm_up_modules()
 
@@ -98,6 +98,11 @@ if "bg_thread_started" not in st.session_state:
 # ==========================================
 # 4. コンポーネントのインポート
 # ==========================================
+from legal_system.ui.components.case_search import render_case_search
+from legal_system.ui.components.cases.header import render_case_header
+from legal_system.ui.components.inbox import render_inbox
+from legal_system.ui.components.sidebar import render_sidebar
+
 from legal_system.core.database_manager import DatabaseManager
 from legal_system.models.tables import (
     AuditLog,
@@ -106,16 +111,12 @@ from legal_system.models.tables import (
     FileRegistry,
     IncomingNoteBuffer,
 )
-from src.legal_system.ui.components.case_search import render_case_search
-from src.legal_system.ui.components.cases.header import render_case_header
-from src.legal_system.ui.components.inbox import render_inbox
-from src.legal_system.ui.components.sidebar import render_sidebar
 
 
 @st.cache_resource(show_spinner=False)
 def get_gmail_service_silent():
     try:
-        from src.services.gmail_watcher_service import GmailWatcherService
+        from legal_system.services.gmail_watcher_service import GmailWatcherService
 
         return GmailWatcherService()
     except Exception:
@@ -125,7 +126,7 @@ def get_gmail_service_silent():
 @st.cache_resource(show_spinner=False)
 def get_scanner_service_silent():
     try:
-        from src.services.scanner_service import ScannerService
+        from legal_system.services.scanner_service import ScannerService
 
         return ScannerService()
     except Exception:
@@ -267,8 +268,8 @@ def main():
 
     # 6. コンテンツ表示 (Lazy Loading)
     if menu == "🏠 案件概要・基本情報":
-        from src.legal_system.ui.components.cases.basic_info import render_basic_info
-        from src.legal_system.ui.components.cases.dashboard_widgets import (
+        from legal_system.ui.components.cases.basic_info import render_basic_info
+        from legal_system.ui.components.cases.dashboard_widgets import (
             render_contact_logs,
             render_kintone_tool,
             render_manager_assignment,
@@ -285,14 +286,14 @@ def main():
         render_contact_logs(session, target_case_id)
 
     elif menu == "🏦 銀行口座 登録":
-        from src.legal_system.ui.components.cases.asset_list import (
+        from legal_system.ui.components.cases.asset_list import (
             render_bank_account_list,
         )
 
         render_bank_account_list(session, target_case_id)
 
     elif menu == "🏦 銀行手続き自動化":
-        from src.legal_system.ui.components.bank_procedure_automation import (
+        from legal_system.ui.components.bank_procedure_automation import (
             render_bank_procedure_automation,
         )
 
@@ -301,40 +302,40 @@ def main():
 
     elif menu == "📈 証券・その他資産":
         # ★機能追加: 証券・その他資産のCRUD画面
-        from src.legal_system.ui.components.cases.asset_list import (
+        from legal_system.ui.components.cases.asset_list import (
             render_securities_list,
         )
 
         render_securities_list(session, target_case_id)
 
     elif menu == "🏘️ 不動産 登録":
-        from src.legal_system.ui.components.cases.nayose_registration import (
+        from legal_system.ui.components.cases.nayose_registration import (
             render_nayose_registration,
         )
 
         render_nayose_registration(session, target_case_id)
 
     elif menu == "🌐 登記情報取得":
-        from src.legal_system.ui.components.cases.registry_acquisition import (
+        from legal_system.ui.components.cases.registry_acquisition import (
             render_registry_acquisition,
         )
 
         render_registry_acquisition(session, target_case_id)
 
     elif menu == "🖨️ 宛名ラベル作成":
-        from src.legal_system.ui.components.label_printer_ui import render_label_printer
+        from legal_system.ui.components.label_printer_ui import render_label_printer
 
         render_label_printer(session, current_case, current_user_info)
 
     elif menu == "✅ タスク管理":
-        from src.legal_system.ui.pages.タスク管理 import render_task_management
+        from legal_system.ui.pages.タスク管理 import render_task_management
 
         # 案件IDをセッション状態に保存
         st.session_state["selected_case_id"] = target_case_id
         render_task_management()
 
     elif menu == "📊 進捗ダッシュボード":
-        from src.legal_system.ui.pages.進捗ダッシュボード import (
+        from legal_system.ui.pages.進捗ダッシュボード import (
             render_progress_dashboard,
         )
 

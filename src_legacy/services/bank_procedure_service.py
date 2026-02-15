@@ -7,9 +7,9 @@ from typing import Dict, List, Optional
 
 from sqlalchemy.orm import joinedload
 
-from src.legal_system.core.database_manager import DatabaseManager
-from src.legal_system.models.tables import Case, Deceased, FinancialAsset
-from src.legal_system.utils.pdf_utils import apply_coordinates_to_pdf
+from legal_system.core.database_manager import DatabaseManager
+from legal_system.models.tables import Case, Deceased, FinancialAsset
+from legal_system.utils.pdf_utils import apply_coordinates_to_pdf
 
 
 @dataclass(frozen=True)

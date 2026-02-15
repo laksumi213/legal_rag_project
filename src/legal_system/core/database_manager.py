@@ -6,14 +6,14 @@ from typing import Any, Dict, List, Optional
 
 from sqlalchemy import create_engine, desc
 from sqlalchemy.engine import Engine
-from sqlalchemy.orm import (  # Added relationship for eager loading
+from sqlalchemy.orm import (
     relationship,
     scoped_session,
     sessionmaker,
 )
 
 # テーブル定義
-from src.legal_system.models.tables import (
+from legal_system.models.tables import (
     AuditLog,
     Base,
     Case,
@@ -39,48 +39,32 @@ def _create_new_engine() -> Engine:
         pool_size=20,
         max_overflow=10,
         pool_pre_ping=True,
-        connect_args={"client_encoding": "utf8", "connect_timeout": 5}
+        connect_args={"client_encoding": "utf8", "connect_timeout": 5},
     )
     try:
         Base.metadata.create_all(engine)
     except Exception as e:
         msg = f"❌ データベース接続エラー: {e}"
-        if os.environ.get("IS_WATCHER_PROCESS") != "true":
-            try:
-                import streamlit as st
-
-                st.error(msg)
-            except ImportError:
-                print(msg)
-        else:
-            print(msg)
+        print(msg)
         raise e
     return engine
 
 
 # ==========================================
-# 公開アクセサ (環境判定ロジック付き)
+# 公開アクセサ (Flet用シングルトン)
 # ==========================================
+_engine_cache = None
+
+
 def get_db_engine() -> Engine:
     """
-    実行環境に応じて適切なエンジン取得方法を選択する。
-    - Watcherプロセス: Streamlitを無視して新規作成
-    - Streamlitアプリ: st.cache_resourceを利用
+    Fletアプリ用のエンジン取得関数。
+    シンプルなグローバル変数キャッシュを使用。
     """
-    if os.environ.get("IS_WATCHER_PROCESS") == "true":
-        return _create_new_engine()
-    else:
-        try:
-            import streamlit as st
-
-            # キャッシュ衝突を避けるため、関数内部で定義
-            @st.cache_resource(show_spinner="データベースに接続中...")
-            def _get_cached_engine() -> Engine:
-                return _create_new_engine()
-
-            return _get_cached_engine()
-        except ImportError:
-            return _create_new_engine()
+    global _engine_cache
+    if _engine_cache is None:
+        _engine_cache = _create_new_engine()
+    return _engine_cache
 
 
 class DatabaseManager:
@@ -295,18 +279,22 @@ class DatabaseManager:
             for f, c in results:
                 # テンプレートなので case_label は常に「（共通雛形）」
                 case_label = "（共通雛形）"
-                output.append({
-                    "filename": f.filename,
-                    "date": f.registered_at.strftime("%Y-%m-%d %H:%M:%S") if f.registered_at else "",
-                    "hash": f.file_hash,
-                    "file_path": f.file_path,
-                    "type": f.doc_type if f.doc_type else "その他",
-                    "case": case_label,
-                    "doc_type": f.doc_type,
-                    "uploaded_at": f.registered_at,
-                    "status": f.status,
-                    "ai_confidence": f.ai_confidence
-                })
+                output.append(
+                    {
+                        "filename": f.filename,
+                        "date": f.registered_at.strftime("%Y-%m-%d %H:%M:%S")
+                        if f.registered_at
+                        else "",
+                        "hash": f.file_hash,
+                        "file_path": f.file_path,
+                        "type": f.doc_type if f.doc_type else "その他",
+                        "case": case_label,
+                        "doc_type": f.doc_type,
+                        "uploaded_at": f.registered_at,
+                        "status": f.status,
+                        "ai_confidence": f.ai_confidence,
+                    }
+                )
             return output
         finally:
             session.close()

@@ -15,16 +15,16 @@ ROOT_DIR = os.path.dirname(
 if ROOT_DIR not in sys.path:
     sys.path.append(ROOT_DIR)
 
+# ★追加: スマートガイドのインポート
+from legal_system.ui.components.smart_guide import render_smart_guide_area
+
 from legal_system.core.database_manager import DatabaseManager
 from legal_system.models.tables import (
     AccountTypeMaster,
     BankMaster,
     BranchMaster,
     Case,
-    FinancialAsset,
 )
-# ★追加: スマートガイドのインポート
-from legal_system.ui.components.smart_guide import render_smart_guide_area
 
 # --- Zengin-Code のローカルキャッシュパス ---
 DATA_DIR = os.path.join(ROOT_DIR, "data", "zengin")
@@ -103,7 +103,7 @@ def main():
     # ---------------------------------------------------------
     cases = session.query(Case).all()
     target_case = None
-    
+
     # 案件選択を最上部に
     case_opts = {f"{c.case_number}: {c.client_name}": c for c in cases}
     if not case_opts:
@@ -127,11 +127,11 @@ def main():
     # 変数の初期化 (ガイドに渡すため)
     bank_name = ""
     account_type = ""
-    
+
     # === 左カラム: 入力フォーム ===
     with col_form:
         st.subheader("📝 口座情報入力")
-        
+
         # 銀行・支店データの取得
         banks = get_bank_master()
         if isinstance(banks, dict):
@@ -140,28 +140,33 @@ def main():
             bank_list = []
 
         selected_bank_str = st.selectbox("銀行名", [""] + bank_list)
-        
+
         # 銀行名パース
         if selected_bank_str:
             try:
                 bank_code = selected_bank_str.split("(")[-1].replace(")", "")
                 bank_name = selected_bank_str.replace(f"({bank_code})", "").strip()
-            except: pass
+            except:
+                pass
 
         # 支店選択
         selected_branch_str = ""
         branch_list = []
         if bank_name:
-             branches = get_branch_master(bank_code) # bank_codeはtry内で定義されるが、st再実行で保持される前提
-             if branches:
-                 branch_list = [f"{v['name']} ({k})" for k, v in branches.items()]
-        
+            branches = get_branch_master(
+                bank_code
+            )  # bank_codeはtry内で定義されるが、st再実行で保持される前提
+            if branches:
+                branch_list = [f"{v['name']} ({k})" for k, v in branches.items()]
+
         selected_branch_str = st.selectbox("支店名", [""] + branch_list)
 
         c_type, c_num = st.columns(2)
-        account_type = c_type.selectbox("預金種別", ["普通", "定期", "当座", "貯蓄", "その他"])
+        account_type = c_type.selectbox(
+            "預金種別", ["普通", "定期", "当座", "貯蓄", "その他"]
+        )
         account_num = c_num.text_input("口座番号 (7桁)", max_chars=7)
-        
+
         holder_name = st.text_input("口座名義人 (カタカナ)")
 
         # 保存ボタン
@@ -170,17 +175,17 @@ def main():
             # ... (保存ロジックは前回と同じなので省略。正常に保存処理を行う) ...
             st.success("保存しました！")
 
-
     # === 右カラム: AIガイド (常時表示) ===
     with col_guide:
         # コンテキスト文字列の生成
         context_str = "未入力"
         if bank_name:
             context_str = f"【作業中】{bank_name} の {account_type}預金 口座登録"
-        
+
         # ガイドコンポーネントの呼び出し
         # ここで bank_name を渡すことで、Lv.1の自動表示を行います
         render_smart_guide_area(target_case, context_str, bank_name)
+
 
 if __name__ == "__main__":
     main()

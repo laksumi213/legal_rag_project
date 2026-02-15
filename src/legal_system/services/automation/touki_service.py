@@ -15,7 +15,7 @@ from selenium.webdriver.common.by import By
 from selenium.webdriver.support import expected_conditions as EC
 from selenium.webdriver.support.ui import Select, WebDriverWait
 
-from src.utils.retry_decorator import retry_with_backoff
+from legal_system.utils.retry_decorator import retry_with_backoff
 
 # Webdriver Manager (ドライバ自動更新)
 try:

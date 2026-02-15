@@ -20,15 +20,15 @@ if str(project_root) not in sys.path:
 
 # AIプロセッサ (Ver 2.0 Agentic)
 try:
-    from src.legal_system.core.ai_processor import AgenticDocumentProcessor
-    from src.legal_system.core.schemas import DocumentAnalysisResult
+    from legal_system.core.ai_processor import AgenticDocumentProcessor
+    from legal_system.core.schemas import DocumentAnalysisResult
 except ImportError:
     st.error("コアモジュール (src.legal_system.core) が見つかりません。")
     st.stop()
 
 # DB保存サービス (既存機能の維持)
 try:
-    from src.legal_system.services.persistence_service import (
+    from legal_system.services.persistence_service import (
         VerificationPersistenceService,
     )
 
@@ -37,7 +37,7 @@ except ImportError:
     HAS_PERSISTENCE_SERVICE = False
 
 # Kintone連携サービス
-from src.services.kintone_sync_service import get_kintone_data_as_dict
+from legal_system.services.kintone_sync_service import get_kintone_data_as_dict
 
 # -----------------------------------------------------------------------------
 # ページ設定 & ヘルパー関数

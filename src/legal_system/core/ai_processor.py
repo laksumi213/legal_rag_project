@@ -10,10 +10,10 @@ from dotenv import load_dotenv
 from langchain_core.messages import HumanMessage
 
 # プロジェクト内モジュール
-from src.legal_system.core.ai_factory import AIFactory
+from legal_system.core.ai_factory import AIFactory
 
 # 追加した CaseSearchKeys をインポート
-from src.legal_system.core.schemas import CaseSearchKeys, DocumentAnalysisResult
+from legal_system.core.schemas import CaseSearchKeys, DocumentAnalysisResult
 
 current_file_path = Path(__file__).resolve()
 project_root = current_file_path.parents[3]

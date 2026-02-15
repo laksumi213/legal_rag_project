@@ -94,7 +94,7 @@ python scripts/seed_data.py
 
 ```python
 elif menu == "✅ タスク管理":
-    from src.legal_system.ui.pages.タスク管理 import render_task_management
+    from legal_system.ui.pages.タスク管理 import render_task_management
     st.session_state["selected_case_id"] = target_case_id
     render_task_management()
 ```

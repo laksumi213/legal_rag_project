@@ -1,8 +1,9 @@
 import io
-from typing import List, Dict, Any, Optional
+from typing import Any, Dict, List, Optional
 
-from src.legal_system.core.database_manager import DatabaseManager
-from src.legal_system.utils.pdf_utils import apply_coordinates_to_pdf
+from legal_system.core.database_manager import DatabaseManager
+from legal_system.utils.pdf_utils import apply_coordinates_to_pdf
+
 
 class CoordinateService:
     def __init__(self):
@@ -25,10 +26,7 @@ class CoordinateService:
         return None
 
     def fill_pdf_with_coordinates(
-        self, 
-        original_pdf_bytes: bytes, 
-        file_hash: str, 
-        data: Dict[str, str]
+        self, original_pdf_bytes: bytes, file_hash: str, data: Dict[str, str]
     ) -> io.BytesIO:
         """
         元のPDFとファイルハッシュ、そして埋め込むデータ辞書を受け取り、
@@ -68,10 +66,7 @@ class CoordinateService:
         return apply_coordinates_to_pdf(original_pdf_bytes, processed_coordinates)
 
     def ocr_region_with_coordinates(
-        self, 
-        pdf_bytes: bytes, 
-        file_hash: str,
-        labels: Optional[List[str]] = None
+        self, pdf_bytes: bytes, file_hash: str, labels: Optional[List[str]] = None
     ) -> Dict[str, str]:
         """
         PDFバイナリデータとファイルハッシュ、および必要であれば特定のラベルのリストを受け取り、
@@ -85,14 +80,15 @@ class CoordinateService:
         Returns:
             Dict[str, str]: OCRで抽出されたテキストの辞書。キーは座標のラベル、値は抽出されたテキスト。
         """
-        from src.legal_system.core.ocr_engine import OCREngine # 遅延インポート
+        from legal_system.core.ocr_engine import OCREngine  # 遅延インポート
+
         ocr_engine = OCREngine()
-        
+
         if not ocr_engine.is_available:
-            return {} # OCRが利用できない場合は空の辞書を返す
+            return {}  # OCRが利用できない場合は空の辞書を返す
 
         coordinates = self.db_manager.get_coordinates_by_hash(file_hash)
-        
+
         # 矩形座標のみをフィルタリング
         region_coords_to_ocr = []
         for coord in coordinates:
@@ -101,7 +97,7 @@ class CoordinateService:
                     region_coords_to_ocr.append(coord)
 
         if not region_coords_to_ocr:
-            return {} # 処理すべき矩形座標がない場合は空の辞書を返す
+            return {}  # 処理すべき矩形座標がない場合は空の辞書を返す
 
         ocr_results = ocr_engine.process_pdf_region(pdf_bytes, region_coords_to_ocr)
 

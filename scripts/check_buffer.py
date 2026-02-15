@@ -1,9 +1,11 @@
-import os, sys, json
+import sys
 from pathlib import Path
+
 root_dir = Path(__file__).resolve().parents[1]
 sys.path.append(str(root_dir))
-from src.legal_system.core.database_manager import DatabaseManager
-from src.legal_system.models.tables import IncomingNoteBuffer
+from legal_system.core.database_manager import DatabaseManager
+from legal_system.models.tables import IncomingNoteBuffer
+
 
 def check():
     db = DatabaseManager()
@@ -15,6 +17,7 @@ def check():
         print(f"抽出された名前: {n.detected_names}")
         print("-" * 30)
     session.close()
+
 
 if __name__ == "__main__":
     check()

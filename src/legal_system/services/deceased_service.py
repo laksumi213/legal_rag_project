@@ -22,8 +22,8 @@ from legal_system.models.tables import (
     IncomingNoteBuffer,
     User,
 )
-from src.utils.date_utils import parse_all_flexible_date
-from src.utils.retry_decorator import retry_with_backoff
+from legal_system.utils.date_utils import parse_all_flexible_date
+from legal_system.utils.retry_decorator import retry_with_backoff
 
 logger = logging.getLogger(__name__)
 
@@ -163,7 +163,7 @@ def find_cases_by_attributes(
 ) -> List[Dict[str, Any]]:
     # 循環参照エラーを回避するため、ここでモデルをインポート
     from legal_system.models.tables import Case, Deceased
-    
+
     session = get_db_session()
     results = []
 

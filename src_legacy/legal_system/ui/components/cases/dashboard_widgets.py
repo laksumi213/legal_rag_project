@@ -1,13 +1,17 @@
 # src/legal_system/ui/components/cases/dashboard_widgets.py
 
-import json
 import time
+
 import pandas as pd
 import streamlit as st
-from src.legal_system.models.tables import User, ContactLog
-from src.services.deceased_service import update_case_assignment, get_all_users
-from src.services.kintone_sync_service import import_kintone_json, get_kintone_data_as_dict
-from src.utils.date_utils import convert_seireki_to_wareki
+
+from legal_system.models.tables import ContactLog
+from legal_system.services.deceased_service import get_all_users, update_case_assignment
+from legal_system.services.kintone_sync_service import (
+    get_kintone_data_as_dict,
+    import_kintone_json,
+)
+
 
 # ---------------------------------------------------------
 # 1. 担当者割り当てウィジェット (復活)
@@ -17,44 +21,52 @@ def render_manager_assignment(session, case):
     担当者（マネージャー・実務担当）の割り当てUI
     """
     st.markdown("##### 👥 担当者割り当て")
-    
+
     # ユーザーリスト取得
     users = get_all_users()
     user_opts = {u_id: name for u_id, name in users.items()}
     user_opts[None] = "（未設定）"
-    
+
     # 現在の値
     curr_mgr = case.manager_id
     curr_opr = case.operator_id
-    
+
     c1, c2, c3 = st.columns([2, 2, 1])
-    
+
     # リスト作成（選択肢）
     opts_list = list(user_opts.keys())
-    
+
     with c1:
         # インデックス検索 (None対応)
-        idx_m = opts_list.index(curr_mgr) if curr_mgr in opts_list else opts_list.index(None)
+        idx_m = (
+            opts_list.index(curr_mgr)
+            if curr_mgr in opts_list
+            else opts_list.index(None)
+        )
         new_mgr = st.selectbox(
-            "進捗担当 (Manager)", 
-            opts_list, 
+            "進捗担当 (Manager)",
+            opts_list,
             format_func=lambda x: user_opts[x],
             index=idx_m,
-            key="sel_mgr"
+            key="sel_mgr",
         )
-        
+
     with c2:
-        idx_o = opts_list.index(curr_opr) if curr_opr in opts_list else opts_list.index(None)
+        idx_o = (
+            opts_list.index(curr_opr)
+            if curr_opr in opts_list
+            else opts_list.index(None)
+        )
         new_opr = st.selectbox(
-            "実務担当 (Operator)", 
-            opts_list, 
+            "実務担当 (Operator)",
+            opts_list,
             format_func=lambda x: user_opts[x],
             index=idx_o,
-            key="sel_opr"
+            key="sel_opr",
         )
-        
+
     with c3:
-        st.write("") # スペーサー
+        st.write("")  # スペーサー
         st.write("")
         if st.button("更新", key="btn_assign_update"):
             if update_case_assignment(case.case_id, new_mgr, new_opr):
@@ -63,6 +75,7 @@ def render_manager_assignment(session, case):
                 st.rerun()
             else:
                 st.error("更新失敗")
+
 
 # ---------------------------------------------------------
 # 2. SOL情報・紹介元情報 (復活)
@@ -76,15 +89,16 @@ def render_sol_info(session, case):
         c1, c2, c3 = st.columns(3)
         c1.caption("SOL案件番号")
         c1.write(case.sol_case_number or "（なし）")
-        
+
         c2.caption("紹介元支店 / 担当者")
         br = case.referral_sec_branch_name or "-"
         rep = case.referral_sec_rep_name or "-"
         c2.write(f"{br} / {rep}")
-        
+
         c3.caption("紹介日")
         intro = case.introduction_date
         c3.write(str(intro) if intro else "-")
+
 
 # ---------------------------------------------------------
 # 3. Kintone連携ツール (復活)
@@ -109,7 +123,10 @@ def render_kintone_tool(case_id):
                     else:
                         st.error("データの保存に失敗しました。")
                 else:
-                    st.error("Kintoneからデータを取得できませんでした。Record IDを確認してください。")
+                    st.error(
+                        "Kintoneからデータを取得できませんでした。Record IDを確認してください。"
+                    )
+
 
 # ---------------------------------------------------------
 # 4. 対応履歴・タイムライン (Ver 3.3 新機能)
@@ -120,10 +137,15 @@ def render_contact_logs(session, case_id):
     """
     st.divider()
     st.subheader("⏱️ 処理タイムライン・履歴")
-    
+
     # データを取得
-    logs = session.query(ContactLog).filter_by(case_id=case_id).order_by(ContactLog.log_id.desc()).all()
-    
+    logs = (
+        session.query(ContactLog)
+        .filter_by(case_id=case_id)
+        .order_by(ContactLog.log_id.desc())
+        .all()
+    )
+
     if logs:
         # データフレーム用に整形
         data = []
@@ -133,7 +155,7 @@ def render_contact_logs(session, case_id):
             action = "メモ/連絡"
             result = "記録"
             icon = "🗒️"
-            
+
             if "【自動取込】" in content:
                 action = "AI自動処理"
                 icon = "🤖"
@@ -143,18 +165,22 @@ def render_contact_logs(session, case_id):
                     result = "失敗"
                 else:
                     result = "通知"
-            
-            data.append({
-                "ID": log.log_id,
-                "種別": icon,
-                "アクション": action,
-                "内容": content.split("\n")[0] if content else "(内容なし)", # 1行目だけ表示
-                "詳細": content,
-                "結果": result
-            })
-            
+
+            data.append(
+                {
+                    "ID": log.log_id,
+                    "種別": icon,
+                    "アクション": action,
+                    "内容": content.split("\n")[0]
+                    if content
+                    else "(内容なし)",  # 1行目だけ表示
+                    "詳細": content,
+                    "結果": result,
+                }
+            )
+
         df = pd.DataFrame(data)
-        
+
         # タイムライン風テーブル表示
         st.dataframe(
             df[["種別", "アクション", "内容", "結果"]],
@@ -165,14 +191,14 @@ def render_contact_logs(session, case_id):
                 "結果": st.column_config.TextColumn("Status", width="small"),
             },
             use_container_width=True,
-            hide_index=True
+            hide_index=True,
         )
-        
+
         # 詳細確認用エクスパンダー
         with st.expander("詳細ログを確認する"):
             for d in data:
                 st.markdown(f"**{d['種別']} {d['アクション']}** : {d['内容']}")
-                st.text(d['詳細'])
+                st.text(d["詳細"])
                 st.divider()
     else:
         st.info("履歴はありません。")

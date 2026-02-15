@@ -1,15 +1,17 @@
 # src/legal_system/core/pdf_processor.py
 
-import re
 import logging
-import fitz  # PyMuPDF
+import re
 import unicodedata
-import numpy as np
-from typing import Dict, Any, Tuple, List
+from typing import Any, Dict
 
-from src.legal_system.core.ocr_engine import OCREngine
+import fitz  # PyMuPDF
+import numpy as np
+
+from legal_system.core.ocr_engine import OCREngine
 
 logger = logging.getLogger(__name__)
+
 
 class ReferralSheetParser:
     """
@@ -27,20 +29,22 @@ class ReferralSheetParser:
         # Step 1: まず高速なテキスト抽出(PyMuPDF)を試す
         raw_text_1 = self._extract_text_only(file_bytes)
         parsed_data_1 = self._process_text_to_data(raw_text_1)
-        
+
         # Step 2: 判定ロジック
         # 顧客名などの主要項目が空の場合、テキスト抽出では「枠線（ラベル）」しか取れていないと判断し、
         # 強制的にOCR(画像解析)を実行する。
         if not parsed_data_1.get("client_name"):
-            logger.info("テキスト抽出で値が取得できないため、OCR(画像解析)を実行します。")
+            logger.info(
+                "テキスト抽出で値が取得できないため、OCR(画像解析)を実行します。"
+            )
             ocr_text = self._perform_ocr(file_bytes)
-            
+
             # OCR結果で再パース
             parsed_data_2 = self._process_text_to_data(ocr_text)
             parsed_data_2["_debug_mode"] = "OCR_FALLBACK (Auto)"
             parsed_data_2["_debug_raw_text"] = ocr_text
             return parsed_data_2
-        
+
         # テキスト抽出で成功していればそれを返す
         parsed_data_1["_debug_mode"] = "TEXT_LAYER (High Speed)"
         parsed_data_1["_debug_raw_text"] = raw_text_1
@@ -72,7 +76,7 @@ class ReferralSheetParser:
             # 精度向上のためzoom=2.0で画像化
             pix = page.get_pixmap(matrix=fitz.Matrix(2.0, 2.0))
             img_array = np.frombuffer(pix.samples, dtype=np.uint8)
-            
+
             # PaddleOCR用にBGR変換
             if pix.n == 4:
                 img = img_array.reshape(pix.height, pix.width, 4)
@@ -87,14 +91,15 @@ class ReferralSheetParser:
             if result and result[0]:
                 for line in result[0]:
                     full_ocr_text.append(line[1][0])
-        
+
         doc.close()
         # OCR結果は行ごとに分かれているため改行で結合
         return "\n".join(full_ocr_text)
 
     def _clean_name_spacing(self, text: str) -> str:
         """氏名のスペース整理"""
-        if not text: return ""
+        if not text:
+            return ""
         text = text.strip()
         text = re.sub(r"[\s　]{2,}", "###", text)
         text = re.sub(r"[\s　]", "", text)
@@ -103,11 +108,11 @@ class ReferralSheetParser:
     def _extract_fields_via_regex(self, text: str) -> Dict[str, Any]:
         """正規表現による項目抽出"""
         data = {}
-        
+
         # 被相続人情報の除外ロジック
         ignore_keywords = ["被相続人", "死亡日", "相続開始", "遺言信託"]
         target_text = text
-        
+
         # 最も上にあるキーワードでカットする
         min_idx = len(text)
         cut_flag = False
@@ -116,7 +121,7 @@ class ReferralSheetParser:
             if idx != -1 and idx < min_idx:
                 min_idx = idx
                 cut_flag = True
-        
+
         if cut_flag:
             target_text = text[:min_idx]
 
@@ -149,13 +154,17 @@ class ReferralSheetParser:
         data["client_phone_2"] = unique_phones[1] if len(unique_phones) > 1 else ""
 
         # 住所抽出
-        addr_match = re.search(r"住所[\s:：]*([\s\S]+?)(?:\n\s*(?:ニーズ|電話|TEL|氏名|フリガナ)|$)", target_text)
+        addr_match = re.search(
+            r"住所[\s:：]*([\s\S]+?)(?:\n\s*(?:ニーズ|電話|TEL|氏名|フリガナ)|$)",
+            target_text,
+        )
         if addr_match:
             data["client_address"] = addr_match.group(1).replace("\n", "").strip()
         else:
             data["client_address"] = ""
 
         return data
+
 
 def analyze_referral_pdf(file_bytes: bytes) -> Dict[str, Any]:
     return ReferralSheetParser().parse_pdf(file_bytes)

@@ -3,18 +3,17 @@
 import base64
 import json
 import os
+import re
 import sys
 import time
-import re
-from datetime import datetime
 from io import BytesIO
 
 import pandas as pd
 import streamlit as st
 from langchain_core.messages import HumanMessage
 from pdf2image import convert_from_bytes
-from PIL import Image
 from sqlalchemy.orm import joinedload
+
 
 # Helper function to extract numeric parts for sorting
 def extract_sort_key(filename: str):
@@ -22,18 +21,19 @@ def extract_sort_key(filename: str):
     # 例: "1_登記.pdf" -> "1"
     # 例: "①登記.jpg" -> "1"
     # 例: "ファイル名.pdf" -> ""
-    match = re.search(r'(\d+)|([①②③④⑤⑥⑦⑧⑨⑩⑪⑫⑬⑭⑮⑯⑰⑱⑲⑳])', filename)
+    match = re.search(r"(\d+)|([①②③④⑤⑥⑦⑧⑨⑩⑪⑫⑬⑭⑮⑯⑰⑱⑲⑳])", filename)
     if match:
-        if match.group(1): # 半角・全角数字
+        if match.group(1):  # 半角・全角数字
             return int(match.group(1))
-        elif match.group(2): # 丸囲み数字
+        elif match.group(2):  # 丸囲み数字
             # 丸囲み数字を通常の数字に変換
             circled_numbers = "①②③④⑤⑥⑦⑧⑨⑩⑪⑫⑬⑭⑮⑯⑰⑱⑲⑳"
             try:
                 return circled_numbers.index(match.group(2)) + 1
             except ValueError:
-                return sys.maxsize # 変換できない場合は最後に
-    return sys.maxsize # 数字がない場合は最後に
+                return sys.maxsize  # 変換できない場合は最後に
+    return sys.maxsize  # 数字がない場合は最後に
+
 
 # ==========================================
 # 1. パス解決 & インポート
@@ -48,19 +48,22 @@ if ROOT_DIR not in sys.path:
 from legal_system.core.ai_factory import AIFactory
 from legal_system.core.database_manager import DatabaseManager
 from legal_system.models.tables import Case, RealEstateAsset
+from legal_system.services.automation.touki_service import ToukiService  # ADD THIS
+from legal_system.services.deceased_service import update_case_folder_path
 
 # フォルダ操作用サービス
-from services.folder_service import find_case_folder, open_local_folder
-from services.deceased_service import update_case_folder_path
-from services.automation.touki_service import ToukiService # ADD THIS
+from legal_system.services.folder_service import open_local_folder
 
 # ページ設定
 st.set_page_config(page_title="登記情報 自動読取", page_icon="🏘️", layout="wide")
 
+
 # ==========================================
 # 2. AI解析ロジック (Gemini Vision)
 # ==========================================
-def analyze_registry_with_ai(file_bytes: bytes, mime_type: str, target_name: str, file_name: str = "unknown") -> dict:
+def analyze_registry_with_ai(
+    file_bytes: bytes, mime_type: str, target_name: str, file_name: str = "unknown"
+) -> dict:
     """
     登記情報を読み取り、土地・建物・マンションの情報を抽出する
     """
@@ -166,10 +169,10 @@ def analyze_registry_with_ai(file_bytes: bytes, mime_type: str, target_name: str
     try:
         message = HumanMessage(content=content_parts)
         response = llm.invoke([message])
-        
+
         raw_content = response.content
         json_str = raw_content.replace("```json", "").replace("```", "").strip()
-        
+
         start = json_str.find("{")
         end = json_str.rfind("}") + 1
         if start != -1 and end != 0:
@@ -180,6 +183,7 @@ def analyze_registry_with_ai(file_bytes: bytes, mime_type: str, target_name: str
     except Exception as e:
         return {"error": str(e)}
 
+
 # ==========================================
 # 3. 遺言書用テキスト生成関数
 # ==========================================
@@ -188,30 +192,32 @@ def generate_will_text(assets_df: pd.DataFrame) -> str:
     DataFrameの内容から、遺言書コピペ用のテキストを生成する
     """
     text_lines = []
-    
+
     # 全角スペース
     sp = "　"
-    
+
     for i, row in assets_df.iterrows():
         # 連番 (1) (2)...
-        num_prefix = f"（{i+1}）"
-        
+        num_prefix = f"（{i + 1}）"
+
         p_type = row.get("type", "")
         share = row.get("share", "")
-        
+
         # --- A. 土地 ---
         if p_type == "土地":
             pref = row.get("prefecture", "")
             loc = row.get("location", "")
-            full_loc_str = f"{pref}{loc}" if pref else loc # 都道府県と所在を結合
+            full_loc_str = f"{pref}{loc}" if pref else loc  # 都道府県と所在を結合
 
             text_lines.append(f"{num_prefix}\t土地")
             text_lines.append(f"{sp}所在{sp}{full_loc_str}")
-            text_lines.append(f"{sp}地番{sp}{row.get('number', 'None')}") # 地番がNoneの場合でも表示
+            text_lines.append(
+                f"{sp}地番{sp}{row.get('number', 'None')}"
+            )  # 地番がNoneの場合でも表示
             text_lines.append(f"{sp}地目{sp}{row.get('category', '')}")
             text_lines.append(f"{sp}地積{sp}{row.get('area', '')}㎡")
             text_lines.append(f"{sp}持分{sp}{share}")
-            
+
         # --- B. マンション (区分所有) ---
         elif p_type == "マンション":
             pref = row.get("prefecture", "")
@@ -219,30 +225,32 @@ def generate_will_text(assets_df: pd.DataFrame) -> str:
             full_m_b_loc_str = f"{pref}{m_b_loc}" if pref else m_b_loc
 
             text_lines.append(f"{num_prefix}\tマンション")
-            
-            text_lines.append(f"（一棟の建物の表示）")
+
+            text_lines.append("（一棟の建物の表示）")
             text_lines.append(f"{sp}所在{sp}{full_m_b_loc_str}")
             text_lines.append(f"{sp}建物の名称{sp}{row.get('m_b_name', '')}")
-            
-            text_lines.append(f"（敷地権の目的である土地の表示）")
+
+            text_lines.append("（敷地権の目的である土地の表示）")
             text_lines.append(f"{sp}土地の符号{sp}{row.get('m_l_sym', '1')}")
-            text_lines.append(f"{sp}所在及び地番{sp}{row.get('m_l_loc', '')}") # m_l_loc は AI が完全な形式で抽出すると仮定
+            text_lines.append(
+                f"{sp}所在及び地番{sp}{row.get('m_l_loc', '')}"
+            )  # m_l_loc は AI が完全な形式で抽出すると仮定
             text_lines.append(f"{sp}地目{sp}{row.get('m_l_cat', '')}")
             text_lines.append(f"{sp}地積{sp}{row.get('m_l_area', '')}㎡")
-            
-            text_lines.append(f"（専有部分の建物の表示）")
+
+            text_lines.append("（専有部分の建物の表示）")
             text_lines.append(f"{sp}家屋番号{sp}{row.get('number', 'None')}")
             text_lines.append(f"{sp}建物の名称{sp}{row.get('m_p_name', '')}")
-            
+
             text_lines.append(f"{sp}種類{sp}{row.get('category', '')}")
             text_lines.append(f"{sp}構造{sp}{row.get('structure', '')}")
             text_lines.append(f"{sp}床面積{sp}{row.get('area', '')}㎡")
-            
-            text_lines.append(f"（敷地権の表示）")
+
+            text_lines.append("（敷地権の表示）")
             text_lines.append(f"{sp}土地の符号{sp}{row.get('m_l_sym', '1')}")
             text_lines.append(f"{sp}敷地権の種類{sp}{row.get('m_r_type', '')}")
             text_lines.append(f"{sp}敷地権の割合{sp}{row.get('m_r_ratio', '')}")
-            
+
             # マンションの持分（専有部分の所有権の持分）
             if share and share != "1/1":
                 text_lines.append(f"{sp}持分{sp}{share}")
@@ -260,9 +268,10 @@ def generate_will_text(assets_df: pd.DataFrame) -> str:
             text_lines.append(f"{sp}構造{sp}{row.get('structure', '')}")
             text_lines.append(f"{sp}床面積{sp}{row.get('area', '')}㎡")
             text_lines.append(f"{sp}持分{sp}{share}")
-            
-        text_lines.append("") # 空行
+
+        text_lines.append("")  # 空行
     return "\n".join(text_lines)
+
 
 # ==========================================
 # 4. DB保存ヘルパー
@@ -281,18 +290,19 @@ def save_real_estate_to_db(session, case_id: int, assets: list):
             db_type = "Condo"
         else:
             db_type = "Building"
-        
+
         # 面積の数値変換（可能な場合）
         area_val = None
         floor_area_str = str(item.get("area", ""))
-        
+
         if db_type == "Land":
             try:
                 # 文字列から数値抽出 ("100.23㎡" -> 100.23)
                 match = re.search(r"(\d+(\.\d+)?)", floor_area_str)
                 if match:
                     area_val = float(match.group(1))
-            except: pass
+            except:
+                pass
 
         # 所在・番号の取得
         # マンションの場合、DBのlocationには一棟の所在、numberには専有家屋番号を入れるのが一般的
@@ -308,7 +318,7 @@ def save_real_estate_to_db(session, case_id: int, assets: list):
             q = q.filter(RealEstateAsset.lot_number == num)
         else:
             q = q.filter(RealEstateAsset.house_number == num)
-            
+
         existing = q.first()
 
         # 値の構築
@@ -350,20 +360,23 @@ def save_real_estate_to_db(session, case_id: int, assets: list):
                 land_category=land_cat,
                 land_area=land_area,
                 structure=struc,
-                floor_area=fl_area
+                floor_area=fl_area,
             )
             session.add(new_asset)
-        
+
         count += 1
-    
+
     return count
+
 
 # ==========================================
 # 5. メイン画面 UI
 # ==========================================
 def main():
     st.title("🏘️ 登記情報 自動読取")
-    st.caption("登記情報(PDF/画像)をアップロードすると、**自動的に**AIが情報を抽出出し、遺言書用の形式で出力します。")
+    st.caption(
+        "登記情報(PDF/画像)をアップロードすると、**自動的に**AIが情報を抽出出し、遺言書用の形式で出力します。"
+    )
 
     db = DatabaseManager()
     session = db._get_session()
@@ -386,13 +399,21 @@ def main():
         return
 
     # 案件情報取得
-    current_case = session.query(Case).options(joinedload(Case.deceased_ref)).get(target_case_id)
+    current_case = (
+        session.query(Case).options(joinedload(Case.deceased_ref)).get(target_case_id)
+    )
     if not current_case:
         st.error("案件情報の取得に失敗しました。")
         return
 
-    d_name = f"{current_case.deceased_ref.name_last} {current_case.deceased_ref.name_first}" if current_case.deceased_ref else "未登録"
-    st.success(f"📂 作業中の案件: **{current_case.case_number} {current_case.client_name}** 様 (被相続人: {d_name})")
+    d_name = (
+        f"{current_case.deceased_ref.name_last} {current_case.deceased_ref.name_first}"
+        if current_case.deceased_ref
+        else "未登録"
+    )
+    st.success(
+        f"📂 作業中の案件: **{current_case.case_number} {current_case.client_name}** 様 (被相続人: {d_name})"
+    )
 
     # ----------------------------------------------------
     # フォルダ操作エリア
@@ -400,16 +421,16 @@ def main():
     with st.container(border=True):
         col_f1, col_f2 = st.columns([3, 1])
         curr_path = current_case.folder_path or ""
-        
+
         with col_f1:
             new_path = st.text_input(
-                "📂 案件フォルダパス", 
-                value=curr_path, 
-                placeholder=r"\\server\share\案件..."
+                "📂 案件フォルダパス",
+                value=curr_path,
+                placeholder=r"\\server\share\案件...",
             )
-        
+
         with col_f2:
-            st.write("") 
+            st.write("")
             st.write("")
             if st.button("フォルダを開く", use_container_width=True):
                 if new_path:
@@ -427,13 +448,18 @@ def main():
     with col_L:
         st.subheader("1. 登記情報アップロード")
         # ★ポイント: keyを固定して再描画時もウィジェットの状態を維持
-        uploaded_files = st.file_uploader("全部事項証明書など (PDF/画像)", type=["pdf", "png", "jpg", "jpeg"], accept_multiple_files=True, key="touki_uploader")
+        uploaded_files = st.file_uploader(
+            "全部事項証明書など (PDF/画像)",
+            type=["pdf", "png", "jpg", "jpeg"],
+            accept_multiple_files=True,
+            key="touki_uploader",
+        )
 
         # ファイルがアップロードされているか確認
         if uploaded_files:
             # 解析結果を格納するリスト
             all_assets = []
-            
+
             # 既に解析済みのファイルリストをセッションから取得
             if "last_analyzed_touki_files" not in st.session_state:
                 st.session_state["last_analyzed_touki_files"] = []
@@ -441,40 +467,58 @@ def main():
             # 各ファイルを処理
             for uploaded_file in uploaded_files:
                 file_bytes = uploaded_file.getvalue()
-                
+
                 # ファイルの識別子 (名前 + サイズ) で新規ファイルか判定
                 file_id = f"{uploaded_file.name}_{uploaded_file.size}"
-                
+
                 # まだ解析していないファイル、または再解析が必要な場合
                 if file_id not in st.session_state["last_analyzed_touki_files"]:
                     if not d_name or d_name == "未登録":
-                        st.warning("⚠️ 被相続人名が登録されていません。持分の特定が難しくなる可能性があります。")
-                    
-                    with st.spinner(f"🚀 {uploaded_file.name} を検知しました。AIが解析中です..."):
+                        st.warning(
+                            "⚠️ 被相続人名が登録されていません。持分の特定が難しくなる可能性があります。"
+                        )
+
+                    with st.spinner(
+                        f"🚀 {uploaded_file.name} を検知しました。AIが解析中です..."
+                    ):
                         # analyze_registry_with_ai にファイル名を渡す
-                        result = analyze_registry_with_ai(file_bytes, uploaded_file.type, target_name=d_name, file_name=uploaded_file.name)
-                        
+                        result = analyze_registry_with_ai(
+                            file_bytes,
+                            uploaded_file.type,
+                            target_name=d_name,
+                            file_name=uploaded_file.name,
+                        )
+
                         if "error" in result:
-                            st.error(f"ファイル {uploaded_file.name} の解析エラー: {result["error"]}")
+                            st.error(
+                                f"ファイル {uploaded_file.name} の解析エラー: {result['error']}"
+                            )
                         else:
                             if "assets" in result and result["assets"]:
                                 # 1ファイル1不動産の絶対ルールに従い、最後の1件のみを抽出
-                                final_asset_for_file = result["assets"][-1] # 一番下の情報を取得
-                                final_asset_for_file["source_file"] = uploaded_file.name # ファイル名を紐付け
-                                all_assets.append(final_asset_for_file) # 1件のみ追加
+                                final_asset_for_file = result["assets"][
+                                    -1
+                                ]  # 一番下の情報を取得
+                                final_asset_for_file["source_file"] = (
+                                    uploaded_file.name
+                                )  # ファイル名を紐付け
+                                all_assets.append(final_asset_for_file)  # 1件のみ追加
                             else:
-                                st.warning(f"ファイル {uploaded_file.name} から不動産情報が見つかりませんでした。")
-                            st.session_state["last_analyzed_touki_files"].append(file_id) # 解析済みフラグ更新
+                                st.warning(
+                                    f"ファイル {uploaded_file.name} から不動産情報が見つかりませんでした。"
+                                )
+                            st.session_state["last_analyzed_touki_files"].append(
+                                file_id
+                            )  # 解析済みフラグ更新
                             st.toast(f"{uploaded_file.name} の解析完了！", icon="✅")
                             time.sleep(0.5)
-            
+
             # すべてのファイルが解析された後にセッションステートを更新
             if all_assets:
                 # 最終的な結果を session_state に保存
                 st.session_state["touki_result"] = {"assets": all_assets}
                 # 一度 reran して結果を表示
                 st.rerun()
-
 
             # プレビュー表示は最後のファイルのみ
             # if uploaded_files:
@@ -487,73 +531,90 @@ def main():
             #             st.warning(f"{last_uploaded_file.name} のPDFプレビュー生成に失敗しました（解析は可能です）")
             #     else:
             #         st.image(last_uploaded_file.getvalue(), caption=f"{uploaded_file.name} プレビュー", use_container_width=True)
-            
+
             # 解析後にプレビューを表示しないように変更 (または全ファイルのプレビュー表示は別途検討)
-            st.info("解析された不動産情報は右側の「結果確認・登録」セクションに表示されます。")
+            st.info(
+                "解析された不動産情報は右側の「結果確認・登録」セクションに表示されます。"
+            )
 
     with col_R:
         st.subheader("2. 結果確認・登録")
-        
+
         # 解析結果がある場合
         if "touki_result" in st.session_state and st.session_state["touki_result"]:
             res = st.session_state["touki_result"]
             assets = res.get("assets", [])
-            
+
             if not assets:
                 st.warning("不動産情報が見つかりませんでした。")
             else:
                 st.markdown(f"**検出された不動産: {len(assets)}件**")
-                
+
                 # ファイル名に基づいてソート
                 assets.sort(key=lambda x: extract_sort_key(x.get("source_file", "")))
-                
+
                 # 編集用データフレーム作成
                 # ここで_parse_address_for_toukiを呼び出して、所在と地番・家屋番号を分離する
-                
+
                 touki_parser = ToukiService()
 
                 processed_assets_for_df = []
                 for asset in assets:
                     full_addr = asset.get("full_address", "")
-                    prefecture, location, number = touki_parser._parse_address_for_touki(full_addr)
-                    
+                    prefecture, location, number = (
+                        touki_parser._parse_address_for_touki(full_addr)
+                    )
+
                     # DataFrameに渡すデータは必要なカラムのみに絞る
-                    processed_assets_for_df.append({
-                        "type": asset.get("type"),
-                        "share": asset.get("share"),
-                        "prefecture": prefecture,
-                        "location": location,
-                        "number": number, # 地番または家屋番号
-                        "category": asset.get("category"),
-                        "area": asset.get("area"),
-                        "structure": asset.get("structure"),
-                        "m_b_loc": asset.get("m_b_loc"),
-                        "m_b_name": asset.get("m_b_name"),
-                        "m_l_sym": asset.get("m_l_sym"),
-                        "m_l_loc": asset.get("m_l_loc"),
-                        "m_l_cat": asset.get("m_l_cat"),
-                        "m_l_area": asset.get("m_l_area"),
-                        "m_p_name": asset.get("m_p_name"),
-                        "m_r_type": asset.get("m_r_type"),
-                        "m_r_ratio": asset.get("m_r_ratio"),
-                        "source_file": asset.get("source_file"),
-                    })
+                    processed_assets_for_df.append(
+                        {
+                            "type": asset.get("type"),
+                            "share": asset.get("share"),
+                            "prefecture": prefecture,
+                            "location": location,
+                            "number": number,  # 地番または家屋番号
+                            "category": asset.get("category"),
+                            "area": asset.get("area"),
+                            "structure": asset.get("structure"),
+                            "m_b_loc": asset.get("m_b_loc"),
+                            "m_b_name": asset.get("m_b_name"),
+                            "m_l_sym": asset.get("m_l_sym"),
+                            "m_l_loc": asset.get("m_l_loc"),
+                            "m_l_cat": asset.get("m_l_cat"),
+                            "m_l_area": asset.get("m_l_area"),
+                            "m_p_name": asset.get("m_p_name"),
+                            "m_r_type": asset.get("m_r_type"),
+                            "m_r_ratio": asset.get("m_r_ratio"),
+                            "source_file": asset.get("source_file"),
+                        }
+                    )
 
                 df = pd.DataFrame(processed_assets_for_df)
-                
+
                 # 型エラー回避のため文字列化
                 for col in ["area", "m_l_area"]:
                     if col in df.columns:
                         df[col] = df[col].astype(str)
-                
+
                 # カラム設定 (マンション用のカラムを追加)
                 column_config = {
-                    "type": st.column_config.SelectboxColumn("区分", options=["土地", "建物", "マンション"], width="small", required=True),
+                    "type": st.column_config.SelectboxColumn(
+                        "区分",
+                        options=["土地", "建物", "マンション"],
+                        width="small",
+                        required=True,
+                    ),
                     "share": st.column_config.TextColumn("持分", width="small"),
-                    "prefecture": st.column_config.TextColumn("都道府県", width="small"), # 新しく追加
+                    "prefecture": st.column_config.TextColumn(
+                        "都道府県", width="small"
+                    ),  # 新しく追加
                     # --- 土地・建物 ---
-                    "location": st.column_config.TextColumn("所在(土地/建物)", width="medium"),
-                    "number": st.column_config.TextColumn("地番/家屋番号", width="small"),
+                    "location": st.column_config.TextColumn(
+                        "所在(土地/建物)", width="medium"
+                    ),
+                    "number": st.column_config.TextColumn(
+                        "地番/家屋番号", width="small"
+                    ),
                     "category": st.column_config.TextColumn("地目/種類", width="small"),
                     "area": st.column_config.TextColumn("地積/床面積", width="small"),
                     "structure": st.column_config.TextColumn("構造", width="medium"),
@@ -563,7 +624,7 @@ def main():
                     "m_l_loc": st.column_config.TextColumn("[M]土地所在"),
                     "m_p_name": st.column_config.TextColumn("[M]専有名称"),
                 }
-                
+
                 # ★Data Editor (編集結果を取得)
                 edited_df = st.data_editor(
                     df,
@@ -571,34 +632,38 @@ def main():
                     num_rows="dynamic",
                     use_container_width=True,
                     hide_index=True,
-                    key="touki_editor"
+                    key="touki_editor",
                 )
-                
+
                 st.markdown("---")
-                
+
                 # ★追加: 遺言書用コピペテキスト生成エリア
                 st.markdown("##### 📋 遺言書用テキスト (コピペ用)")
                 will_text = generate_will_text(edited_df)
                 st.text_area(
                     "以下のテキストをコピーしてWord等に貼り付けてください",
                     value=will_text,
-                    height=300
+                    height=300,
                 )
-                
+
                 st.markdown("---")
-                
+
                 # 保存ボタン
                 if st.button("💾 データベースに登録", type="primary"):
                     try:
                         final_assets = edited_df.to_dict(orient="records")
-                        count = save_real_estate_to_db(session, target_case_id, final_assets)
+                        count = save_real_estate_to_db(
+                            session, target_case_id, final_assets
+                        )
                         session.commit()
-                        
-                        st.toast(f"登録完了: {count}件の不動産を保存しました！", icon="✅")
-                        
+
+                        st.toast(
+                            f"登録完了: {count}件の不動産を保存しました！", icon="✅"
+                        )
+
                         # 登録後も結果を表示し続ける
                         st.success("✅ データベースへの登録が完了しました。")
-                        
+
                     except Exception as e:
                         st.error(f"登録エラー: {e}")
                         session.rollback()
@@ -612,6 +677,7 @@ def main():
             """)
 
     session.close()
+
 
 if __name__ == "__main__":
     main()

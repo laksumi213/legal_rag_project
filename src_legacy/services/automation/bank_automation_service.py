@@ -14,7 +14,7 @@ from selenium.webdriver.common.by import By
 from selenium.webdriver.support import expected_conditions as EC
 from selenium.webdriver.support.ui import WebDriverWait
 
-from src.utils.retry_decorator import retry_with_backoff
+from legal_system.utils.retry_decorator import retry_with_backoff
 
 try:
     from webdriver_manager.chrome import ChromeDriverManager

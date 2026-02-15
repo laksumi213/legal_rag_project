@@ -22,19 +22,28 @@ project_root = os.path.dirname(
 if project_root not in sys.path:
     sys.path.append(project_root)
 
-from legal_system.core.ai_factory import AIFactory
-from legal_system.core.database_manager import DatabaseManager
-from legal_system.models.tables import Address, Case, Deceased, H_AddressHistory, Heir, Contact, H_ContactLink
-from src.services.deceased_service import (
-    get_next_provisional_number,
-    search_zip_by_address_api,
-    find_cases_by_attributes, # ★追加: 検索用サービス
-    add_heir,                 # ★追加: 相続人追加用
-    get_address_info          # ★追加: 住所取得
-)
-from src.services.dispatch_service import (
+from legal_system.services.dispatch_service import (
     determine_base_from_branch,
     generate_kintone_json_payload,
+)
+
+from legal_system.core.ai_factory import AIFactory
+from legal_system.core.database_manager import DatabaseManager
+from legal_system.models.tables import (
+    Address,
+    Case,
+    Contact,
+    Deceased,
+    H_AddressHistory,
+    H_ContactLink,
+    Heir,
+)
+from legal_system.services.deceased_service import (
+    add_heir,  # ★追加: 相続人追加用
+    # ★追加: 住所取得
+    find_cases_by_attributes,  # ★追加: 検索用サービス
+    get_next_provisional_number,
+    search_zip_by_address_api,
 )
 
 st.set_page_config(page_title="書類読取エージェント", page_icon="📄", layout="wide")
@@ -46,7 +55,7 @@ def katakana_to_hiragana(katakana_str: str) -> str:
     """
     if not isinstance(katakana_str, str):
         return ""
-        
+
     hiragana_chars = []
     for char in katakana_str:
         code_point = ord(char)
@@ -82,7 +91,7 @@ def _clean_kanji_name_by_kana(kanji_name: str, kana_name: str) -> str:
     # 最後に現れる全角または半角スペースを区切り文字として、姓と名を分ける
     last_space_idx_zen = kanji_name.rfind("　")
     last_space_idx_han = kanji_name.rfind(" ")
-    
+
     split_idx = -1
     if last_space_idx_zen != -1 and last_space_idx_han != -1:
         split_idx = max(last_space_idx_zen, last_space_idx_han)
@@ -90,16 +99,17 @@ def _clean_kanji_name_by_kana(kanji_name: str, kana_name: str) -> str:
         split_idx = last_space_idx_zen
     elif last_space_idx_han != -1:
         split_idx = last_space_idx_han
-    
+
     if split_idx != -1:
         family_name_part = kanji_name[:split_idx].replace(" ", "").replace("　", "")
-        given_name_part = kanji_name[split_idx+1:].strip()
-        
+        given_name_part = kanji_name[split_idx + 1 :].strip()
+
         # 再度結合時に全角スペースを挟む
         return f"{family_name_part}　{given_name_part}"
     else:
         # スペースが見つからない場合は、全てのスペースを除去して返す
         return kanji_no_space
+
 
 def analyze_document_gemini(file_bytes: bytes, mime_type: str) -> dict:
     """
@@ -188,11 +198,11 @@ def register_new_referral_case(session, data: dict):
     """紹介連絡表からの新規案件登録処理"""
     # 1. 仮番号発番
     temp_no = get_next_provisional_number(session)
-    
+
     # 2. 拠点自動判定
     branch_name = data.get("referral_sec_branch_name", "")
     assigned_base = determine_base_from_branch(branch_name)
-    
+
     # 3. 住所分割 (簡易)
     addr_raw = data.get("client_address_full", "")
     zip_code = search_zip_by_address_api(addr_raw)
@@ -243,7 +253,7 @@ def register_new_referral_case(session, data: dict):
     addr = Address(zip_code=zip_code, prefecture="", street_address=addr_raw)
     session.add(addr)
     session.flush()
-    
+
     session.add(
         H_AddressHistory(
             heir_id=heir.id,
@@ -251,7 +261,7 @@ def register_new_referral_case(session, data: dict):
             is_current_address=True,
         )
     )
-    
+
     # 電話番号
     if data.get("client_phone"):
         ct = Contact(value=data.get("client_phone"), type="PHONE")
@@ -260,14 +270,14 @@ def register_new_referral_case(session, data: dict):
         session.add(H_ContactLink(heir_id=heir.id, contact_id=ct.id))
 
     session.commit()
-    
+
     return {
         "case": new_case,
         "dec": dec,
         "heir": heir,
         "addr": addr,
         "base": assigned_base,
-        "temp_no": temp_no
+        "temp_no": temp_no,
     }
 
 
@@ -276,31 +286,34 @@ def merge_heirs_to_existing_case(session, case_id: int, heirs_data: list) -> int
     case = session.query(Case).options(joinedload(Case.deceased_ref)).get(case_id)
     if not case or not case.deceased_ref:
         return 0
-    
+
     deceased_id = case.deceased_ref.id
     added_count = 0
-    
+
     # 既存チェック用
     existing_heirs = session.query(Heir).filter_by(deceased_id=deceased_id).all()
-    existing_names = {f"{h.name_last}{h.name_first}".replace(" ", "").replace("　", "") for h in existing_heirs}
+    existing_names = {
+        f"{h.name_last}{h.name_first}".replace(" ", "").replace("　", "")
+        for h in existing_heirs
+    }
 
     for h_data in heirs_data:
         raw_name = h_data.get("name", "")
         clean_name = raw_name.replace(" ", "").replace("　", "")
-        
+
         if not clean_name or clean_name in existing_names:
             continue
-            
+
         # 登録実行 (住所などは簡易登録)
         # add_heir ヘルパーを使用
         try:
             # 住所分割
             addr_val = h_data.get("address", "")
             zip_val = search_zip_by_address_api(addr_val)
-            
+
             # 生年月日
             dob_val = h_data.get("dob")
-            
+
             # 連絡先
             phone_val = h_data.get("phone")
             contacts = [{"value": phone_val}] if phone_val else []
@@ -310,21 +323,23 @@ def merge_heirs_to_existing_case(session, case_id: int, heirs_data: list) -> int
                 name=raw_name,
                 rel=h_data.get("relationship", ""),
                 # カナ名を姓と名に分割して渡す
-                kana_full = str(h_data.get("kana") or "").strip().replace(" ", "　"), # Ensure it's a string
-                kana_parts = kana_full.split("　", 1),
-                kana_last = kana_parts[0] if kana_parts else "",
-                kana_first = kana_parts[1] if len(kana_parts) > 1 else "",
+                kana_full=str(h_data.get("kana") or "")
+                .strip()
+                .replace(" ", "　"),  # Ensure it's a string
+                kana_parts=kana_full.split("　", 1),
+                kana_last=kana_parts[0] if kana_parts else "",
+                kana_first=kana_parts[1] if len(kana_parts) > 1 else "",
                 dob=dob_val,
                 # 住所
                 zip_code=zip_val,
-                pref="", 
-                street=addr_val, # streetに全住所を入れる
+                pref="",
+                street=addr_val,  # streetに全住所を入れる
                 # 連絡先
-                phone_contacts=contacts
+                phone_contacts=contacts,
             )
             added_count += 1
             existing_names.add(clean_name)
-            
+
         except Exception as e:
             st.error(f"登録エラー ({raw_name}): {e}")
 
@@ -333,7 +348,9 @@ def merge_heirs_to_existing_case(session, case_id: int, heirs_data: list) -> int
 
 def main():
     st.title("📄 書類読取 & 案件登録エージェント")
-    st.caption("「顧客紹介連絡表」の新規登録、または「推定相続人連絡先一覧」の既存案件への紐付けを行います。")
+    st.caption(
+        "「顧客紹介連絡表」の新規登録、または「推定相続人連絡先一覧」の既存案件への紐付けを行います。"
+    )
 
     # --- セッションステート初期化 ---
     if "ocr_result" not in st.session_state:
@@ -347,9 +364,9 @@ def main():
 
     # --- ファイルアップロード ---
     uploaded_file = st.file_uploader(
-        "書類 (PDF/画像) をアップロード", 
+        "書類 (PDF/画像) をアップロード",
         type=["pdf", "png", "jpg", "jpeg"],
-        key="uploader_main"
+        key="uploader_main",
     )
 
     if not uploaded_file:
@@ -381,7 +398,7 @@ def main():
 
     # --- レイアウト ---
     col_l, col_r = st.columns([1, 1.2])
-    
+
     with col_l:
         st.image(display_img, caption="プレビュー", use_container_width=True)
 
@@ -392,7 +409,7 @@ def main():
             with st.spinner("Geminiが内容を読み取っています..."):
                 res = analyze_document_gemini(target_bytes, mime_type)
                 st.session_state["ocr_result"] = res
-                
+
                 # 自動検索実行
                 search_key = res.get("search_key_name", "").strip()
                 if search_key:
@@ -401,9 +418,11 @@ def main():
                     if not hits:
                         hits = find_cases_by_attributes(deceased_name=search_key)
                     st.session_state["candidate_cases"] = hits
-                
+
                 st.rerun()
-            st.info("⬆️ ファイルをアップロードしてAI解析が自動開始されました。") # Added info message
+            st.info(
+                "⬆️ ファイルをアップロードしてAI解析が自動開始されました。"
+            )  # Added info message
 
         # 2. 解析後のフロー
         if st.session_state["ocr_result"]:
@@ -412,20 +431,28 @@ def main():
 
             # 抽出された漢字氏名とフリガナをクリーンアップ
             if "client_name" in data and "client_name_kana" in data:
-                data["client_name"] = _clean_kanji_name_by_kana(data["client_name"], data["client_name_kana"])
-            if "search_key_name" in data and "client_name_kana" in data: # search_key_nameも同様に修正
-                 data["search_key_name"] = _clean_kanji_name_by_kana(data["search_key_name"], data["client_name_kana"])
-            
+                data["client_name"] = _clean_kanji_name_by_kana(
+                    data["client_name"], data["client_name_kana"]
+                )
+            if (
+                "search_key_name" in data and "client_name_kana" in data
+            ):  # search_key_nameも同様に修正
+                data["search_key_name"] = _clean_kanji_name_by_kana(
+                    data["search_key_name"], data["client_name_kana"]
+                )
+
             # 相続人リストがある場合も個別の氏名をクリーンアップ
             if doc_type == "heir_list" and "heirs" in data:
                 for heir in data["heirs"]:
                     if "name" in heir and "kana" in heir:
-                        heir["name"] = _clean_kanji_name_by_kana(heir["name"], heir["kana"])
+                        heir["name"] = _clean_kanji_name_by_kana(
+                            heir["name"], heir["kana"]
+                        )
 
             search_key = data.get("search_key_name", "不明")
-            
+
             st.success(f"✅ 読取完了: {search_key} 様 ({doc_type})")
-            
+
             # --- 案件選択フェーズ ---
             candidates = st.session_state["candidate_cases"]
             db = DatabaseManager()
@@ -436,19 +463,21 @@ def main():
 
             if target_id is None and mode is None:
                 st.subheader("🔍 処理対象の選択")
-                
+
                 if candidates:
                     st.info(f"💡 既存の案件候補が {len(candidates)} 件見つかりました。")
-                    
+
                     # 選択肢の作成
                     options = {
-                        f"【{c['case_number']}】 依頼者:{c['client_name']} (被相続人:{c['deceased_name']})": c['case_id'] 
+                        f"【{c['case_number']}】 依頼者:{c['client_name']} (被相続人:{c['deceased_name']})": c[
+                            "case_id"
+                        ]
                         for c in candidates
                     }
                     options["🆕 新規案件として登録する"] = "NEW"
-                    
+
                     selected_label = st.radio("アクションを選択", list(options.keys()))
-                    
+
                     if st.button("決定", type="primary"):
                         val = options[selected_label]
                         if val == "NEW":
@@ -467,11 +496,13 @@ def main():
             elif mode == "MERGE":
                 # 既存案件への紐付け (主に相続人リスト追加)
                 case = session.query(Case).get(target_id)
-                
+
                 if case:
                     st.info(f"📂 紐付け先: **{case.case_number} {case.client_name}**")
                 else:
-                    st.error(f"エラー: 選択された案件 (ID: {target_id}) が見つかりませんでした。")
+                    st.error(
+                        f"エラー: 選択された案件 (ID: {target_id}) が見つかりませんでした。"
+                    )
                     if st.button("最初に戻る"):
                         st.session_state.clear()
                         st.rerun()
@@ -481,20 +512,24 @@ def main():
                     heirs = data.get("heirs", [])
                     st.write(f"検出された相続人: {len(heirs)} 名")
                     st.dataframe(heirs)
-                    
+
                     if st.button("💾 この案件に相続人を追加登録"):
                         count = merge_heirs_to_existing_case(session, target_id, heirs)
                         if count > 0:
                             st.success(f"{count} 名の相続人を追加しました！")
                         else:
-                            st.info("追加対象はありませんでした（重複またはデータなし）。")
-                        
+                            st.info(
+                                "追加対象はありませんでした（重複またはデータなし）。"
+                            )
+
                         time.sleep(2)
                         # クリアして戻る
                         st.session_state.clear()
                         st.rerun()
                 else:
-                    st.warning("この書類タイプは既存案件へのマージに対応していません（開発中）。")
+                    st.warning(
+                        "この書類タイプは既存案件へのマージに対応していません（開発中）。"
+                    )
                     if st.button("最初に戻る"):
                         st.session_state.clear()
                         st.rerun()
@@ -502,33 +537,45 @@ def main():
             elif mode == "NEW":
                 # 新規登録 (主に紹介連絡表)
                 st.subheader("📝 新規案件登録")
-                
+
                 with st.form("new_reg_form"):
                     # フォーム内容はAI結果で埋める
                     c1, c2 = st.columns(2)
                     name = c1.text_input("顧客名", value=data.get("client_name", ""))
-                    kana = c2.text_input("フリガナ", value=data.get("client_name_kana", ""))
-                    
-                    addr = st.text_input("住所", value=data.get("client_address_full", ""))
-                    
+                    kana = c2.text_input(
+                        "フリガナ", value=data.get("client_name_kana", "")
+                    )
+
+                    addr = st.text_input(
+                        "住所", value=data.get("client_address_full", "")
+                    )
+
                     r1, r2 = st.columns(2)
-                    br = r1.text_input("紹介元支店", value=data.get("referral_sec_branch_name", ""))
-                    rep = r2.text_input("紹介元担当者", value=data.get("referral_sec_rep_name", ""))
-                    
-                    sol = st.text_input("SOL案件No", value=data.get("sol_case_number", ""))
-                    
+                    br = r1.text_input(
+                        "紹介元支店", value=data.get("referral_sec_branch_name", "")
+                    )
+                    rep = r2.text_input(
+                        "紹介元担当者", value=data.get("referral_sec_rep_name", "")
+                    )
+
+                    sol = st.text_input(
+                        "SOL案件No", value=data.get("sol_case_number", "")
+                    )
+
                     if st.form_submit_button("✅ 登録＆Kintoneデータ生成"):
                         # データを補正して登録関数へ
                         reg_data = data.copy()
                         reg_data["client_name"] = name
-                        reg_data["client_name_kana"] = katakana_to_hiragana(kana) # ★カタカナをひらがなに変換
+                        reg_data["client_name_kana"] = katakana_to_hiragana(
+                            kana
+                        )  # ★カタカナをひらがなに変換
                         reg_data["client_address_full"] = addr
                         reg_data["referral_sec_branch_name"] = br
                         reg_data["referral_sec_rep_name"] = rep
                         reg_data["sol_case_number"] = sol
-                        
+
                         res = register_new_referral_case(session, reg_data)
-                        
+
                         st.session_state["registered_case_data"] = res
                         st.success(f"登録しました！ 仮番号: {res['temp_no']}")
                         st.rerun()
@@ -538,22 +585,25 @@ def main():
             res = st.session_state["registered_case_data"]
             st.divider()
             st.subheader("📋 Kintone登録用データ")
-            
+
             # Kintone生成の前に、Detached状態のオブジェクトを現在のセッションにマージする
             case_obj = session.merge(res["case"])
             dec_obj = session.merge(res["dec"]) if res["dec"] else None
             heir_obj = session.merge(res["heir"]) if res["heir"] else None
             addr_obj = session.merge(res["addr"]) if res["addr"] else None
-            
+
             kintone_json = generate_kintone_json_payload(
                 case_obj, dec_obj, heir_obj, addr_obj
             )
-            st.code(json.dumps(kintone_json, ensure_ascii=False, indent=2), language="json")
-            
+            st.code(
+                json.dumps(kintone_json, ensure_ascii=False, indent=2), language="json"
+            )
+
             if st.button("次の書類を読み込む"):
                 st.session_state.clear()
                 st.rerun()
             session.close()
+
 
 if __name__ == "__main__":
     main()

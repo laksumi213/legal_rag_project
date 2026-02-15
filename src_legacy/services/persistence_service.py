@@ -8,7 +8,7 @@ from sqlalchemy.orm import Session, sessionmaker
 # パス解決とインポート
 try:
     # あなたの既存のtables.pyを利用
-    from src.legal_system.models.tables import (
+    from legal_system.models.tables import (
         AuditLog,
         BankMaster,
         Base,
@@ -22,7 +22,7 @@ except ImportError:
 
     # ルートディレクトリをパスに追加して再試行
     sys.path.append(str(Path(__file__).resolve().parents[3]))
-    from src.legal_system.models.tables import (
+    from legal_system.models.tables import (
         AuditLog,
         BankMaster,
         Base,
@@ -30,7 +30,7 @@ except ImportError:
         FinancialAsset,
     )
 
-from src.legal_system.core.schemas import DocumentAnalysisResult
+from legal_system.core.schemas import DocumentAnalysisResult
 
 # DB接続先 (configから読み込むのが理想ですが、今回は直接指定)
 # ※ tables.py が想定しているDBに合わせてください (SQLite/PostgreSQL)

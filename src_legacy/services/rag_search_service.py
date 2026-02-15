@@ -1,21 +1,21 @@
 # src/services/rag_search_service.py
-import os
-from typing import List, Dict
-from sqlalchemy import and_, or_
-from langchain_core.prompts import ChatPromptTemplate
+from typing import Dict, List
+
 from langchain_core.output_parsers import StrOutputParser
-from langchain_core.documents import Document
-from langchain_core.runnables import RunnablePassthrough, RunnableLambda
-from langchain_chroma import Chroma
+from langchain_core.prompts import ChatPromptTemplate
+from langchain_core.runnables import RunnableLambda, RunnablePassthrough
+from sqlalchemy import and_, or_
 
 from legal_system.core.ai_factory import AIFactory
 from legal_system.core.database_manager import DatabaseManager
-from legal_system.models.tables import FileRegistry, BankMaster
+from legal_system.models.tables import BankMaster, FileRegistry
+
 
 class RagSearchService:
     """
     銀行手続き・過去ドキュメント検索サービス
     """
+
     def __init__(self):
         self.db = DatabaseManager()
         self.llm = AIFactory.get_llm(mode="cloud", temperature=0.0)
@@ -27,7 +27,6 @@ class RagSearchService:
             "除籍": "除籍謄本",
         }
 
-
     def semantic_search_will_documents(self, query: str) -> str:
         """
         ChromaDBにインデックス化された遺言書ドキュメントに対してセマンティック検索を実行し、
@@ -35,18 +34,29 @@ class RagSearchService:
         """
         retriever = self.vector_store.as_retriever()
 
-        prompt = ChatPromptTemplate.from_messages([
-            ("system", "あなたは行政書士事務所のアシスタントです。以下の提供されたコンテキスト情報のみに基づいて、ユーザーの遺言書に関する質問に答えてください。情報がない場合は「提供された情報からは回答できません」と答えてください。不正確な情報は生成しないでください。\n\n{context}"),
-            ("human", "{question}"),
-        ])
+        prompt = ChatPromptTemplate.from_messages(
+            [
+                (
+                    "system",
+                    "あなたは行政書士事務所のアシスタントです。以下の提供されたコンテキスト情報のみに基づいて、ユーザーの遺言書に関する質問に答えてください。情報がない場合は「提供された情報からは回答できません」と答えてください。不正確な情報は生成しないでください。\n\n{context}",
+                ),
+                ("human", "{question}"),
+            ]
+        )
 
         rag_chain = (
-            {"context": retriever | RunnableLambda(lambda docs: "\n\n".join([doc.page_content for doc in docs])), "question": RunnablePassthrough()}
+            {
+                "context": retriever
+                | RunnableLambda(
+                    lambda docs: "\n\n".join([doc.page_content for doc in docs])
+                ),
+                "question": RunnablePassthrough(),
+            }
             | prompt
             | self.llm
             | StrOutputParser()
         )
-        
+
         return rag_chain.invoke(query)
 
     def search_bank_rules(self, query: str) -> str:
@@ -57,11 +67,11 @@ class RagSearchService:
 
         try:
             keywords = query.split()
-            
+
             # クエリキーワードのいずれかを含む銀行をすべて候補とする
             bank_filters = [BankMaster.bank_name.ilike(f"%{k}%") for k in keywords]
             banks = session.query(BankMaster).filter(or_(*bank_filters)).all()
-            
+
             context_text = ""
             if not banks:
                 # 銀行が見つからなくても、LLMに回答を生成させてみる
@@ -74,7 +84,7 @@ class RagSearchService:
                 - 本人確認: {b.id_verify_rule}
                 - 備考: {b.remarks}
                 """
-            
+
             prompt = ChatPromptTemplate.from_template("""
             あなたは行政書士事務所のアシスタントです。
             以下の銀行データベース情報を基に、ユーザーの質問に答えてください。
@@ -85,10 +95,10 @@ class RagSearchService:
 
             質問: {question}
             """)
-            
+
             chain = prompt | self.llm | StrOutputParser()
             return chain.invoke({"context": context_text, "question": query})
-            
+
         finally:
             session.close()
 
@@ -101,34 +111,36 @@ class RagSearchService:
         try:
             keywords = query.split()
             base_query = session.query(FileRegistry)
-            
+
             and_conditions = []
             for k in keywords:
                 # キーワード自体と、それが省略語であれば正式名称も検索対象に加える
                 search_terms = {k}
                 if k in self.synonym_map:
                     search_terms.add(self.synonym_map[k])
-                
+
                 or_conditions = []
                 for term in search_terms:
                     like_term = f"%{term}%"
                     or_conditions.append(FileRegistry.filename.ilike(like_term))
                     or_conditions.append(FileRegistry.doc_type.ilike(like_term))
-                
+
                 and_conditions.append(or_(*or_conditions))
 
             if and_conditions:
                 base_query = base_query.filter(and_(*and_conditions))
 
-            results = base_query.order_by(FileRegistry.registered_at.desc()).limit(10).all()
-            
+            results = (
+                base_query.order_by(FileRegistry.registered_at.desc()).limit(10).all()
+            )
+
             return [
                 {
                     "filename": f.filename,
                     "doc_type": f.doc_type,
                     "case_id": f.case_id,
                     "registered_at": f.registered_at.strftime("%Y-%m-%d"),
-                    "file_hash": f.file_hash
+                    "file_hash": f.file_hash,
                 }
                 for f in results
             ]

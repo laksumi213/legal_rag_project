@@ -29,7 +29,7 @@ from legal_system.core.config import Config
 # 内部モジュール
 from legal_system.core.database_manager import DatabaseManager
 from legal_system.models.tables import Case, ContactLog, IncomingNoteBuffer
-from src.utils.retry_decorator import retry_with_backoff
+from legal_system.utils.retry_decorator import retry_with_backoff
 
 # ロガー設定
 logger = logging.getLogger(__name__)

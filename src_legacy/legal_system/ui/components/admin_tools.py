@@ -6,7 +6,6 @@ import os
 import random
 import re
 import time
-import base64
 from datetime import datetime
 from io import BytesIO
 
@@ -26,12 +25,14 @@ from legal_system.core.ai_factory import AIFactory
 from legal_system.core.database_manager import DatabaseManager
 from legal_system.core.ocr_engine import extract_text_from_scanned_pdf
 
+
 # ---------------------------------------------------------
 # ヘルパー関数群
 # ---------------------------------------------------------
 def calculate_file_hash(file_bytes: bytes) -> str:
     """ファイルの重複登録を防ぐためのハッシュ計算"""
     return hashlib.md5(file_bytes).hexdigest()
+
 
 def extract_text_safe(file_bytes: bytes) -> str:
     """
@@ -48,14 +49,14 @@ def extract_text_safe(file_bytes: bytes) -> str:
                 text += t
     except:
         pass
-        
+
     # テキストが極端に少ない場合はスキャンデータとみなしてOCRエンジン(Gemini優先)を実行
     if len(text.strip()) < 50:
         st.toast("テキストデータなし。AI視覚解析を実行します...", icon="👁️")
         ocr_text = extract_text_from_scanned_pdf(file_bytes)
         if ocr_text:
             text = ocr_text
-                
+
     return text
 
 
@@ -152,20 +153,27 @@ def render_upload_tab(db_manager: DatabaseManager):
         target_case_id = None
         try:
             from legal_system.models.tables import Case
+
             cases = session.query(Case).all()
             case_opts = {"（全案件共通の雛形として登録）": None}
             for c in cases:
                 case_opts[f"{c.case_number}: {c.client_name}"] = c.case_id
-            selected = st.selectbox("紐付ける案件 (任意)", list(case_opts.keys()), key="up_case_sel")
+            selected = st.selectbox(
+                "紐付ける案件 (任意)", list(case_opts.keys()), key="up_case_sel"
+            )
             target_case_id = case_opts[selected]
         finally:
             session.close()
 
-        files_n = st.file_uploader("PDFアップロード (一般)", accept_multiple_files=True, key="up_n")
+        files_n = st.file_uploader(
+            "PDFアップロード (一般)", accept_multiple_files=True, key="up_n"
+        )
 
         if files_n:
             if st.button("🔍 クラウド解析", key="btn_n"):
-                with st.status("🚀 ハイブリッド解析中 (ルールベース + AI)...", expanded=True) as status:
+                with st.status(
+                    "🚀 ハイブリッド解析中 (ルールベース + AI)...", expanded=True
+                ) as status:
                     st.session_state.upload_stage = []
                     try:
                         llm_cloud = AIFactory.get_llm("cloud")
@@ -183,28 +191,38 @@ def render_upload_tab(db_manager: DatabaseManager):
 
                         f_hash = calculate_file_hash(fb)
                         if db_manager.is_file_registered(f_hash):
-                            st.warning(f"⚠️ {f.name} は既に登録されています。スキップします。")
+                            st.warning(
+                                f"⚠️ {f.name} は既に登録されています。スキップします。"
+                            )
                             time.sleep(0.5)
                             continue
 
                         text = extract_text_safe(fb)
                         meta = analyze_document_info(text, llm_cloud)
-                        st.write(f"   ↳ 判定: {meta.get('doc_type', '不明')} / {meta.get('bank_name', '不明')}")
+                        st.write(
+                            f"   ↳ 判定: {meta.get('doc_type', '不明')} / {meta.get('bank_name', '不明')}"
+                        )
 
-                        st.session_state.upload_stage.append({
-                            "old": f.name,
-                            "new": meta.get("filename", f.name),
-                            "bank_name": meta.get("bank_name", "その他"),
-                            "doc_type": meta.get("doc_type", "その他"),
-                            "data": fb,
-                            "text": text,
-                            "type": "general",
-                            "hash": f_hash,
-                            "case_id": target_case_id,
-                        })
+                        st.session_state.upload_stage.append(
+                            {
+                                "old": f.name,
+                                "new": meta.get("filename", f.name),
+                                "bank_name": meta.get("bank_name", "その他"),
+                                "doc_type": meta.get("doc_type", "その他"),
+                                "data": fb,
+                                "text": text,
+                                "type": "general",
+                                "hash": f_hash,
+                                "case_id": target_case_id,
+                            }
+                        )
                         progress_bar.progress((i + 1) / total_files)
 
-                    status.update(label="✅ 解析完了！内容を確認して、下の「登録実行」を押してください。", state="complete", expanded=True)
+                    status.update(
+                        label="✅ 解析完了！内容を確認して、下の「登録実行」を押してください。",
+                        state="complete",
+                        expanded=True,
+                    )
 
     # ==========================================
     # 2. 機密用タブ (ローカルAI使用)
@@ -215,16 +233,21 @@ def render_upload_tab(db_manager: DatabaseManager):
         target_case_id_sec = None
         try:
             from legal_system.models.tables import Case
+
             cases = session.query(Case).all()
             case_opts_s = {"（全案件共通の雛形として登録）": None}
             for c in cases:
                 case_opts_s[f"{c.case_number}: {c.client_name}"] = c.case_id
-            selected_s = st.selectbox("紐付ける案件 (任意)", list(case_opts_s.keys()), key="up_case_sel_sec")
+            selected_s = st.selectbox(
+                "紐付ける案件 (任意)", list(case_opts_s.keys()), key="up_case_sel_sec"
+            )
             target_case_id_sec = case_opts_s[selected_s]
         finally:
             session.close()
 
-        file_s = st.file_uploader("PDFアップロード (機密)", accept_multiple_files=False, key="up_s")
+        file_s = st.file_uploader(
+            "PDFアップロード (機密)", accept_multiple_files=False, key="up_s"
+        )
 
         if file_s:
             fb_s = file_s.read()
@@ -233,8 +256,12 @@ def render_upload_tab(db_manager: DatabaseManager):
             if db_manager.is_file_registered(f_hash):
                 st.error(f"⛔ {file_s.name} は既に登録済みです。")
             else:
-                if st.checkbox("機密書類であることを確認しました", key="check_s") and st.button("🔒 ローカル解析", key="btn_s"):
-                    with st.status("🔒 ローカルAI (Ollama) で解析中...", expanded=True) as status:
+                if st.checkbox(
+                    "機密書類であることを確認しました", key="check_s"
+                ) and st.button("🔒 ローカル解析", key="btn_s"):
+                    with st.status(
+                        "🔒 ローカルAI (Ollama) で解析中...", expanded=True
+                    ) as status:
                         st.session_state.upload_stage = []
                         try:
                             llm_local = AIFactory.get_llm("local")
@@ -248,18 +275,24 @@ def render_upload_tab(db_manager: DatabaseManager):
                         if "記入例" not in meta["filename"]:
                             meta["filename"] += "_記入例"
 
-                        st.session_state.upload_stage.append({
-                            "old": file_s.name,
-                            "new": meta.get("filename", file_s.name),
-                            "bank_name": meta.get("bank_name", "その他"),
-                            "doc_type": meta.get("doc_type", "その他"),
-                            "data": fb_s,
-                            "text": text_s,
-                            "type": "secure",
-                            "hash": f_hash,
-                            "case_id": target_case_id_sec,
-                        })
-                        status.update(label="✅ 解析完了！下の「登録実行」へ進んでください。", state="complete", expanded=True)
+                        st.session_state.upload_stage.append(
+                            {
+                                "old": file_s.name,
+                                "new": meta.get("filename", file_s.name),
+                                "bank_name": meta.get("bank_name", "その他"),
+                                "doc_type": meta.get("doc_type", "その他"),
+                                "data": fb_s,
+                                "text": text_s,
+                                "type": "secure",
+                                "hash": f_hash,
+                                "case_id": target_case_id_sec,
+                            }
+                        )
+                        status.update(
+                            label="✅ 解析完了！下の「登録実行」へ進んでください。",
+                            state="complete",
+                            expanded=True,
+                        )
 
     # ==========================================
     # 3. 保存確認フォーム
@@ -275,19 +308,31 @@ def render_upload_tab(db_manager: DatabaseManager):
                 c1, c2, c3, c4 = st.columns([1, 2, 1, 1])
                 c1.text(item["old"])
                 new_name = c2.text_input("登録名", value=item["new"], key=f"fn_{i}")
-                new_bank = c3.text_input("銀行タグ", value=item["bank_name"], key=f"bk_{i}")
+                new_bank = c3.text_input(
+                    "銀行タグ", value=item["bank_name"], key=f"bk_{i}"
+                )
 
-                opts = ["手引き", "残高証明", "取引明細", "顧客勘定元帳", "相続届", "委任状", "その他"]
+                opts = [
+                    "手引き",
+                    "残高証明",
+                    "取引明細",
+                    "顧客勘定元帳",
+                    "相続届",
+                    "委任状",
+                    "その他",
+                ]
                 curr = item.get("doc_type", "その他")
                 idx = opts.index(curr) if curr in opts else 6
                 new_type = c4.selectbox("種別", opts, index=idx, key=f"dt_{i}")
 
-                configs.append({
-                    **item,
-                    "name": new_name,
-                    "bank_name": new_bank,
-                    "doc_type": new_type,
-                })
+                configs.append(
+                    {
+                        **item,
+                        "name": new_name,
+                        "bank_name": new_bank,
+                        "doc_type": new_type,
+                    }
+                )
 
             if st.form_submit_button("✅ 登録実行"):
                 _execute_registration(configs, db_manager)
@@ -313,21 +358,29 @@ def _execute_registration(configs, db_manager):
             with open(save_path, "wb") as f:
                 f.write(c["data"])
 
-            db_manager.register_file_hash(c["hash"], fname, c["doc_type"], case_id=c.get("case_id"))
+            db_manager.register_file_hash(
+                c["hash"], fname, c["doc_type"], case_id=c.get("case_id")
+            )
 
             enriched_text = f"【ファイル名】{fname}\n【銀行名】{c['bank_name']}\n【書類種別】{c['doc_type']}\n\n{c['text']}"
             chunks = splitter.split_text(enriched_text)
-            metadatas = [{
-                "source": fname, "path": save_path, "security_level": c["type"],
-                "bank_name": c["bank_name"], "doc_type": c["doc_type"]
-            } for _ in chunks]
+            metadatas = [
+                {
+                    "source": fname,
+                    "path": save_path,
+                    "security_level": c["type"],
+                    "bank_name": c["bank_name"],
+                    "doc_type": c["doc_type"],
+                }
+                for _ in chunks
+            ]
 
             batch_size = 2
             total_chunks = len(chunks)
             for i in range(0, total_chunks, batch_size):
                 batch_chunks = chunks[i : i + batch_size]
                 batch_metas = metadatas[i : i + batch_size]
-                
+
                 max_retries = 5
                 for attempt in range(max_retries):
                     try:
@@ -363,33 +416,38 @@ def render_management_tab(db_manager: DatabaseManager):
     Ver 3.3: ファイル追跡機能を追加
     """
     st.subheader("🔎 ファイル追跡・管理")
-    
+
     files = db_manager.get_all_files()
-    
+
     # ==========================================
     # 1. 追跡ツール (Search & Track)
     # ==========================================
     with st.container(border=True):
         st.markdown("##### 🕵️‍♀️ ファイル追跡")
         st.caption("ファイル名が変わっても、ハッシュ値(ID)で同一性を追跡できます。")
-        
+
         c_s1, c_s2 = st.columns([3, 1])
-        search_q = c_s1.text_input("ファイル名 または ハッシュ値(ID) で検索", placeholder="Scan_001.pdf や ハッシュ値...")
-        
+        search_q = c_s1.text_input(
+            "ファイル名 または ハッシュ値(ID) で検索",
+            placeholder="Scan_001.pdf や ハッシュ値...",
+        )
+
         if search_q:
             # 簡易検索ロジック (ハッシュまたはファイル名に部分一致)
-            hits = [f for f in files if search_q in f['filename'] or search_q in f['hash']]
-            
+            hits = [
+                f for f in files if search_q in f["filename"] or search_q in f["hash"]
+            ]
+
             if hits:
                 st.success(f"🎉 {len(hits)} 件見つかりました。")
                 for hit in hits:
                     with st.expander(f"📄 {hit['filename']}", expanded=True):
                         st.markdown(f"""
-                        - **登録日**: {hit['date']}
-                        - **種別**: {hit['type']}
-                        - **紐付け案件**: {hit['case']}
-                        - **ID (Hash)**: `{hit['hash']}`
-                        - **ステータス**: {hit.get('status', '登録済')}
+                        - **登録日**: {hit["date"]}
+                        - **種別**: {hit["type"]}
+                        - **紐付け案件**: {hit["case"]}
+                        - **ID (Hash)**: `{hit["hash"]}`
+                        - **ステータス**: {hit.get("status", "登録済")}
                         """)
             else:
                 st.error("❌ 見つかりませんでした。")
@@ -399,7 +457,7 @@ def render_management_tab(db_manager: DatabaseManager):
     # ==========================================
     st.divider()
     st.markdown("##### 📂 全ファイル一覧")
-    
+
     if not files:
         st.info("登録されているファイルはありません。")
     else:
@@ -408,17 +466,19 @@ def render_management_tab(db_manager: DatabaseManager):
         display_cols = ["date", "case", "type", "filename", "hash", "status"]
         # データフレームに存在しないカラムがあれば除外（念のため）
         display_cols = [c for c in display_cols if c in df_files.columns]
-        
+
         # カラム名リネーム
-        df_display = df_files[display_cols].rename(columns={
-            "date": "登録日時",
-            "case": "案件",
-            "type": "書類種別",
-            "filename": "ファイル名",
-            "hash": "ID",
-            "status": "状態"
-        })
-        
+        df_display = df_files[display_cols].rename(
+            columns={
+                "date": "登録日時",
+                "case": "案件",
+                "type": "書類種別",
+                "filename": "ファイル名",
+                "hash": "ID",
+                "status": "状態",
+            }
+        )
+
         st.dataframe(df_display, use_container_width=True, hide_index=True)
 
         # ==========================================
@@ -427,11 +487,11 @@ def render_management_tab(db_manager: DatabaseManager):
         st.divider()
         with st.expander("🗑️ ファイルの削除 (Danger Zone)", expanded=False):
             st.warning("ここでの削除は取り消せません。")
-            
+
             selected_file = st.selectbox(
-                "削除するファイルを選択", 
+                "削除するファイルを選択",
                 options=[f["filename"] for f in files],
-                key="delete_file_selector"
+                key="delete_file_selector",
             )
 
             if st.button("選択したファイルを完全に削除する", type="primary"):
@@ -443,11 +503,11 @@ def render_management_tab(db_manager: DatabaseManager):
                     try:
                         os.remove(target_path)
                     except OSError:
-                        pass # ファイルがなくてもDB削除は進める
+                        pass  # ファイルがなくてもDB削除は進める
 
                 # DB削除
                 db_manager.delete_file_registry(selected_file)
-                
+
                 st.success(f"{selected_file} を削除しました。")
                 time.sleep(1)
                 st.rerun()

@@ -1,27 +1,27 @@
 # src/services/koseki_service.py
 
-import logging
 import base64
+import datetime
 import json
+import logging
 import re
 import time
-import datetime
-from typing import List, Dict, Any, Optional, Tuple, Union, Literal
 from io import BytesIO
-from dateutil.relativedelta import relativedelta
+from typing import Any, Dict, List, Literal, Optional, Tuple
 
 from langchain_core.messages import HumanMessage
-from langchain_core.prompts import ChatPromptTemplate
 from langchain_core.output_parsers import StrOutputParser
-from sqlalchemy import asc
+from langchain_core.prompts import ChatPromptTemplate
 from pdf2image import convert_from_bytes
+from sqlalchemy import asc
 
 from legal_system.core.ai_factory import AIFactory
 from legal_system.core.database_manager import DatabaseManager
-from legal_system.models.tables import FamilyRegister, Case, Deceased, Heir
-from src.utils.date_utils import parse_all_flexible_date
+from legal_system.models.tables import Deceased, FamilyRegister, Heir
+from legal_system.utils.date_utils import parse_all_flexible_date
 
 logger = logging.getLogger(__name__)
+
 
 class KosekiService:
     def __init__(self):
@@ -29,7 +29,9 @@ class KosekiService:
         # 構造化データ抽出のため temperature=0.0
         self.llm = AIFactory.get_llm(mode="cloud", temperature=0.0)
 
-    def _invoke_llm_with_timeout(self, messages: List[HumanMessage], timeout_sec: int = 300):
+    def _invoke_llm_with_timeout(
+        self, messages: List[HumanMessage], timeout_sec: int = 300
+    ):
         try:
             return self.llm.invoke(messages, config={"timeout": timeout_sec})
         except TypeError:
@@ -47,7 +49,7 @@ class KosekiService:
     def _extract_json_list_safe(self, content: str) -> List[Dict[str, Any]]:
         try:
             content = content.replace("```json", "").replace("```", "").strip()
-            match = re.search(r'(\[.*\])', content, re.DOTALL)
+            match = re.search(r"(\[.*\])", content, re.DOTALL)
             if match:
                 candidate = match.group(1)
                 try:
@@ -68,30 +70,44 @@ class KosekiService:
             clean_name = self._normalize_name(raw_name)
             if not clean_name:
                 continue
-            persons.append({
-                "name": raw_name,
-                "rel": member.get("rel", ""),
-                "birth_date": self._format_date_yyyy_mm_dd(member.get("birth_date")),
-                "death_date": self._format_date_yyyy_mm_dd(member.get("death_date")),
-            })
+            persons.append(
+                {
+                    "name": raw_name,
+                    "rel": member.get("rel", ""),
+                    "birth_date": self._format_date_yyyy_mm_dd(
+                        member.get("birth_date")
+                    ),
+                    "death_date": self._format_date_yyyy_mm_dd(
+                        member.get("death_date")
+                    ),
+                }
+            )
 
         head_name = data.get("head_name")
         if head_name and self._normalize_name(head_name):
-            persons.append({
-                "name": head_name,
-                "rel": "筆頭者",
-                "birth_date": "",
-                "death_date": "",
-            })
+            persons.append(
+                {
+                    "name": head_name,
+                    "rel": "筆頭者",
+                    "birth_date": "",
+                    "death_date": "",
+                }
+            )
 
         target_person = data.get("target_person")
         if target_person and self._normalize_name(target_person):
-            persons.append({
-                "name": target_person,
-                "rel": "対象者",
-                "birth_date": self._format_date_yyyy_mm_dd(data.get("target_birth_date")),
-                "death_date": self._format_date_yyyy_mm_dd(data.get("target_death_date")),
-            })
+            persons.append(
+                {
+                    "name": target_person,
+                    "rel": "対象者",
+                    "birth_date": self._format_date_yyyy_mm_dd(
+                        data.get("target_birth_date")
+                    ),
+                    "death_date": self._format_date_yyyy_mm_dd(
+                        data.get("target_death_date")
+                    ),
+                }
+            )
 
         dedup: Dict[str, Dict[str, Any]] = {}
         for p in persons:
@@ -120,12 +136,30 @@ class KosekiService:
             return False
 
         keywords = [
-            "妻", "夫", "配偶者",
-            "子", "長男", "次男", "三男", "四男", "五男",
-            "長女", "次女", "三女", "四女", "五女",
-            "養子", "養女",
-            "父", "母", "実父", "実母",
-            "兄", "弟", "姉", "妹",
+            "妻",
+            "夫",
+            "配偶者",
+            "子",
+            "長男",
+            "次男",
+            "三男",
+            "四男",
+            "五男",
+            "長女",
+            "次女",
+            "三女",
+            "四女",
+            "五女",
+            "養子",
+            "養女",
+            "父",
+            "母",
+            "実父",
+            "実母",
+            "兄",
+            "弟",
+            "姉",
+            "妹",
         ]
         return any(k in rel_norm for k in keywords)
 
@@ -171,10 +205,12 @@ class KosekiService:
         )
 
         try:
-            prompt = ChatPromptTemplate.from_messages([
-                ("system", system_prompt),
-                ("human", "{payload}"),
-            ])
+            prompt = ChatPromptTemplate.from_messages(
+                [
+                    ("system", system_prompt),
+                    ("human", "{payload}"),
+                ]
+            )
             chain = prompt | self.llm | StrOutputParser()
             resp_text = chain.invoke({"payload": user_prompt})
             flags = self._extract_json_list_safe(resp_text)
@@ -190,7 +226,9 @@ class KosekiService:
                 key = self._normalize_name(p.get("name", ""))
                 is_heir = flag_map.get(key)
                 if is_heir is None:
-                    is_heir = self._heuristic_is_heir(p.get("rel", ""), p.get("death_date", ""))
+                    is_heir = self._heuristic_is_heir(
+                        p.get("rel", ""), p.get("death_date", "")
+                    )
                 if key and base_key and key == base_key:
                     is_heir = False
                 marked.append({**p, "is_heir": bool(is_heir)})
@@ -199,7 +237,9 @@ class KosekiService:
             marked: List[Dict[str, Any]] = []
             for p in persons:
                 key = self._normalize_name(p.get("name", ""))
-                is_heir = self._heuristic_is_heir(p.get("rel", ""), p.get("death_date", ""))
+                is_heir = self._heuristic_is_heir(
+                    p.get("rel", ""), p.get("death_date", "")
+                )
                 if key and base_key and key == base_key:
                     is_heir = False
                 marked.append({**p, "is_heir": bool(is_heir)})
@@ -212,10 +252,13 @@ class KosekiService:
         case_mode: Literal["will", "inheritance"],
     ) -> List[Dict[str, Any]]:
         persons = self._build_all_persons(analysis_result)
-        return self.mark_inheritors(persons, base_person_name=base_person_name, case_mode=case_mode)
+        return self.mark_inheritors(
+            persons, base_person_name=base_person_name, case_mode=case_mode
+        )
 
     def _extract_json_safe(self, content: str) -> Dict[str, Any]:
         """AIの回答からJSON部分だけを安全に切り出すヘルパー関数"""
+
         def _strip_fences(text: str) -> str:
             return (text or "").replace("```json", "").replace("```", "").strip()
 
@@ -356,7 +399,9 @@ class KosekiService:
             tp = _get_scalar_str(raw, "tp") or _get_scalar_str(raw, "target_person")
             vf = _get_scalar_str(raw, "vf") or _get_scalar_str(raw, "valid_from")
             vt = _get_scalar_str(raw, "vt") or _get_scalar_str(raw, "valid_to")
-            tbd = _get_scalar_str(raw, "tbd") or _get_scalar_str(raw, "target_birth_date")
+            tbd = _get_scalar_str(raw, "tbd") or _get_scalar_str(
+                raw, "target_birth_date"
+            )
 
             tdd = _get_scalar_str_or_none(raw, "tdd")
             if tdd == "":
@@ -365,14 +410,18 @@ class KosekiService:
             people = _extract_person_objects(raw)
             family_list: List[Dict[str, Any]] = []
             for p in people:
-                family_list.append({
-                    "name": p.get("nm", ""),
-                    "rel": p.get("rl", p.get("rel", "")),
-                    "birth_date": p.get("dob", p.get("birth_date", "")),
-                    "death_date": p.get("dod", p.get("death_date", "")),
-                })
+                family_list.append(
+                    {
+                        "name": p.get("nm", ""),
+                        "rel": p.get("rl", p.get("rel", "")),
+                        "birth_date": p.get("dob", p.get("birth_date", "")),
+                        "death_date": p.get("dod", p.get("death_date", "")),
+                    }
+                )
 
-            if not any([dt, hs, hd, tp, vf, vt, tbd, (tdd not in ("", None)), family_list]):
+            if not any(
+                [dt, hs, hd, tp, vf, vt, tbd, (tdd not in ("", None)), family_list]
+            ):
                 return {"error": "JSON解析失敗: 解析可能なJSONが見つかりません"}
 
             return {
@@ -389,7 +438,13 @@ class KosekiService:
         except Exception as e:
             return {"error": f"JSON解析失敗: {str(e)}"}
 
-    def analyze_koseki_image(self, file_bytes: bytes, mime_type: str, expected_name: str = "", family_name_hint: str = "") -> Dict[str, Any]:
+    def analyze_koseki_image(
+        self,
+        file_bytes: bytes,
+        mime_type: str,
+        expected_name: str = "",
+        family_name_hint: str = "",
+    ) -> Dict[str, Any]:
         """
         戸籍謄本（複数ページ可）をAIで解析する
         :param expected_name: 対象者のフルネーム（抽出ターゲット）
@@ -404,18 +459,19 @@ class KosekiService:
                     buf = BytesIO()
                     img.save(buf, format="JPEG")
                     b64_data = base64.b64encode(buf.getvalue()).decode("utf-8")
-                    image_contents.append({
-                        "type": "image_url",
-                        "image_url": f"data:image/jpeg;base64,{b64_data}"
-                    })
+                    image_contents.append(
+                        {
+                            "type": "image_url",
+                            "image_url": f"data:image/jpeg;base64,{b64_data}",
+                        }
+                    )
             except Exception as e:
                 return {"error": f"PDF変換エラー: {e}"}
         else:
             img_b64 = base64.b64encode(file_bytes).decode("utf-8")
-            image_contents.append({
-                "type": "image_url",
-                "image_url": f"data:{mime_type};base64,{img_b64}"
-            })
+            image_contents.append(
+                {"type": "image_url", "image_url": f"data:{mime_type};base64,{img_b64}"}
+            )
 
         # プロンプトの構築（ヒント注入）
         name_hint_str = ""
@@ -514,7 +570,9 @@ class KosekiService:
 
             time.sleep(0.5)
             retry_prompt = _build_prompt("lite")
-            retry_content_list = [{"type": "text", "text": retry_prompt}] + image_contents
+            retry_content_list = [
+                {"type": "text", "text": retry_prompt}
+            ] + image_contents
             retry_msg = HumanMessage(content=retry_content_list)
             resp2 = self._invoke_llm_with_timeout([retry_msg], timeout_sec=timeout_sec)
             parsed2 = self._extract_json_safe(getattr(resp2, "content", ""))
@@ -536,10 +594,17 @@ class KosekiService:
                 seen: set[str] = set()
 
                 for img_item in image_contents:
-                    page_content_list = [{"type": "text", "text": retry_prompt}, img_item]
+                    page_content_list = [
+                        {"type": "text", "text": retry_prompt},
+                        img_item,
+                    ]
                     page_msg = HumanMessage(content=page_content_list)
-                    page_resp = self._invoke_llm_with_timeout([page_msg], timeout_sec=timeout_sec)
-                    page_parsed = self._extract_json_safe(getattr(page_resp, "content", ""))
+                    page_resp = self._invoke_llm_with_timeout(
+                        [page_msg], timeout_sec=timeout_sec
+                    )
+                    page_parsed = self._extract_json_safe(
+                        getattr(page_resp, "content", "")
+                    )
                     if "error" in page_parsed:
                         continue
 
@@ -555,8 +620,13 @@ class KosekiService:
                         if not merged.get(k) and page_parsed.get(k):
                             merged[k] = page_parsed.get(k)
 
-                    if merged.get("target_death_date") in (None, "") and page_parsed.get("target_death_date") not in (None, ""):
-                        merged["target_death_date"] = page_parsed.get("target_death_date")
+                    if merged.get("target_death_date") in (
+                        None,
+                        "",
+                    ) and page_parsed.get("target_death_date") not in (None, ""):
+                        merged["target_death_date"] = page_parsed.get(
+                            "target_death_date"
+                        )
 
                     for member in page_parsed.get("family_list", []) or []:
                         if not isinstance(member, dict):
@@ -571,12 +641,16 @@ class KosekiService:
                 if merged.get("family_list"):
                     return merged
 
-            return {"error": parsed.get("error") or parsed2.get("error") or "JSON解析失敗"}
+            return {
+                "error": parsed.get("error") or parsed2.get("error") or "JSON解析失敗"
+            }
         except Exception as e:
             logger.error(f"Koseki Analysis Error: {e}")
             return {"error": str(e)}
 
-    def register_koseki_record(self, case_id: int, target_id: int, target_type: str, data: Dict[str, Any]) -> str:
+    def register_koseki_record(
+        self, case_id: int, target_id: int, target_type: str, data: Dict[str, Any]
+    ) -> str:
         """解析結果をDBに保存し、対象者情報および全家族情報を自動登録する"""
         session = self.db._get_session()
         try:
@@ -590,20 +664,20 @@ class KosekiService:
                 issuing_authority=data.get("honseki"),
                 head_of_family=data.get("head_name"),
                 valid_from=start_date,
-                valid_to=end_date
+                valid_to=end_date,
             )
-            
+
             if target_type == "deceased":
                 new_rec.deceased_id = target_id
             else:
                 new_rec.heir_id = target_id
-            
+
             session.add(new_rec)
 
             updated_items = []
             person = None
             parent_deceased_id = None
-            
+
             # 2. 対象者本人の情報更新（生年月日・死亡日など）
             if target_type == "deceased":
                 person = session.query(Deceased).get(target_id)
@@ -619,13 +693,13 @@ class KosekiService:
                     if b_date:
                         person.date_of_birth = b_date
                         updated_items.append("生年月日")
-                
+
                 if target_type == "deceased" and not person.date_of_death:
                     d_date = parse_all_flexible_date(data.get("target_death_date"))
                     if d_date:
                         person.date_of_death = d_date
                         updated_items.append("死亡日")
-                
+
                 if hasattr(person, "hometown") and not person.hometown:
                     honseki = data.get("honseki")
                     if honseki:
@@ -635,18 +709,28 @@ class KosekiService:
             # 3. 家族リスト(family_list)の取り込み -> Heirテーブルへ追加
             family_list = data.get("family_list", [])
             if parent_deceased_id and family_list:
-                existing_heirs = session.query(Heir).filter(Heir.deceased_id == parent_deceased_id).all()
+                existing_heirs = (
+                    session.query(Heir)
+                    .filter(Heir.deceased_id == parent_deceased_id)
+                    .all()
+                )
                 existing_names = set()
-                
+
                 # 既存チェック（名寄せ）
                 for h in existing_heirs:
-                    full = f"{h.name_last}{h.name_first}".replace(" ", "").replace("　", "")
+                    full = f"{h.name_last}{h.name_first}".replace(" ", "").replace(
+                        "　", ""
+                    )
                     existing_names.add(full)
-                
+
                 # 被相続人本人も除外リストに追加
                 deceased_obj = session.query(Deceased).get(parent_deceased_id)
                 if deceased_obj:
-                    d_full = f"{deceased_obj.name_last}{deceased_obj.name_first}".replace(" ", "").replace("　", "")
+                    d_full = (
+                        f"{deceased_obj.name_last}{deceased_obj.name_first}".replace(
+                            " ", ""
+                        ).replace("　", "")
+                    )
                     existing_names.add(d_full)
 
                 added_count = 0
@@ -655,7 +739,8 @@ class KosekiService:
                     raw_name = raw_name.replace("\u3000", " ").strip()
                     raw_name = re.sub(r"\s+", " ", raw_name)
                     clean_name = raw_name.replace(" ", "")
-                    if not clean_name or clean_name in existing_names: continue
+                    if not clean_name or clean_name in existing_names:
+                        continue
 
                     # 氏名の分割 (全角スペース前提)
                     parts = raw_name.split(" ", 1)
@@ -663,10 +748,10 @@ class KosekiService:
                     fname = (parts[1] if len(parts) > 1 else "").strip()
                     if not lname:
                         continue
-                    
+
                     b_date = parse_all_flexible_date(member.get("birth_date"))
                     d_date = parse_all_flexible_date(member.get("death_date"))
-                    
+
                     new_heir = Heir(
                         deceased_id=parent_deceased_id,
                         name_last=lname,
@@ -674,12 +759,12 @@ class KosekiService:
                         relationship_type=member.get("rel", "関係者"),
                         date_of_birth=b_date,
                         date_of_death=d_date,
-                        is_contracting_party=False
+                        is_contracting_party=False,
                     )
                     session.add(new_heir)
                     existing_names.add(clean_name)
                     added_count += 1
-                
+
                 if added_count > 0:
                     updated_items.append(f"関係者{added_count}名をリストに追加")
 
@@ -705,72 +790,83 @@ class KosekiService:
         try:
             person = session.query(Deceased).get(deceased_id)
             if not person or not person.date_of_birth or not person.date_of_death:
-                return [], ["被相続人の「生年月日」と「死亡日」が必要です。（基本情報を登録してください）"]
+                return [], [
+                    "被相続人の「生年月日」と「死亡日」が必要です。（基本情報を登録してください）"
+                ]
 
             birth_date = person.date_of_birth
             death_date = person.date_of_death
 
-            records = session.query(FamilyRegister).filter(
-                FamilyRegister.deceased_id == deceased_id
-            ).order_by(asc(FamilyRegister.valid_from)).all()
+            records = (
+                session.query(FamilyRegister)
+                .filter(FamilyRegister.deceased_id == deceased_id)
+                .order_by(asc(FamilyRegister.valid_from))
+                .all()
+            )
 
             if not records:
                 return [], ["戸籍が登録されていません。"]
 
             gaps = []
             intervals = []
-            
+
             # 有効な期間を持つレコードのみ抽出
             for r in records:
                 if r.valid_from and r.valid_to:
                     intervals.append((r.valid_from, r.valid_to))
-            
+
             # 開始日でソート
             intervals.sort(key=lambda x: x[0])
 
             # A. 出生時の不足チェック
             if intervals and intervals[0][0] > birth_date:
-                gaps.append({
-                    "start": birth_date,
-                    "end": intervals[0][0],
-                    "reason": "出生時の戸籍不足"
-                })
-            
+                gaps.append(
+                    {
+                        "start": birth_date,
+                        "end": intervals[0][0],
+                        "reason": "出生時の戸籍不足",
+                    }
+                )
+
             # B. 中間の不足チェック
             # ロジック: 前の終了日と次の開始日が連続しているか？
             merged_end = intervals[0][1] if intervals else birth_date
-            
+
             for i in range(len(intervals) - 1):
                 this_end = intervals[i][1]
-                next_start = intervals[i+1][0]
-                
+                next_start = intervals[i + 1][0]
+
                 # 1日以上のギャップがあれば不足とみなす
                 if next_start > this_end + datetime.timedelta(days=1):
-                    gaps.append({
-                        "start": this_end,
-                        "end": next_start,
-                        "reason": "連続性の欠如 (転籍・改製など)"
-                    })
-                
+                    gaps.append(
+                        {
+                            "start": this_end,
+                            "end": next_start,
+                            "reason": "連続性の欠如 (転籍・改製など)",
+                        }
+                    )
+
                 # 終了日を更新（重複期間を考慮して最大を取る）
-                if intervals[i+1][1] > merged_end:
-                    merged_end = intervals[i+1][1]
+                if intervals[i + 1][1] > merged_end:
+                    merged_end = intervals[i + 1][1]
 
             # C. 死亡時の不足チェック
             if merged_end < death_date:
-                gaps.append({
-                    "start": merged_end,
-                    "end": death_date,
-                    "reason": "死亡時の戸籍不足"
-                })
+                gaps.append(
+                    {
+                        "start": merged_end,
+                        "end": death_date,
+                        "reason": "死亡時の戸籍不足",
+                    }
+                )
 
             advice = []
             if not gaps:
                 advice.append("✅ 出生から死亡まで連続しています。")
             else:
                 for g in gaps:
-                    s_str = g['start'].strftime('%Y/%m/%d')
-                    e_str = g['end'].strftime('%Y/%m/%d')
+                    s_str = g["start"].strftime("%Y/%m/%d")
+                    e_str = g["end"].strftime("%Y/%m/%d")
                     advice.append(f"⚠️ {s_str} 〜 {e_str} の期間が不足しています。")
 
             return gaps, advice
@@ -780,7 +876,9 @@ class KosekiService:
         finally:
             session.close()
 
-    def recommend_missing_koseki_action(self, deceased_id: int, gaps: List[Dict]) -> str:
+    def recommend_missing_koseki_action(
+        self, deceased_id: int, gaps: List[Dict]
+    ) -> str:
         """
         不足期間（ギャップ）と登録済み戸籍情報に基づき、
         AIが「次にどこの役所に何を請求すべきか」をアドバイスする。
@@ -791,21 +889,24 @@ class KosekiService:
         session = self.db._get_session()
         try:
             # 登録済みの戸籍情報をテキスト化
-            records = session.query(FamilyRegister).filter(
-                FamilyRegister.deceased_id == deceased_id
-            ).order_by(asc(FamilyRegister.valid_from)).all()
-            
+            records = (
+                session.query(FamilyRegister)
+                .filter(FamilyRegister.deceased_id == deceased_id)
+                .order_by(asc(FamilyRegister.valid_from))
+                .all()
+            )
+
             records_text = ""
             for r in records:
-                s = r.valid_from.strftime('%Y-%m-%d') if r.valid_from else "?"
-                e = r.valid_to.strftime('%Y-%m-%d') if r.valid_to else "?"
+                s = r.valid_from.strftime("%Y-%m-%d") if r.valid_from else "?"
+                e = r.valid_to.strftime("%Y-%m-%d") if r.valid_to else "?"
                 records_text += f"- {r.doc_type}: {s}〜{e} (本籍: {r.issuing_authority}, 筆頭者: {r.head_of_family})\n"
 
             # ギャップ情報テキスト化
             gaps_text = ""
             for g in gaps:
-                s = g['start'].strftime('%Y-%m-%d')
-                e = g['end'].strftime('%Y-%m-%d')
+                s = g["start"].strftime("%Y-%m-%d")
+                e = g["end"].strftime("%Y-%m-%d")
                 gaps_text += f"- 不足期間: {s}〜{e} ({g['reason']})\n"
 
             # プロンプト作成
@@ -834,11 +935,10 @@ class KosekiService:
             担当者への次の一手アドバイスをお願いします。
             """
 
-            prompt = ChatPromptTemplate.from_messages([
-                ("system", system_prompt),
-                ("human", user_prompt)
-            ])
-            
+            prompt = ChatPromptTemplate.from_messages(
+                [("system", system_prompt), ("human", user_prompt)]
+            )
+
             chain = prompt | self.llm | StrOutputParser()
             return chain.invoke({})
 

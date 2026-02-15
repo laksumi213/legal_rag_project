@@ -6,8 +6,8 @@ from pathlib import Path
 root_dir = Path(__file__).resolve().parents[1]
 sys.path.append(str(root_dir))
 
-from src.legal_system.core.database_manager import DatabaseManager
-from src.legal_system.models.tables import CaseStatus, TaskTemplate
+from legal_system.core.database_manager import DatabaseManager
+from legal_system.models.tables import CaseStatus, TaskTemplate
 
 
 def seed_statuses():

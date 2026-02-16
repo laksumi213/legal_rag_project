@@ -3,9 +3,9 @@ import json
 import time
 
 import streamlit as st
-
 from legal_system.models.tables import Case
-from legal_system.services.deceased_service import find_cases_by_attributes
+
+from services.deceased_service import find_cases_by_attributes
 
 
 # ★修正: 自動更新(30秒)に対応するため、TTLを短く(5秒)設定

@@ -14,10 +14,9 @@ ROOT_DIR = os.path.dirname(
 if ROOT_DIR not in sys.path:
     sys.path.append(ROOT_DIR)
 
-from legal_system.services.graph_service import GraphService
-
 from legal_system.core.database_manager import DatabaseManager
 from legal_system.models.tables import Case, Deceased
+from services.graph_service import GraphService
 
 st.set_page_config(page_title="AI家系図可視化", page_icon="🌳", layout="wide")
 

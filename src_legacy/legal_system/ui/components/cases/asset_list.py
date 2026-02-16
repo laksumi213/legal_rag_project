@@ -5,11 +5,11 @@ import time
 
 import pandas as pd
 import streamlit as st
+from legal_system.models.tables import FileRegistry, FinancialAsset
 from sqlalchemy import desc
 from sqlalchemy.orm import joinedload
 
-from legal_system.models.tables import FileRegistry, FinancialAsset
-from legal_system.services.asset_service import sync_bank_assets
+from services.asset_service import sync_bank_assets
 
 
 def render_bank_account_list(session, case_id: int):

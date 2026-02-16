@@ -6,10 +6,10 @@ import time
 
 import streamlit as st
 import streamlit.components.v1 as components
-
 from legal_system.models.tables import Case
-from legal_system.services.deceased_service import update_case_folder_path
-from legal_system.services.folder_service import (
+
+from services.deceased_service import update_case_folder_path
+from services.folder_service import (
     find_all_case_folders,
     open_local_folder,
 )

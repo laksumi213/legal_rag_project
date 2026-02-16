@@ -2,10 +2,10 @@
 import os
 
 import streamlit as st
+from legal_system.models.tables import Address, H_AddressHistory
 from legal_system.ui.label_generator import generate_advanced_label, get_branch_address
 
-from legal_system.models.tables import Address, H_AddressHistory
-from legal_system.services.deceased_service import get_contact_info
+from services.deceased_service import get_contact_info
 
 # ルートディレクトリの特定 (相対パス解決)
 current_dir = os.path.dirname(os.path.abspath(__file__))

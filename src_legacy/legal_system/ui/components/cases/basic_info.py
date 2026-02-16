@@ -6,11 +6,12 @@ import unicodedata
 
 import pandas as pd
 import streamlit as st
+from legal_system.models.tables import Case, Deceased
 from legal_system.ui.utils.scroll_helper import maintain_scroll_position
+from legal_system.utils.date_utils import convert_seireki_to_wareki
 from sqlalchemy.orm import joinedload
 
-from legal_system.models.tables import Case, Deceased
-from legal_system.services.deceased_service import (
+from services.deceased_service import (
     delete_case_and_all_related_data,
     get_address_info,
     get_contact_info,
@@ -19,7 +20,6 @@ from legal_system.services.deceased_service import (
     update_deceased,
     update_heir,
 )
-from legal_system.utils.date_utils import convert_seireki_to_wareki
 
 
 def _get_date_input(label, current_value, key=None):

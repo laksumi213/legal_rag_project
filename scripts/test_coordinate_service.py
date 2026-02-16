@@ -6,12 +6,11 @@ import sys
 ROOT_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.append(ROOT_DIR)
 
-from legal_system.services.coordinate_service import CoordinateService
-from sqlalchemy import create_engine
-from sqlalchemy.orm import scoped_session, sessionmaker
-
 from legal_system.core.database_manager import DatabaseManager
 from legal_system.models.tables import Coordinate, FileRegistry  # 必要に応じて
+from services.coordinate_service import CoordinateService
+from sqlalchemy import create_engine
+from sqlalchemy.orm import scoped_session, sessionmaker
 
 # -----------------------------------------------------------------------------
 # 簡易的なDBセットアップ（テスト用）

@@ -1,32 +1,23 @@
 # docker-compose.yml
 services:
-  # --- 1. アプリケーションサーバー (Streamlit) ---
+  # --- 1. アプリケーションサーバー (Streamlit/Flet) ---
   app:
     build: .
     container_name: legal_app
     extra_hosts:
       - "host.docker.internal:host-gateway"
     ports:
-      - "8501:8501"  # ブラウザからアクセスするポート
+      - "8501:8501"
     environment:
-    - POSTGRES_HOST=db
-    - POSTGRES_PORT=5432
-    - POSTGRES_DB=${POSTGRES_DB}        # ★ .envから読み込み
-    - POSTGRES_USER=${POSTGRES_USER}    # ★ .envから読み込み
-    - POSTGRES_PASSWORD=${POSTGRES_PASSWORD} # ★ .envから読み込み
-    - GOOGLE_API_KEY=${GOOGLE_API_KEY}
-    # environment:
-    #   - POSTGRES_HOST=db
-    #   - POSTGRES_PORT=5432
-    #   - POSTGRES_DB=legal_db
-    #   - POSTGRES_USER=postgres
-    #   - POSTGRES_PASSWORD=password
-    #   # 本番ではGoogle API Key等はここで渡すか、.envファイルを読み込ませます
-    #   - GOOGLE_API_KEY=${GOOGLE_API_KEY}
+      - POSTGRES_HOST=db
+      - POSTGRES_PORT=5432
+      - POSTGRES_DB=legal_db
+      - POSTGRES_USER=postgres
+      - POSTGRES_PASSWORD=7034
+      - GOOGLE_API_KEY=${GOOGLE_API_KEY}
     depends_on:
       - db
     volumes:
-      # ホストのソースコードをコンテナにマウント (開発中は変更が即反映されるように)
       - ./src:/app/src
       - ./data:/app/data
     restart: always
@@ -34,24 +25,15 @@ services:
   # --- 2. データベースサーバー (PostgreSQL) ---
   db:
     image: postgres:15
-    container_name: legal_db
+    container_name: legal_system_db
     environment:
-      - POSTGRES_DB=${POSTGRES_DB}        # ★ .envから読み込み
-      - POSTGRES_USER=${POSTGRES_USER}    # ★ .envから読み込み
-      - POSTGRES_PASSWORD=${POSTGRES_PASSWORD} # ★ .envから読み込み
+      - POSTGRES_DB=legal_db
+      - POSTGRES_USER=postgres
+      - POSTGRES_PASSWORD=7034
     ports:
       - "5432:5432"
-  # db:
-  #   image: postgres:15
-  #   container_name: legal_db
-  #   environment:
-  #     - POSTGRES_DB=legal_db
-  #     - POSTGRES_USER=postgres
-  #     - POSTGRES_PASSWORD=password
-  #   ports:
-  #     - "5432:5432"
     volumes:
-      # DBのデータをDockerボリュームに保存 (コンテナを消してもデータは残る)
+      # ★重複していた volumes 記述を1つに整理
       - postgres_data:/var/lib/postgresql/data
     restart: always
 

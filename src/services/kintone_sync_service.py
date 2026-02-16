@@ -16,8 +16,9 @@ from legal_system.models.tables import (
     Heir,
     User,
 )
-from legal_system.services.deceased_service import get_next_case_number_service
 from legal_system.utils.date_utils import parse_all_flexible_date
+
+from services.deceased_service import get_next_case_number_service
 
 logger = logging.getLogger(__name__)
 

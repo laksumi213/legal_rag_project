@@ -83,8 +83,11 @@ flatbuffers==25.12.19
     # via onnxruntime
 flet==0.80.5
     # via flet-desktop
+    # via flet-dropzone
     # via legal
 flet-desktop==0.80.5
+    # via legal
+flet-dropzone==0.3.1
     # via legal
 frozenlist==1.8.0
     # via aiohttp

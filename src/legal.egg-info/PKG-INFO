@@ -48,6 +48,7 @@ Requires-Dist: pypdf2>=3.0.1
 Requires-Dist: langchain-text-splitters>=1.1.0
 Requires-Dist: flet>=0.80.5
 Requires-Dist: flet-desktop>=0.80.5
+Requires-Dist: flet-dropzone>=0.3.1
 
 # legal-rag-project
 

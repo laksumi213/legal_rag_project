@@ -55,10 +55,10 @@ os.environ["IS_WATCHER_PROCESS"] = "true"
 
 try:
     from legal_system.core.data_sync import DataSyncEngine
-
     from legal_system.core.database_manager import DatabaseManager
-    from legal_system.services.gmail_watcher_service import GmailWatcherService
-    from legal_system.services.scanner_service import ScannerService
+
+    from services.gmail_watcher_service import GmailWatcherService
+    from services.scanner_service import ScannerService
 
     logger.info("✅ 必要なモジュールをロードしました。")
 except ImportError as e:

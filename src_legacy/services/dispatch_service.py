@@ -2,7 +2,7 @@
 from typing import Any, Dict
 
 # 郵便番号検索サービスをインポート
-from legal_system.services.deceased_service import search_zip_by_address_api
+from services.deceased_service import search_zip_by_address_api
 
 
 def determine_base_from_branch(branch_name: str) -> str:

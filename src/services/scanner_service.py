@@ -16,8 +16,6 @@ from typing import Any, Dict, List, Optional, Tuple, Union
 
 from langchain_core.messages import HumanMessage
 from langchain_text_splitters import RecursiveCharacterTextSplitter
-from sqlalchemy.orm import joinedload
-
 from legal_system.core.ai_factory import AIFactory
 from legal_system.core.config import Config
 from legal_system.core.database_manager import DatabaseManager
@@ -31,9 +29,11 @@ from legal_system.models.tables import (
     FinancialAsset,
     Liability,
 )
-from legal_system.services.deceased_service import find_cases_by_attributes
 from legal_system.utils.date_utils import json_serial
 from legal_system.utils.document_loaders import DocumentLoader
+from sqlalchemy.orm import joinedload
+
+from services.deceased_service import find_cases_by_attributes
 
 logger = logging.getLogger(__name__)
 logger.setLevel(logging.INFO)

@@ -32,7 +32,7 @@ from legal_system.core.database_manager import DatabaseManager
 from legal_system.models.tables import Address, Case, Deceased, H_AddressHistory, Heir
 
 # ★修正: src. を付与して絶対インポートに変更
-from legal_system.services.deceased_service import (
+from services.deceased_service import (
     find_cases_by_attributes,
     search_zip_by_address_api,
 )

@@ -28,7 +28,7 @@ except ImportError:
 
 # DB保存サービス (既存機能の維持)
 try:
-    from legal_system.services.persistence_service import (
+    from services.persistence_service import (
         VerificationPersistenceService,
     )
 
@@ -37,7 +37,7 @@ except ImportError:
     HAS_PERSISTENCE_SERVICE = False
 
 # Kintone連携サービス
-from legal_system.services.kintone_sync_service import get_kintone_data_as_dict
+from services.kintone_sync_service import get_kintone_data_as_dict
 
 # -----------------------------------------------------------------------------
 # ページ設定 & ヘルパー関数

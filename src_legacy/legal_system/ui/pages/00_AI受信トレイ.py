@@ -16,12 +16,12 @@ ROOT_DIR = os.path.dirname(
 if ROOT_DIR not in sys.path:
     sys.path.append(ROOT_DIR)
 
-from legal_system.ui.components.document_viewer import render_enhanced_document_viewer
-
 from legal_system.core.database_manager import DatabaseManager
 from legal_system.models.tables import Case, FileRegistry
-from legal_system.services.deceased_service import update_case_folder_path
-from legal_system.services.folder_service import open_local_folder
+from legal_system.ui.components.document_viewer import render_enhanced_document_viewer
+
+from services.deceased_service import update_case_folder_path
+from services.folder_service import open_local_folder
 
 st.set_page_config(page_title="AI受信トレイ", layout="wide", page_icon="🤖")
 
@@ -365,7 +365,7 @@ def render_ai_inbox():
                     target_file.extracted_data = json.dumps(ai_data, ensure_ascii=False)
                     db.commit()
 
-                    from legal_system.services.scanner_service import ScannerService
+                    from services.scanner_service import ScannerService
 
                     svc = ScannerService()
                     svc.process_pending_buffer(
@@ -438,7 +438,7 @@ def render_ai_inbox():
                         deceased_id = target_case_obj.deceased_ref.id
                         count = 0
                         try:
-                            from legal_system.services.deceased_service import add_heir
+                            from services.deceased_service import add_heir
 
                             for index, row in edited_heirs_df.iterrows():
                                 if not row.get("name"):
@@ -458,7 +458,7 @@ def render_ai_inbox():
                                 )
                                 count += 1
 
-                            from legal_system.services.scanner_service import (
+                            from services.scanner_service import (
                                 ScannerService,
                             )
 
@@ -484,7 +484,7 @@ def render_ai_inbox():
                 if st.button(
                     "✅ 承認してファイル保存", type="primary", use_container_width=True
                 ):
-                    from legal_system.services.scanner_service import ScannerService
+                    from services.scanner_service import ScannerService
 
                     svc = ScannerService()
                     success = svc.process_pending_buffer(
@@ -506,7 +506,7 @@ def render_ai_inbox():
                 if st.button(
                     "✅ 承認してファイル保存", type="primary", use_container_width=True
                 ):
-                    from legal_system.services.scanner_service import ScannerService
+                    from services.scanner_service import ScannerService
 
                     svc = ScannerService()
                     success = svc.process_pending_buffer(
@@ -580,7 +580,7 @@ def render_ai_inbox():
                         )
                         db.commit()
 
-                        from legal_system.services.scanner_service import ScannerService
+                        from services.scanner_service import ScannerService
 
                         svc = ScannerService()
                         svc.process_pending_buffer(

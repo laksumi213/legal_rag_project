@@ -3,7 +3,7 @@
 import streamlit as st
 import streamlit.components.v1 as components
 
-from legal_system.services.search_service import search_cases_enhanced
+from services.search_service import search_cases_enhanced
 
 
 def render_case_search(session):

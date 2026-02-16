@@ -1,7 +1,7 @@
-# ベースイメージ: Python 3.12 (軽量版)
-FROM python:3.12-slim
+# Dockerfile
 
-# 1. OSレベルの依存ライブラリをインストール
+# (1-3 手順は省略せず維持)
+FROM python:3.12-slim
 RUN apt-get update && apt-get install -y \
     build-essential \
     curl \
@@ -13,19 +13,19 @@ RUN apt-get update && apt-get install -y \
     && apt-get clean \
     && rm -rf /var/lib/apt/lists/*
 
-# 2. 作業ディレクトリの設定
 WORKDIR /app
 
-# 3. 依存関係ファイルのコピーとインストール
-# エラー回避のため、設定ファイル(pyproject.toml)と説明書(README.md)を先にコピーします
+# 3. 依存関係ファイルのコピー
 COPY requirements.lock pyproject.toml README.md ./
+
+# ★修正ポイント: editable install (-e .) を成功させるために src を先にコピー
+COPY src ./src
+
+# 依存ライブラリのインストール
 RUN pip install --no-cache-dir -r requirements.lock
 
-# 4. ソースコード全体をコピー
+# 4. 残りのソースコード全体をコピー
 COPY . .
 
-# 5. 環境変数の設定 (Streamlit用)
 ENV PYTHONUNBUFFERED=1
-
-# 6. アプリケーションの起動コマンド
-CMD ["python", "src/legal_system/main.py"]
+CMD ["python", "src/main.py"]

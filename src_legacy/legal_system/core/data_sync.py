@@ -5,7 +5,7 @@ import logging
 import os
 
 # ★重要: ロジックを分散させず、サービス層に一元化する
-from legal_system.services.kintone_sync_service import import_kintone_json
+from services.kintone_sync_service import import_kintone_json
 
 logger = logging.getLogger(__name__)
 

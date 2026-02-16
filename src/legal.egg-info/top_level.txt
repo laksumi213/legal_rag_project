@@ -1,5 +1,7 @@
+components
 core
 database
-legal_system
 models
+services
+utils
 views

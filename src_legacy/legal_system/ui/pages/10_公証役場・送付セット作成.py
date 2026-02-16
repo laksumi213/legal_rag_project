@@ -29,10 +29,9 @@ if ROOT_DIR not in sys.path:
 TEMPLATES_DIR = os.path.join(ROOT_DIR, "data", "templates")
 
 # ★追加: 暗号化サービスのインポート
-from legal_system.services.encryption_service import EncryptionService
-
 from legal_system.core.database_manager import DatabaseManager
 from legal_system.models.tables import Case, Deceased
+from services.encryption_service import EncryptionService
 
 # ページ設定
 st.set_page_config(page_title="公証役場連携", page_icon="⚖️", layout="wide")

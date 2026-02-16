@@ -4,10 +4,10 @@ import time
 
 import pandas as pd
 import streamlit as st
-
 from legal_system.models.tables import ContactLog
-from legal_system.services.deceased_service import get_all_users, update_case_assignment
-from legal_system.services.kintone_sync_service import (
+
+from services.deceased_service import get_all_users, update_case_assignment
+from services.kintone_sync_service import (
     get_kintone_data_as_dict,
     import_kintone_json,
 )

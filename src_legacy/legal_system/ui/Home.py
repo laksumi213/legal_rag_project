@@ -98,11 +98,6 @@ if "bg_thread_started" not in st.session_state:
 # ==========================================
 # 4. コンポーネントのインポート
 # ==========================================
-from legal_system.ui.components.case_search import render_case_search
-from legal_system.ui.components.cases.header import render_case_header
-from legal_system.ui.components.inbox import render_inbox
-from legal_system.ui.components.sidebar import render_sidebar
-
 from legal_system.core.database_manager import DatabaseManager
 from legal_system.models.tables import (
     AuditLog,
@@ -111,12 +106,16 @@ from legal_system.models.tables import (
     FileRegistry,
     IncomingNoteBuffer,
 )
+from legal_system.ui.components.case_search import render_case_search
+from legal_system.ui.components.cases.header import render_case_header
+from legal_system.ui.components.inbox import render_inbox
+from legal_system.ui.components.sidebar import render_sidebar
 
 
 @st.cache_resource(show_spinner=False)
 def get_gmail_service_silent():
     try:
-        from legal_system.services.gmail_watcher_service import GmailWatcherService
+        from services.gmail_watcher_service import GmailWatcherService
 
         return GmailWatcherService()
     except Exception:
@@ -126,7 +125,7 @@ def get_gmail_service_silent():
 @st.cache_resource(show_spinner=False)
 def get_scanner_service_silent():
     try:
-        from legal_system.services.scanner_service import ScannerService
+        from services.scanner_service import ScannerService
 
         return ScannerService()
     except Exception:

@@ -6,12 +6,11 @@ import re
 
 import pandas as pd
 import streamlit as st
-
 from legal_system.models.tables import Address, Case, H_AddressHistory, RealEstateAsset
 
 # サービスのインポート (利用可能な場合のみ)
 try:
-    from legal_system.services.automation.touki_service import touki_service
+    from services.automation.touki_service import touki_service
 except ImportError:
     touki_service = None
 

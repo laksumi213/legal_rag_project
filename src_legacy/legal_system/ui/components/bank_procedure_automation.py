@@ -8,11 +8,10 @@ CURRENT_DIR = os.path.dirname(os.path.abspath(__file__))
 ROOT_DIR = os.path.dirname(os.path.dirname(os.path.dirname(CURRENT_DIR)))
 sys.path.append(ROOT_DIR)
 
-from legal_system.services.bank_procedure_service import BankProcedureService
-from legal_system.ui.utils.js_helper import enable_keyboard_shortcuts
-
 from legal_system.core.database_manager import DatabaseManager
 from legal_system.models.tables import Case
+from legal_system.ui.utils.js_helper import enable_keyboard_shortcuts
+from services.bank_procedure_service import BankProcedureService
 
 
 def render_bank_procedure_automation() -> None:

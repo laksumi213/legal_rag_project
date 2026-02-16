@@ -16,7 +16,7 @@ ROOT_DIR = os.path.dirname(
 if ROOT_DIR not in sys.path:
     sys.path.append(ROOT_DIR)
 
-from legal_system.services.automation.will_generator import WillDraftGenerator
+from services.automation.will_generator import WillDraftGenerator
 
 
 def main():

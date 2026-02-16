@@ -22,11 +22,6 @@ project_root = os.path.dirname(
 if project_root not in sys.path:
     sys.path.append(project_root)
 
-from legal_system.services.dispatch_service import (
-    determine_base_from_branch,
-    generate_kintone_json_payload,
-)
-
 from legal_system.core.ai_factory import AIFactory
 from legal_system.core.database_manager import DatabaseManager
 from legal_system.models.tables import (
@@ -38,7 +33,12 @@ from legal_system.models.tables import (
     H_ContactLink,
     Heir,
 )
-from legal_system.services.deceased_service import (
+from services.dispatch_service import (
+    determine_base_from_branch,
+    generate_kintone_json_payload,
+)
+
+from services.deceased_service import (
     add_heir,  # ★追加: 相続人追加用
     # ★追加: 住所取得
     find_cases_by_attributes,  # ★追加: 検索用サービス

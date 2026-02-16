@@ -49,6 +49,7 @@ dependencies = [
     "langchain-text-splitters>=1.1.0",
     "flet>=0.80.5",
     "flet-desktop>=0.80.5",
+    "flet-dropzone>=0.3.1",
 ]
 readme = "README.md"
 requires-python = ">= 3.10"

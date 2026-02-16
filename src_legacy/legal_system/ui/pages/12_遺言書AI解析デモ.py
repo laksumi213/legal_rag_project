@@ -6,10 +6,10 @@ from dotenv import load_dotenv  # NEW IMPORT
 
 load_dotenv()  # Load environment variables from .env file
 
-from legal_system.services.rag_search_service import RagSearchService
-
 from legal_system.core.config import Config  # ★追加
-from legal_system.services.scanner_service import ScannerService  # NEW IMPORT
+from services.rag_search_service import RagSearchService
+
+from services.scanner_service import ScannerService  # NEW IMPORT
 
 st.set_page_config(page_title="遺言書AI解析デモ", page_icon="🤖", layout="wide")
 st.title("🤖 遺言書AI意味解析・インデックス化デモ")

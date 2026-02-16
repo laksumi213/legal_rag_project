@@ -38,18 +38,18 @@ st.set_page_config(
 # ==========================================
 from legal_system.core.database_manager import DatabaseManager
 from legal_system.models.tables import Address, Case, Deceased, H_AddressHistory
-from legal_system.services.deceased_service import update_case_folder_path
-from legal_system.services.folder_service import open_local_folder
+
+from services.deceased_service import update_case_folder_path
+from services.folder_service import open_local_folder
 
 # ★新機能サービスのインポート
 try:
-    from legal_system.services.logistics_service import LogisticsService
-    from legal_system.services.rag_search_service import RagSearchService
-
     # 共通コンポーネントのインポート
     from legal_system.ui.components.document_viewer import (
         render_enhanced_document_viewer,
     )
+    from services.logistics_service import LogisticsService
+    from services.rag_search_service import RagSearchService
 except ImportError:
     st.error(
         "新機能サービス(logistics_service, rag_search_service)が見つかりません。src/services/に配置してください。"

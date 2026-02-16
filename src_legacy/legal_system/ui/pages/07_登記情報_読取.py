@@ -48,11 +48,12 @@ if ROOT_DIR not in sys.path:
 from legal_system.core.ai_factory import AIFactory
 from legal_system.core.database_manager import DatabaseManager
 from legal_system.models.tables import Case, RealEstateAsset
-from legal_system.services.automation.touki_service import ToukiService  # ADD THIS
-from legal_system.services.deceased_service import update_case_folder_path
+
+from services.automation.touki_service import ToukiService  # ADD THIS
+from services.deceased_service import update_case_folder_path
 
 # フォルダ操作用サービス
-from legal_system.services.folder_service import open_local_folder
+from services.folder_service import open_local_folder
 
 # ページ設定
 st.set_page_config(page_title="登記情報 自動読取", page_icon="🏘️", layout="wide")

@@ -1,43 +1,58 @@
 # src/database/manager.py
-
+import logging
 from contextlib import contextmanager
-from typing import Generator, List
+from typing import Generator
 
-from sqlalchemy import create_engine, select
-from sqlalchemy.engine import Engine
+from sqlalchemy import create_engine
 from sqlalchemy.orm import Session, scoped_session, sessionmaker
 
 from core.config import Config
-from models.tables import Base, Case
+from models.tables import Base
+
+logger = logging.getLogger(__name__)
 
 
 class DatabaseManager:
-    def __init__(self, db_url: str = Config.DATABASE_URL):
-        self.engine: Engine = create_engine(
-            db_url, pool_size=10, max_overflow=20, pool_pre_ping=True, echo=False
-        )
+    """
+    SQLAlchemy 2.0 DB管理クラス。
+    """
 
-        self.session_factory = sessionmaker(bind=self.engine, expire_on_commit=False)
+    _instance = None
+
+    def __new__(cls):
+        if cls._instance is None:
+            cls._instance = super(DatabaseManager, cls).__new__(cls)
+            cls._instance._initialize()
+        return cls._instance
+
+    def _initialize(self):
+        # Configから動的にURLを取得
+        db_url = Config.get_database_url()
+
+        self.engine = create_engine(db_url, pool_pre_ping=True, echo=False)
+        self.session_factory = sessionmaker(
+            bind=self.engine,
+            autocommit=False,
+            autoflush=False,
+            expire_on_commit=False,
+        )
         self.ScopedSession = scoped_session(self.session_factory)
 
-    def create_tables(self) -> None:
-        Base.metadata.create_all(self.engine)
+    def create_tables(self):
+        """テーブル作成（開発用）"""
+        try:
+            Base.metadata.create_all(self.engine)
+            logger.info("✅ データベーステーブルの初期化完了")
+        except Exception as e:
+            logger.error(f"❌ テーブル作成エラー: {e}")
 
     @contextmanager
     def get_session(self) -> Generator[Session, None, None]:
         session = self.ScopedSession()
         try:
             yield session
-            session.commit()
         except Exception:
             session.rollback()
             raise
         finally:
             session.close()
-            self.ScopedSession.remove()
-
-    def fetch_all_cases_sync(self) -> List[Case]:
-        with self.get_session() as session:
-            statement = select(Case).order_by(Case.case_id.desc())
-            result = session.execute(statement)
-            return list(result.scalars().all())

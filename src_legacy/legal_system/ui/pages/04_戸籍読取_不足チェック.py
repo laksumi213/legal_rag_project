@@ -17,11 +17,10 @@ ROOT_DIR = os.path.dirname(
 if ROOT_DIR not in sys.path:
     sys.path.append(ROOT_DIR)
 
-from legal_system.services.koseki_service import KosekiService
-
 from legal_system.core.database_manager import DatabaseManager
 from legal_system.models.tables import Case, Deceased, FamilyRegister
 from legal_system.utils.date_utils import convert_seireki_to_wareki
+from services.koseki_service import KosekiService
 
 st.set_page_config(page_title="戸籍チェック", page_icon="🧬", layout="wide")
 
